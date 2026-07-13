@@ -82,6 +82,22 @@ export function streamCmd<T>(
   return wsRequest<T>(name, args, onEvent);
 }
 
+/** Abort an in-flight streaming generation by request id (Stop button). Works in
+ *  both transports: desktop → `cancel_generation` command; web → a cancel frame on
+ *  the shared socket. Server-side this stops the upstream request, not just the UI. */
+export function cancelStream(requestId: string): void {
+  if (!requestId) return;
+  if (isTauri()) {
+    invoke("cancel_generation", { requestId }).catch(() => {});
+    return;
+  }
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(
+      JSON.stringify({ id: nextId++, command: "cancel_generation", args: { targetRequestId: requestId } })
+    );
+  }
+}
+
 // ---- Web WebSocket multiplexer -------------------------------------------
 
 interface Pending {

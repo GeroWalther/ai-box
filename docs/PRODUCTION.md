@@ -60,11 +60,13 @@ Everything else (signing, sync, packaging) makes it *shippable*; these three mak
      Mac's authenticated RPC.
    - Store keys in the **macOS Keychain** (tauri-plugin-stronghold or a keychain
      plugin) instead of plaintext localStorage.
-3. ⬜ **Server-side cancel + streaming timeouts** — Stop is currently cosmetic; the
-   Mac keeps generating and **burning cloud credits**. Thread an `AbortHandle` /
-   cancel token through the request id in `generate_text_core` + the WS request map
-   (`server.rs` `handle_ws`), and add a connect timeout to the streaming reqwest
-   client. Wire the frontend Stop button and the phone WS `cancel` to it.
+3. ✅ **Server-side cancel + streaming timeouts** — Stop now aborts the upstream
+   request server-side (no more burning cloud credits). A client `requestId` flows
+   into `generate_text`; a `CancelRegistry` flag is polled by the stream loop
+   (≤250ms latency) and drops the stream on Stop; `cancel_generation` (Tauri) and a
+   WS cancel frame drive it from both transports. Wired into the Write flow
+   (`App.tsx`) and Chat (`Chat.tsx`). Connect-timeout added to the streaming client.
+   Verified by mock-SSE integration tests (cancel stops early; uncancelled completes).
 4. ⬜ **Sync data integrity** — desktop↔phone sync is last-writer-wins on the whole
    array (`lib.rs` `remote_store_set`, `App.tsx`, `Chat.tsx`); concurrent edits
    silently clobber a manuscript. Add per-item ids + `updatedAt`, merge on write,

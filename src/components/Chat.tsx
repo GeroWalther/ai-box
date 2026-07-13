@@ -14,7 +14,7 @@ import {
   webFetch,
 } from "../lib/agent";
 import { resolveTextProvider, type Settings } from "../lib/settings";
-import { isTauri } from "../lib/transport";
+import { isTauri, cancelStream } from "../lib/transport";
 import { remoteStoreGet, remoteStoreSet } from "../lib/remoteStore";
 import { useOpenrouterModels } from "../lib/openrouterModels";
 import { useToast } from "../lib/toast";
@@ -102,6 +102,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   } | null>(null);
   const allowAllRef = useRef(false); // "always allow this session"
   const genIdRef = useRef(0);
+  const reqIdRef = useRef(""); // id of the in-flight generation, for server-side cancel
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeIdRef = useRef("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -281,6 +282,8 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
 
   function stopGen() {
     genIdRef.current++;
+    // Abort the upstream generation server-side, not just the UI.
+    if (reqIdRef.current) cancelStream(reqIdRef.current);
     setGenerating(false);
     if (pending) {
       pending.resolve(false);
@@ -300,6 +303,8 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     ];
     pushMsg({ role: "assistant", content: "", reasoning: "" });
     const live = () => genIdRef.current === myGen;
+    const requestId = crypto.randomUUID();
+    reqIdRef.current = requestId;
     await generateText(
       {
         baseUrl: provider.baseUrl,
@@ -320,7 +325,8 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
         onError: (msg) => {
           if (live()) patchLast((m) => ({ ...m, content: m.content + `\n\n[error] ${msg}` }));
         },
-      }
+      },
+      requestId
     );
   }
 

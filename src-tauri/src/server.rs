@@ -12,6 +12,7 @@
 // Mac must approve. Bind is LAN/Tailscale-facing; never port-forward publicly.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::{
@@ -50,6 +51,32 @@ impl ApprovalRegistry {
         self.0.lock().unwrap().insert(id, tx);
     }
     fn cancel(&self, id: &str) {
+        self.0.lock().unwrap().remove(id);
+    }
+}
+
+/// Per-request cancellation flags for streaming generation, shared between the
+/// task running the stream and the `cancel_generation` command the UI calls when
+/// the user hits Stop. Keyed by a client-supplied request id so Stop actually
+/// aborts the upstream request (and stops burning cloud credits) instead of just
+/// ignoring tokens on the client.
+#[derive(Default, Clone)]
+pub struct CancelRegistry(Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>);
+
+impl CancelRegistry {
+    /// Register a fresh flag for `id` and return it for the stream loop to poll.
+    pub fn register(&self, id: String) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.0.lock().unwrap().insert(id, flag.clone());
+        flag
+    }
+    /// Signal the stream for `id` to stop (called from the desktop when Stop is hit).
+    pub fn cancel(&self, id: &str) {
+        if let Some(f) = self.0.lock().unwrap().get(id) {
+            f.store(true, Ordering::Relaxed);
+        }
+    }
+    pub fn remove(&self, id: &str) {
         self.0.lock().unwrap().remove(id);
     }
 }
@@ -494,6 +521,11 @@ async fn handle_ws(socket: WebSocket, ctx: ServerCtx) {
         }
     });
 
+    // Cancellation flags for in-flight streaming generations on THIS connection,
+    // keyed by the client's request id, so a `cancel_generation` frame can abort a
+    // running `generate_text`.
+    let cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> = Arc::new(Mutex::new(HashMap::new()));
+
     while let Some(Ok(msg)) = receiver.next().await {
         let text = match msg {
             Message::Text(t) => t,
@@ -507,15 +539,43 @@ async fn handle_ws(socket: WebSocket, ctx: ServerCtx) {
         let id = req["id"].as_u64().unwrap_or(0);
         let command = req["command"].as_str().unwrap_or("").to_string();
         let cmd_args = req["args"].clone();
+
+        // Cancel is handled inline (don't spawn): flip the target request's flag.
+        if command == "cancel_generation" {
+            if let Some(rid) = cmd_args.get("targetRequestId").and_then(|v| v.as_str()) {
+                if let Some(f) = cancels.lock().unwrap().get(rid) {
+                    f.store(true, Ordering::Relaxed);
+                }
+            }
+            let _ = tx.send(json!({ "id": id, "done": true, "result": Value::Null }).to_string());
+            continue;
+        }
+
+        // For a streaming generation, register a cancel flag under its request id.
+        let cancel = if command == "generate_text" {
+            cmd_args.get("requestId").and_then(|v| v.as_str()).map(|rid| {
+                let f = Arc::new(AtomicBool::new(false));
+                cancels.lock().unwrap().insert(rid.to_string(), f.clone());
+                (rid.to_string(), f)
+            })
+        } else {
+            None
+        };
+
         let ctx2 = ctx.clone();
         let tx2 = tx.clone();
+        let cancels2 = cancels.clone();
         // Each request runs concurrently; results are multiplexed by id.
         tokio::spawn(async move {
             let sink = WsSink { id, tx: tx2.clone() };
-            let frame = match dispatch_ws(&ctx2, &command, cmd_args, &sink).await {
+            let flag = cancel.as_ref().map(|(_, f)| f.clone());
+            let frame = match dispatch_ws(&ctx2, &command, cmd_args, &sink, flag).await {
                 Ok(v) => json!({ "id": id, "done": true, "result": v }),
                 Err(e) => json!({ "id": id, "done": true, "error": e }),
             };
+            if let Some((rid, _)) = cancel {
+                cancels2.lock().unwrap().remove(&rid);
+            }
             let _ = tx2.send(frame.to_string());
         });
     }
@@ -529,6 +589,7 @@ async fn dispatch_ws(
     command: &str,
     args: Value,
     sink: &dyn EventSink,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<Value, String> {
     let s = |key: &str| {
         args.get(key)
@@ -538,7 +599,7 @@ async fn dispatch_ws(
     };
     match command {
         "generate_text" => {
-            crate::generate_text_core(params(&args)?, sink).await?;
+            crate::generate_text_core(params(&args)?, sink, cancel).await?;
             Ok(Value::Null)
         }
         "pull_ollama_model" => {

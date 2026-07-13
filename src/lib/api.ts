@@ -26,10 +26,12 @@ export interface StreamHandlers {
   onError: (msg: string) => void;
 }
 
-/** Stream a chat completion. Returns once the stream is fully consumed. */
+/** Stream a chat completion. Returns once the stream is fully consumed. Pass a
+ *  `requestId` to make it cancellable via cancelStream() (server-side abort). */
 export async function generateText(
   args: GenerateArgs,
-  handlers: StreamHandlers
+  handlers: StreamHandlers,
+  requestId?: string
 ): Promise<void> {
   await streamCmd<void>(
     "generate_text",
@@ -42,6 +44,7 @@ export async function generateText(
         temperature: args.temperature,
         maxTokens: args.maxTokens,
       },
+      requestId,
     },
     (msg: StreamEvent) => {
       if (msg.type === "token") handlers.onToken(msg.content);

@@ -62,13 +62,31 @@ enum StreamEvent {
 
 /// Stream a chat completion token-by-token to the frontend via a Channel.
 /// Works with any OpenAI-compatible endpoint (OpenRouter, Ollama, LM Studio, ...).
+/// `request_id` (optional) registers a cancellation flag so Stop can abort the
+/// upstream request server-side rather than merely ignoring tokens.
 #[tauri::command]
-async fn generate_text(params: GenerateParams, on_event: Channel<serde_json::Value>) -> Result<(), String> {
-    generate_text_core(params, &ChannelSink(on_event)).await
+async fn generate_text(
+    params: GenerateParams,
+    request_id: Option<String>,
+    registry: tauri::State<'_, server::CancelRegistry>,
+    on_event: Channel<serde_json::Value>,
+) -> Result<(), String> {
+    let cancel = request_id.as_ref().map(|id| registry.register(id.clone()));
+    let res = generate_text_core(params, &ChannelSink(on_event), cancel).await;
+    if let Some(id) = request_id {
+        registry.remove(&id);
+    }
+    res
 }
 
-/// Core streaming logic shared by the Tauri command and the remote WS server.
-pub(crate) async fn generate_text_core(params: GenerateParams, sink: &dyn EventSink) -> Result<(), String> {
+/// Core streaming logic shared by the Tauri command and the remote WS server. When
+/// `cancel` is set and flips to true, the stream is dropped (aborting the upstream
+/// HTTP request) and a Done event is emitted.
+pub(crate) async fn generate_text_core(
+    params: GenerateParams,
+    sink: &dyn EventSink,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<(), String> {
     let url = format!("{}/chat/completions", params.base_url.trim_end_matches('/'));
 
     let body = serde_json::json!({
@@ -82,7 +100,12 @@ pub(crate) async fn generate_text_core(params: GenerateParams, sink: &dyn EventS
         "stream": true,
     });
 
-    let client = reqwest::Client::new();
+    // No total timeout (generations are long), but bound connection setup so a
+    // dead endpoint can't hang the stream forever.
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
     let mut req = client
         .post(&url)
         .header("Content-Type", "application/json")
@@ -116,7 +139,21 @@ pub(crate) async fn generate_text_core(params: GenerateParams, sink: &dyn EventS
     let mut stream = resp.bytes_stream();
     let mut buffer = String::new();
 
-    while let Some(chunk) = stream.next().await {
+    let is_cancelled =
+        || cancel.as_ref().map_or(false, |c| c.load(std::sync::atomic::Ordering::Relaxed));
+
+    loop {
+        // Poll the cancel flag even while waiting on a slow chunk, so Stop takes
+        // effect within ~250ms regardless of token cadence.
+        if is_cancelled() {
+            emit_ev(sink, StreamEvent::Done);
+            return Ok(());
+        }
+        let chunk = tokio::select! {
+            c = stream.next() => c,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => continue,
+        };
+        let Some(chunk) = chunk else { break };
         let bytes = match chunk {
             Ok(b) => b,
             Err(e) => {
@@ -1289,6 +1326,13 @@ fn set_remote_settings(store: tauri::State<'_, server::RemoteSettings>, settings
     store.set(settings);
 }
 
+/// Abort an in-flight streaming generation by request id (Stop button). Stops the
+/// upstream request server-side so it doesn't keep generating / billing.
+#[tauri::command]
+fn cancel_generation(registry: tauri::State<'_, server::CancelRegistry>, request_id: String) {
+    registry.cancel(&request_id);
+}
+
 // ---- Shared key/value store (chat history etc.) --------------------------
 // A small JSON file on the Mac, reachable from BOTH the desktop (Tauri IPC) and
 // a paired phone (through the server), so history is the same on every device.
@@ -1421,6 +1465,7 @@ pub fn run() {
         .manage(server::ApprovalRegistry::default())
         .manage(server::RemoteState::default())
         .manage(server::RemoteSettings::default())
+        .manage(server::CancelRegistry::default())
         .invoke_handler(tauri::generate_handler![
             generate_text,
             list_openrouter_models,
@@ -1450,6 +1495,7 @@ pub fn run() {
             remote_urls,
             resolve_remote_approval,
             set_remote_settings,
+            cancel_generation,
             remote_store_get,
             remote_store_set,
             image_put,
@@ -1459,4 +1505,108 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Test sink that counts token events and notes when Done is emitted.
+    struct TestSink {
+        tokens: Arc<AtomicUsize>,
+        done: Arc<AtomicBool>,
+    }
+    impl EventSink for TestSink {
+        fn emit(&self, value: serde_json::Value) {
+            match value.get("type").and_then(|t| t.as_str()) {
+                Some("token") => {
+                    self.tokens.fetch_add(1, Ordering::Relaxed);
+                }
+                Some("done") => self.done.store(true, Ordering::Relaxed),
+                _ => {}
+            }
+        }
+    }
+
+    /// A mock OpenAI-compatible endpoint that streams a token every 100ms for a
+    /// long time — long enough that a mid-stream cancel must cut it short.
+    async fn spawn_mock_sse() -> String {
+        use axum::{http::header, response::Response, routing::post, Router};
+        async fn handler() -> Response {
+            let body = futures_util::stream::unfold(0usize, |i| async move {
+                if i >= 100 {
+                    return None;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n".to_string();
+                Some((Ok::<_, std::io::Error>(axum::body::Bytes::from(chunk)), i + 1))
+            });
+            Response::builder()
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .body(axum::body::Body::from_stream(body))
+                .unwrap()
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route("/chat/completions", post(handler));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_stops_stream_early() {
+        let base_url = spawn_mock_sse().await;
+        let params = GenerateParams {
+            base_url,
+            api_key: String::new(),
+            model: "mock".into(),
+            messages: vec![ChatMessage { role: "user".into(), content: "hi".into() }],
+            temperature: 0.0,
+            max_tokens: 100,
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let tokens = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicBool::new(false));
+        let sink = TestSink { tokens: tokens.clone(), done: done.clone() };
+
+        // Cancel 350ms in — a few tokens will have streamed by then.
+        let c2 = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            c2.store(true, Ordering::Relaxed);
+        });
+
+        let start = std::time::Instant::now();
+        generate_text_core(params, &sink, Some(cancel)).await.unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(done.load(Ordering::Relaxed), "cancel should emit a Done event");
+        let n = tokens.load(Ordering::Relaxed);
+        assert!(n > 0 && n < 30, "cancel should stop early (got {n} tokens of 100)");
+        assert!(elapsed < std::time::Duration::from_secs(2), "should return promptly (took {elapsed:?})");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn uncancelled_stream_runs_to_completion() {
+        // Sanity: without cancel, the same core consumes the whole stream.
+        let base_url = spawn_mock_sse().await;
+        let params = GenerateParams {
+            base_url,
+            api_key: String::new(),
+            model: "mock".into(),
+            messages: vec![ChatMessage { role: "user".into(), content: "hi".into() }],
+            temperature: 0.0,
+            max_tokens: 100,
+        };
+        let tokens = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicBool::new(false));
+        let sink = TestSink { tokens: tokens.clone(), done: done.clone() };
+        generate_text_core(params, &sink, None).await.unwrap();
+        assert!(done.load(Ordering::Relaxed));
+        assert_eq!(tokens.load(Ordering::Relaxed), 100, "all tokens should stream when not cancelled");
+    }
 }

@@ -21,7 +21,7 @@ import {
 import { chatCompletion } from "./lib/agent";
 import { buildExtractionMessages, parseExtraction, type Extraction } from "./lib/extract";
 import { useOpenrouterModels } from "./lib/openrouterModels";
-import { isTauri, invokeCmd } from "./lib/transport";
+import { isTauri, invokeCmd, cancelStream } from "./lib/transport";
 import { remoteStoreGet, remoteStoreSet } from "./lib/remoteStore";
 import { useToast } from "./lib/toast";
 import PromptBar from "./components/PromptBar";
@@ -143,6 +143,7 @@ export default function App() {
   const [documents, setDocuments] = useState<Doc[]>(loadDocs);
   const [activeDocId, setActiveDocId] = useState<string>("");
   const stoppedRef = useRef(false);
+  const requestIdRef = useRef(""); // id of the in-flight generation, for server-side cancel
   const activeDocIdRef = useRef("");
   const docsRef = useRef(documents); // latest docs for async saves
   const docsFetchedRef = useRef(false); // shared docs load kicked off
@@ -484,6 +485,8 @@ export default function App() {
     nlRef: { current: boolean },
     which: { baseUrl: string; apiKey: string; model: string } = provider
   ) {
+    const requestId = crypto.randomUUID();
+    requestIdRef.current = requestId;
     try {
       await generateText(
         {
@@ -507,7 +510,8 @@ export default function App() {
             setStatus("");
             toastError(msg);
           },
-        }
+        },
+        requestId
       );
     } catch (e) {
       setGenerating(false);
@@ -518,6 +522,8 @@ export default function App() {
 
   function handleStop() {
     stoppedRef.current = true;
+    // Abort server-side so the model stops generating (and billing), not just the UI.
+    if (requestIdRef.current) cancelStream(requestIdRef.current);
     setGenerating(false);
     setStatus("");
   }
