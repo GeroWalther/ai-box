@@ -106,41 +106,51 @@ pub(crate) async fn generate_text_core(
         .connect_timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut req = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        // OpenRouter asks for these; harmless for other providers.
-        .header("HTTP-Referer", "https://ai-studio.local")
-        .header("X-Title", "AI Studio")
-        .json(&body);
-
-    if !params.api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", params.api_key.trim()));
-    }
-
-    let resp = match req.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            emit_ev(sink, StreamEvent::Error { message: format!("Request failed: {e}") });
-            return Ok(());
+    // Retry the CONNECTION only (429/5xx/network) — safe because no token has been
+    // emitted yet. Once streaming starts we can't resume, so we never retry then.
+    let resp = {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let mut req = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                // OpenRouter asks for these; harmless for other providers.
+                .header("HTTP-Referer", "https://ai-studio.local")
+                .header("X-Title", "AI Studio")
+                .json(&body);
+            if !params.api_key.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", params.api_key.trim()));
+            }
+            match req.send().await {
+                Ok(r) if r.status().is_success() => break r,
+                Ok(r) => {
+                    let s = r.status();
+                    if is_transient(s) && attempt < MAX_ATTEMPTS && !is_cancelled_flag(&cancel) {
+                        backoff(attempt).await;
+                        continue;
+                    }
+                    let text = r.text().await.unwrap_or_default();
+                    emit_ev(sink, StreamEvent::Error { message: friendly_http_error(s, &text) });
+                    return Ok(());
+                }
+                Err(e) => {
+                    if attempt < MAX_ATTEMPTS && !is_cancelled_flag(&cancel) {
+                        backoff(attempt).await;
+                        continue;
+                    }
+                    emit_ev(sink, StreamEvent::Error { message: format!("Request failed: {e}") });
+                    return Ok(());
+                }
+            }
         }
     };
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        emit_ev(sink, StreamEvent::Error {
-            message: format!("HTTP {status}: {text}"),
-        });
-        return Ok(());
-    }
 
     // Parse the Server-Sent-Events stream: lines beginning with "data: ".
     let mut stream = resp.bytes_stream();
     let mut buffer = String::new();
 
-    let is_cancelled =
-        || cancel.as_ref().map_or(false, |c| c.load(std::sync::atomic::Ordering::Relaxed));
+    let is_cancelled = || is_cancelled_flag(&cancel);
 
     loop {
         // Poll the cancel flag even while waiting on a slow chunk, so Stop takes
@@ -798,7 +808,46 @@ struct ChatCompletionParams {
     temperature: f32,
 }
 
+/// Map a provider HTTP error to an actionable message instead of a raw dump.
+fn friendly_http_error(status: reqwest::StatusCode, body: &str) -> String {
+    let code = status.as_u16();
+    let hint = match code {
+        401 | 403 => "Unauthorized — check your API key in Settings.",
+        404 => "Model or endpoint not found — pick a different model / check the base URL.",
+        402 => "Payment required — your provider account is out of credit.",
+        429 => "Rate limited — wait a moment and try again.",
+        500..=599 => "The provider had a server error — try again shortly.",
+        _ => "",
+    };
+    if hint.is_empty() {
+        let snippet: String = body.chars().take(300).collect();
+        format!("HTTP {code}: {snippet}")
+    } else {
+        format!("{hint} (HTTP {code})")
+    }
+}
+
+/// Transient errors worth retrying: rate limits and server errors.
+fn is_transient(status: reqwest::StatusCode) -> bool {
+    status.as_u16() == 429 || status.is_server_error()
+}
+
+/// Whether a streaming cancel flag is set (used to bail out of connection retries).
+fn is_cancelled_flag(cancel: &Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) -> bool {
+    cancel
+        .as_ref()
+        .map_or(false, |c| c.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Backoff before retry attempt `attempt` (1-indexed): 400ms, 800ms, …
+async fn backoff(attempt: u32) {
+    tokio::time::sleep(std::time::Duration::from_millis(400 * attempt as u64)).await;
+}
+
+const MAX_ATTEMPTS: u32 = 3;
+
 /// One non-streaming chat completion. Returns choices[0].message (content + tool_calls).
+/// Retries transient failures (429/5xx/network) with backoff.
 #[tauri::command]
 async fn chat_completion(params: ChatCompletionParams) -> Result<serde_json::Value, String> {
     let url = format!("{}/chat/completions", params.base_url.trim_end_matches('/'));
@@ -816,22 +865,40 @@ async fn chat_completion(params: ChatCompletionParams) -> Result<serde_json::Val
         .timeout(std::time::Duration::from_secs(180))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut req = client
-        .post(&url)
-        .header("HTTP-Referer", "https://ai-studio.local")
-        .header("X-Title", "AI Studio")
-        .json(&body);
-    if !params.api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", params.api_key.trim()));
+
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let mut req = client
+            .post(&url)
+            .header("HTTP-Referer", "https://ai-studio.local")
+            .header("X-Title", "AI Studio")
+            .json(&body);
+        if !params.api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", params.api_key.trim()));
+        }
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                if attempt < MAX_ATTEMPTS {
+                    backoff(attempt).await;
+                    continue;
+                }
+                return Err(format!("Request failed: {e}"));
+            }
+        };
+        if !resp.status().is_success() {
+            let s = resp.status();
+            if is_transient(s) && attempt < MAX_ATTEMPTS {
+                backoff(attempt).await;
+                continue;
+            }
+            let t = resp.text().await.unwrap_or_default();
+            return Err(friendly_http_error(s, &t));
+        }
+        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        return Ok(json["choices"][0]["message"].clone());
     }
-    let resp = req.send().await.map_err(|e| format!("Request failed: {e}"))?;
-    if !resp.status().is_success() {
-        let s = resp.status();
-        let t = resp.text().await.unwrap_or_default();
-        return Err(format!("HTTP {s}: {t}"));
-    }
-    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    Ok(json["choices"][0]["message"].clone())
 }
 
 /// Expand a leading ~ to the user's home directory.

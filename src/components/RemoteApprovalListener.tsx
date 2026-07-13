@@ -14,14 +14,17 @@ interface Req {
 }
 
 export default function RemoteApprovalListener() {
-  const [req, setReq] = useState<Req | null>(null);
+  // A queue, not a single slot: concurrent requests are shown one at a time so a
+  // second request can't silently overwrite (and time out) the first.
+  const [queue, setQueue] = useState<Req[]>([]);
+  const req = queue[0] || null;
 
   useEffect(() => {
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<Req>("remote-approval", (e) => setReq(e.payload)).then((fn) => {
+      listen<Req>("remote-approval", (e) => setQueue((q) => [...q, e.payload])).then((fn) => {
         if (cancelled) fn();
         else unlisten = fn;
       });
@@ -36,7 +39,7 @@ export default function RemoteApprovalListener() {
 
   function answer(approved: boolean) {
     const id = req!.id;
-    setReq(null);
+    setQueue((q) => q.slice(1)); // advance to the next pending request
     invoke("resolve_remote_approval", { id, approved }).catch(() => {});
   }
 
@@ -45,6 +48,9 @@ export default function RemoteApprovalListener() {
       <div className="modal approve">
         <div className="modal-head">
           <h2>{req.title}</h2>
+          {queue.length > 1 && (
+            <span className="hint">{queue.length - 1} more pending</span>
+          )}
         </div>
         <div className="modal-body">
           <p className="hint">A remote device (your phone) wants to take this action on your Mac:</p>
