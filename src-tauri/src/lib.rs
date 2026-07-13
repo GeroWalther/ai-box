@@ -775,7 +775,10 @@ async fn chat_completion(params: ChatCompletionParams) -> Result<serde_json::Val
         body["tools"] = params.tools;
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|e| e.to_string())?;
     let mut req = client
         .post(&url)
         .header("HTTP-Referer", "https://ai-studio.local")
@@ -844,15 +847,24 @@ fn fs_list(path: String) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// Run a shell command. The FRONTEND gates this behind user approval.
+/// Run a shell command. The FRONTEND gates this behind user approval; over the
+/// remote server the desktop must approve. Bounded to 120s with kill-on-drop so a
+/// hung command (approved from a phone, say) can't run forever.
 #[tauri::command]
 async fn run_command(command: String) -> Result<serde_json::Value, String> {
-    let out = tokio::process::Command::new("sh")
+    let child = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(&command)
-        .output()
-        .await
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
+    let dur = std::time::Duration::from_secs(120);
+    let out = match tokio::time::timeout(dur, child.wait_with_output()).await {
+        Ok(r) => r.map_err(|e| format!("run failed: {e}"))?,
+        Err(_) => return Err("command timed out after 120s (process killed)".into()),
+    };
     Ok(serde_json::json!({
         "stdout": String::from_utf8_lossy(&out.stdout),
         "stderr": String::from_utf8_lossy(&out.stderr),
@@ -1046,10 +1058,67 @@ fn fs_delete(path: String) -> Result<String, String> {
     Ok(format!("Deleted {path}"))
 }
 
-/// Fetch a URL and return readable text (HTML stripped, capped). Auto.
+/// True for addresses that must never be reached by a server-side fetch: loopback,
+/// RFC1918 private, link-local (incl. the 169.254.169.254 cloud-metadata range),
+/// unspecified/broadcast, and their IPv6 equivalents (ULA, link-local, mapped v4).
+fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.octets()[0] == 0
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || v6
+                    .to_ipv4_mapped()
+                    .map(|m| is_blocked_ip(std::net::IpAddr::V4(m)))
+                    .unwrap_or(false)
+        }
+    }
+}
+
+/// Reject non-http(s) schemes and any URL whose host resolves to a private,
+/// loopback, or link-local address (SSRF guard). Resolving here defends against a
+/// hostname pointing at internal services; DNS-rebinding at connect time is a
+/// known residual limitation.
+pub(crate) fn validate_public_url(raw: &str) -> Result<(), String> {
+    use std::net::ToSocketAddrs;
+    let parsed = url::Url::parse(raw).map_err(|_| "invalid URL".to_string())?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => return Err(format!("scheme `{other}` not allowed (http/https only)")),
+    }
+    let host = parsed.host_str().ok_or("URL has no host")?;
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addrs: Vec<_> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("could not resolve host: {e}"))?
+        .collect();
+    if addrs.is_empty() {
+        return Err("host did not resolve".into());
+    }
+    if addrs.iter().any(|a| is_blocked_ip(a.ip())) {
+        return Err("refusing to fetch a private/loopback/link-local address".into());
+    }
+    Ok(())
+}
+
+/// Fetch a URL and return readable text (HTML stripped, capped). SSRF-guarded and
+/// time-bounded so it can't hang or reach internal services.
 #[tauri::command]
 async fn web_fetch(url: String) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    validate_public_url(&url)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
     let resp = client
         .get(&url)
         .header("User-Agent", "AI Studio/1.0")
@@ -1117,11 +1186,15 @@ pub(crate) async fn download_file_core(
     sink: &dyn EventSink,
 ) -> Result<(), String> {
     use std::io::Write;
+    validate_public_url(&url)?;
     let dest = expand_path(&dest);
     if let Some(parent) = std::path::Path::new(&dest).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
     let resp = client
         .get(&url)
         .send()
@@ -1193,6 +1266,10 @@ async fn start_remote_server(
     token: String,
     wake_lock: bool,
 ) -> Result<serde_json::Value, String> {
+    // Never run the remote server open: a non-empty bearer token is mandatory.
+    if token.trim().is_empty() {
+        return Err("refusing to start the remote server without an access token".into());
+    }
     server::start(
         app,
         state.inner(),

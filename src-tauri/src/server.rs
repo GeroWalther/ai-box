@@ -214,16 +214,103 @@ fn tailscale_ip() -> Option<String> {
 
 // ---- auth ----------------------------------------------------------------
 
+/// Length-independent-leak-only constant-time byte comparison (guards the token
+/// check against timing side-channels).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 fn authorized(ctx: &ServerCtx, headers: &HeaderMap) -> bool {
     if ctx.token.is_empty() {
-        return true; // no token configured → open (LAN-only dev)
+        return false; // fail closed — never serve command endpoints without a token
     }
     let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .map(|s| s.trim());
-    bearer == Some(ctx.token.as_str())
+    match bearer {
+        Some(b) => constant_time_eq(b.as_bytes(), ctx.token.as_bytes()),
+        None => false,
+    }
+}
+
+// ---- remote filesystem confinement ---------------------------------------
+
+/// Root the remote (phone) filesystem tools are confined to. Desktop/local access
+/// is unrestricted; only network callers are jailed here so a paired device can't
+/// read ~/.ssh, ~/.aws, etc. Honours a `remoteWorkspace` field pushed in the
+/// desktop settings, else defaults to ~/Documents.
+fn workspace_root(ctx: &ServerCtx) -> std::path::PathBuf {
+    let configured = ctx
+        .settings
+        .value()
+        .get("remoteWorkspace")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    let raw = configured.unwrap_or_else(|| format!("{home}/Documents"));
+    let expanded = if raw == "~" {
+        home.clone()
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        format!("{home}/{rest}")
+    } else {
+        raw
+    };
+    let p = std::path::PathBuf::from(&expanded);
+    p.canonicalize().unwrap_or(p)
+}
+
+/// Nearest ancestor of `p` that exists on disk (so we can canonicalize a path that
+/// doesn't exist yet, e.g. a file about to be written).
+fn nearest_existing(p: &std::path::Path) -> std::path::PathBuf {
+    let mut cur = p;
+    loop {
+        if cur.exists() {
+            return cur.to_path_buf();
+        }
+        match cur.parent() {
+            Some(parent) => cur = parent,
+            None => return std::path::PathBuf::from("/"),
+        }
+    }
+}
+
+/// Resolve a remote-supplied path inside the workspace root, rejecting `~`, `..`,
+/// and anything that canonicalizes outside the root (defeats symlink escapes).
+/// Relative paths are taken relative to the root. Returns an absolute path string.
+fn confine(ctx: &ServerCtx, path: &str) -> Result<String, String> {
+    if path.contains('~') {
+        return Err("remote paths can't use ~".into());
+    }
+    let root = workspace_root(ctx);
+    let candidate = std::path::Path::new(path);
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    };
+    if joined
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("remote paths can't contain ..".into());
+    }
+    let canon = nearest_existing(&joined)
+        .canonicalize()
+        .map_err(|e| format!("bad path: {e}"))?;
+    if !canon.starts_with(&root) {
+        return Err("path is outside the remote workspace".into());
+    }
+    Ok(joined.to_string_lossy().to_string())
 }
 
 /// Block until the desktop user approves (or denies / times out) an action.
@@ -318,30 +405,35 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
         "edit_image_openrouter" => {
             Ok(Value::String(crate::edit_image_openrouter(params(&args)?).await?))
         }
-        // --- filesystem / web (read-only, safe) ---
-        "fs_read" => Ok(Value::String(crate::fs_read(s("path"))?)),
-        "fs_list" => Ok(json!(crate::fs_list(s("path"))?)),
+        // --- filesystem / web (read-only, confined to the workspace root) ---
+        "fs_read" => Ok(Value::String(crate::fs_read(confine(ctx, &s("path"))?)?)),
+        "fs_list" => Ok(json!(crate::fs_list(confine(ctx, &s("path"))?)?)),
         "fs_search" => {
             let kind = args.get("kind").and_then(|v| v.as_str()).map(|s| s.to_string());
-            Ok(json!(crate::fs_search(s("root"), s("query"), kind)?))
+            Ok(json!(crate::fs_search(confine(ctx, &s("root"))?, s("query"), kind)?))
         }
         "web_fetch" => Ok(Value::String(crate::web_fetch(s("url")).await?)),
-        // --- dangerous → approve on the Mac ---
+        // --- dangerous → confined AND approved on the Mac ---
         "fs_write" => {
-            require_approval(ctx, "Write a file?", &s("path")).await?;
-            Ok(Value::String(crate::fs_write(s("path"), s("content"))?))
+            let path = confine(ctx, &s("path"))?;
+            require_approval(ctx, "Write a file?", &path).await?;
+            Ok(Value::String(crate::fs_write(path, s("content"))?))
         }
         "fs_edit" => {
-            require_approval(ctx, "Edit a file?", &s("path")).await?;
-            crate::fs_edit(s("path"), s("old"), s("new"))
+            let path = confine(ctx, &s("path"))?;
+            require_approval(ctx, "Edit a file?", &path).await?;
+            crate::fs_edit(path, s("old"), s("new"))
         }
         "fs_move" => {
-            require_approval(ctx, "Move a file?", &format!("{}\n→ {}", s("from"), s("to"))).await?;
-            Ok(Value::String(crate::fs_move(s("from"), s("to"))?))
+            let from = confine(ctx, &s("from"))?;
+            let to = confine(ctx, &s("to"))?;
+            require_approval(ctx, "Move a file?", &format!("{from}\n→ {to}")).await?;
+            Ok(Value::String(crate::fs_move(from, to)?))
         }
         "fs_delete" => {
-            require_approval(ctx, "Delete this path?", &s("path")).await?;
-            Ok(Value::String(crate::fs_delete(s("path"))?))
+            let path = confine(ctx, &s("path"))?;
+            require_approval(ctx, "Delete this path?", &path).await?;
+            Ok(Value::String(crate::fs_delete(path)?))
         }
         "run_command" => {
             require_approval(ctx, "Run this command?", &s("command")).await?;
@@ -363,7 +455,15 @@ async fn ws_upgrade(
     Query(q): Query<WsQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if !ctx.token.is_empty() && q.token.as_deref() != Some(ctx.token.as_str()) {
+    // Fail closed: an empty configured token never authorizes, and the supplied
+    // token is compared in constant time.
+    let ok = !ctx.token.is_empty()
+        && q
+            .token
+            .as_deref()
+            .map(|t| constant_time_eq(t.as_bytes(), ctx.token.as_bytes()))
+            .unwrap_or(false);
+    if !ok {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     ws.on_upgrade(move |socket| handle_ws(socket, ctx))
@@ -446,7 +546,9 @@ async fn dispatch_ws(
             Ok(Value::Null)
         }
         "download_file" => {
-            crate::download_file_core(s("url"), s("dest"), sink).await?;
+            let dest = confine(ctx, &s("dest"))?;
+            require_approval(ctx, "Download a file?", &format!("{}\n→ {dest}", s("url"))).await?;
+            crate::download_file_core(s("url"), dest, sink).await?;
             Ok(Value::Null)
         }
         "run_command_stream" => {

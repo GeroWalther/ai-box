@@ -30,4 +30,6 @@ tokio = { version = "1", features = ["time", "process", "macros", "io-util", "ne
 axum = { version = "0.7", features = ["ws"] }
 uuid = { version = "1", features = ["v4"] }
 local-ip-address = "0.6"
+# URL parsing for SSRF host validation on web_fetch / download.
+url = "2"
 
