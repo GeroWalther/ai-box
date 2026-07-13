@@ -1,0 +1,55 @@
+name: release
+
+# Build, sign, and notarize a macOS .dmg on every version tag (e.g. `git tag v0.2.0
+# && git push --tags`). Requires the Apple secrets below to be set in the repo
+# (Settings → Secrets and variables → Actions). Without them the build still runs
+# but the artifact is unsigned. See docs/SIGNING.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - run: npm ci
+
+      - name: Build, sign & notarize
+        uses: tauri-apps/tauri-action@v0
+        env:
+          # Developer ID Application cert (base64 of the exported .p12) + its password.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # e.g. "Developer ID Application: Your Name (TEAMID)"
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Notarization: Apple ID, an app-specific password, and the Team ID.
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Novel Studio ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false

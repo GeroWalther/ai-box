@@ -50,8 +50,12 @@ Everything else (signing, sync, packaging) makes it *shippable*; these three mak
 
 ## Phase 1 — Remaining ship-blockers (before any public build)
 
-1. ⬜ **Finish signing + notarization** — needs your Apple Developer account; steps
-   in `docs/SIGNING.md`. **Hard gate**: nobody can install an unsigned `.dmg`.
+1. 🔨 **Finish signing + notarization** — fully **automated**: `.github/workflows/
+   release.yml` (build+sign+notarize on a version tag) and `scripts/build-signed.sh`
+   + `scripts/verify-signing.sh` for local builds. **Only remaining action is
+   yours**: an Apple Developer account + Developer ID cert, then set the env
+   vars/secrets in `docs/SIGNING.md`. **Hard gate**: nobody can install an unsigned
+   `.dmg` until this runs with your cert.
 2. ✅ **API-key security**
    - ✅ **Keys never leave the Mac.** `get_remote_settings` now strips secrets — a
      configured key becomes a non-empty sentinel (so the phone's "key configured?"
