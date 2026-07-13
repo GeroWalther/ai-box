@@ -1452,28 +1452,80 @@ fn cancel_generation(registry: tauri::State<'_, server::CancelRegistry>, request
 
 const KEYCHAIN_SERVICE: &str = "com.novelstudio.app";
 
-/// Store (or, with an empty value, delete) a secret in the OS keychain.
+// In DEBUG (dev) builds the binary is unsigned and its identity changes on every
+// rebuild, so macOS re-prompts for the login-keychain password on every key read.
+// That's intolerable during development, so dev builds keep secrets in a 0600 file
+// under the app dir instead. RELEASE (signed) builds always use the OS keychain,
+// where access is silent and stable.
+#[cfg(debug_assertions)]
+fn dev_secret_file() -> String {
+    expand_path("~/.ai-studio/dev-secrets.json")
+}
+
+#[cfg(debug_assertions)]
+fn dev_secrets_read() -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read_to_string(dev_secret_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Store (or, with an empty value, delete) a secret.
 #[tauri::command]
 fn secret_set(name: String, value: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &name).map_err(|e| e.to_string())?;
-    if value.is_empty() {
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.to_string()),
+    #[cfg(debug_assertions)]
+    {
+        let mut map = dev_secrets_read();
+        if value.is_empty() {
+            map.remove(&name);
+        } else {
+            map.insert(name, serde_json::Value::String(value));
         }
-    } else {
-        entry.set_password(&value).map_err(|e| e.to_string())
+        let path = dev_secret_file();
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&path, serde_json::to_string(&map).unwrap_or_default())
+            .map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+        return Ok(());
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &name).map_err(|e| e.to_string())?;
+        if value.is_empty() {
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(e) => Err(e.to_string()),
+            }
+        } else {
+            entry.set_password(&value).map_err(|e| e.to_string())
+        }
     }
 }
 
-/// Read a secret from the OS keychain (null if not set).
+/// Read a secret (null if not set).
 #[tauri::command]
 fn secret_get(name: String) -> Result<Option<String>, String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &name).map_err(|e| e.to_string())?;
-    match entry.get_password() {
-        Ok(v) => Ok(Some(v)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e.to_string()),
+    #[cfg(debug_assertions)]
+    {
+        return Ok(dev_secrets_read()
+            .get(&name)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()));
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &name).map_err(|e| e.to_string())?;
+        match entry.get_password() {
+            Ok(v) => Ok(Some(v)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
     }
 }
 

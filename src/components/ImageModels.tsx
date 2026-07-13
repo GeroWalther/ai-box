@@ -141,6 +141,13 @@ export default function ImageModels({ onClose, onChange, onChanged }: Props) {
             </div>
           )}
 
+          {/* Starting the engine (Use / after a download) */}
+          {busyId === "__start__" && (
+            <p className="hint">
+              Starting ComfyUI… first launch loads PyTorch — up to a minute.
+            </p>
+          )}
+
           {/* Download progress (shared) */}
           {(busy || error) && busyId !== "__start__" && (
             <div className="setup-progress">

@@ -166,6 +166,7 @@ export default function App() {
   const deletedRef = useRef(deletedDocs); // latest tombstones for async saves
   const docsFetchedRef = useRef(false); // shared docs load kicked off
   const docsLoadedRef = useRef(false); // shared docs loaded — safe to write back
+  const didHydrateRef = useRef(false); // one-time init guard (StrictMode double-invoke)
   useEffect(() => {
     docsRef.current = documents;
   }, [documents]);
@@ -194,6 +195,10 @@ export default function App() {
   });
 
   useEffect(() => {
+    // React StrictMode invokes effects twice in dev; hydrating (and thus reading
+    // secrets) once is enough — the guard also avoids duplicate keychain reads.
+    if (didHydrateRef.current) return;
+    didHydrateRef.current = true;
     const loaded = loadSettings();
     setSettings(loaded);
     if (!loaded.onboarded) setShowOnboarding(true);
