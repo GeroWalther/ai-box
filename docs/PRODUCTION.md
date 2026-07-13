@@ -52,14 +52,17 @@ Everything else (signing, sync, packaging) makes it *shippable*; these three mak
 
 1. ⬜ **Finish signing + notarization** — needs your Apple Developer account; steps
    in `docs/SIGNING.md`. **Hard gate**: nobody can install an unsigned `.dmg`.
-2. ⬜ **API-key security**
-   - Stop shipping raw keys to the phone. `get_remote_settings` returns the full
-     settings incl. `openrouterKey` (`server.rs`). Instead, **proxy all provider
-     calls through the Mac** so the key never leaves the desktop, OR strip keys from
-     the remote settings payload and have the phone call provider endpoints via the
-     Mac's authenticated RPC.
-   - Store keys in the **macOS Keychain** (tauri-plugin-stronghold or a keychain
-     plugin) instead of plaintext localStorage.
+2. 🔨 **API-key security**
+   - ✅ **Keys never leave the Mac.** `get_remote_settings` now strips secrets — a
+     configured key becomes a non-empty sentinel (so the phone's "key configured?"
+     UI still works) but never the real value; the pairing token is removed.
+     Provider calls (`chat_completion`, `generate_text`, `list_openrouter_models`,
+     OpenRouter image gen) run on the Mac, which injects its own key server-side, so
+     the key never traverses the cleartext LAN or lives in phone storage.
+     Unit-tested (strip/inject/pick-by-base-url).
+   - ⬜ **At rest**: store desktop keys in the **macOS Keychain**
+     (tauri-plugin-stronghold or a keychain plugin) instead of plaintext
+     localStorage. Larger refactor (settings load becomes async) — separate step.
 3. ✅ **Server-side cancel + streaming timeouts** — Stop now aborts the upstream
    request server-side (no more burning cloud credits). A client `requestId` flows
    into `generate_text`; a `CancelRegistry` flag is polled by the stream loop

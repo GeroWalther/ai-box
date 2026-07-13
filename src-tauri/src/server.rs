@@ -359,6 +359,80 @@ async fn require_approval(ctx: &ServerCtx, title: &str, body: &str) -> Result<()
     }
 }
 
+// ---- API-key confidentiality ---------------------------------------------
+
+/// Placeholder the phone sees in place of a real key: non-empty so the UI's
+/// "is a key configured?" checks pass, but never the actual secret. The server
+/// treats it as "empty" and injects the Mac's real key.
+const REMOTE_KEY_SENTINEL: &str = "__stored-on-mac__";
+
+fn is_placeholder_or_empty(k: &str) -> bool {
+    k.is_empty() || k == REMOTE_KEY_SENTINEL
+}
+
+/// Strip secrets from the settings blob before it's ever sent to a paired device.
+/// A configured key becomes a non-empty sentinel (so the phone knows one exists)
+/// but never the real value; the pairing token is removed outright. Provider calls
+/// run on the Mac, which injects the real key, so it never traverses the LAN or
+/// lives in the phone's storage.
+fn strip_secrets(mut v: Value) -> Value {
+    if let Some(o) = v.as_object_mut() {
+        for k in ["openrouterKey", "customKey"] {
+            let configured = o.get(k).and_then(|x| x.as_str()).map_or(false, |s| !s.is_empty());
+            o.insert(
+                k.into(),
+                Value::String(if configured { REMOTE_KEY_SENTINEL.into() } else { String::new() }),
+            );
+        }
+        o.remove("remoteToken");
+    }
+    v
+}
+
+/// The Mac's own API key appropriate for `base_url` (OpenRouter vs. a custom
+/// OpenAI-compatible endpoint), read from the desktop-pushed `settings` JSON.
+fn mac_key_for(settings: &Value, base_url: &str) -> String {
+    let pick = |k: &str| settings.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if base_url.contains("openrouter.ai") {
+        pick("openrouterKey")
+    } else {
+        let custom = pick("customKey");
+        if custom.is_empty() {
+            pick("openrouterKey")
+        } else {
+            custom
+        }
+    }
+}
+
+/// Fill in `params.apiKey` with `key` when the incoming key is empty.
+fn inject_key_value(mut args: Value, key: &str) -> Value {
+    if !key.is_empty() {
+        if let Some(params) = args.get_mut("params").and_then(|p| p.as_object_mut()) {
+            let needs = params
+                .get("apiKey")
+                .and_then(|v| v.as_str())
+                .map_or(true, is_placeholder_or_empty);
+            if needs {
+                params.insert("apiKey".into(), Value::String(key.to_string()));
+            }
+        }
+    }
+    args
+}
+
+/// Inject the Mac's key chosen by `params.baseUrl` (for chat/text calls that carry
+/// a base URL). The phone never needs — or receives — the key.
+fn inject_key(ctx: &ServerCtx, args: Value) -> Value {
+    let base = args
+        .get("params")
+        .and_then(|p| p.get("baseUrl"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let key = mac_key_for(&ctx.settings.value(), base);
+    inject_key_value(args, &key)
+}
+
 // ---- /rpc (one-shot commands) --------------------------------------------
 
 async fn rpc(
@@ -390,17 +464,22 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             .to_string()
     };
     match command {
-        // --- text / models (safe) ---
-        "chat_completion" => crate::chat_completion(params(&args)?).await,
+        // --- text / models (safe) — the Mac injects its own key ---
+        "chat_completion" => crate::chat_completion(params(&inject_key(ctx, args.clone()))?).await,
         "list_openrouter_models" => {
-            let key = args.get("apiKey").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let mut key = args.get("apiKey").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if is_placeholder_or_empty(&key) {
+                key = mac_key_for(&ctx.settings.value(), "https://openrouter.ai");
+            }
+            let key = if key.is_empty() { None } else { Some(key) };
             serde_json::to_value(crate::list_openrouter_models(key).await?).map_err(|e| e.to_string())
         }
         "list_ollama_models" => Ok(json!(crate::list_ollama_models(s("baseUrl")).await?)),
         "list_comfy_checkpoints" => Ok(json!(crate::list_comfy_checkpoints(s("baseUrl")).await?)),
         "system_info" => Ok(crate::system_info()),
-        // The desktop's settings, so a paired phone adopts the same key/model/etc.
-        "get_remote_settings" => Ok(ctx.settings.value()),
+        // The desktop's settings, so a paired phone adopts the same model/options —
+        // but with secrets (API key, token) stripped: the key never leaves the Mac.
+        "get_remote_settings" => Ok(strip_secrets(ctx.settings.value())),
         // Shared key/value store (chat history), same on desktop and phone.
         "remote_store_get" => {
             Ok(crate::remote_store_get(s("key")).map(Value::String).unwrap_or(Value::Null))
@@ -427,10 +506,12 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             Ok(Value::String(crate::generate_img2img_comfy(params(&args)?).await?))
         }
         "generate_image_openrouter" => {
-            Ok(Value::String(crate::generate_image_openrouter(params(&args)?).await?))
+            let a = inject_key_value(args.clone(), &mac_key_for(&ctx.settings.value(), "https://openrouter.ai"));
+            Ok(Value::String(crate::generate_image_openrouter(params(&a)?).await?))
         }
         "edit_image_openrouter" => {
-            Ok(Value::String(crate::edit_image_openrouter(params(&args)?).await?))
+            let a = inject_key_value(args.clone(), &mac_key_for(&ctx.settings.value(), "https://openrouter.ai"));
+            Ok(Value::String(crate::edit_image_openrouter(params(&a)?).await?))
         }
         // --- filesystem / web (read-only, confined to the workspace root) ---
         "fs_read" => Ok(Value::String(crate::fs_read(confine(ctx, &s("path"))?)?)),
@@ -599,7 +680,7 @@ async fn dispatch_ws(
     };
     match command {
         "generate_text" => {
-            crate::generate_text_core(params(&args)?, sink, cancel).await?;
+            crate::generate_text_core(params(&inject_key(ctx, args.clone()))?, sink, cancel).await?;
             Ok(Value::Null)
         }
         "pull_ollama_model" => {
@@ -682,5 +763,56 @@ fn mime_for(path: &std::path::Path) -> &'static str {
         Some("woff2") => "font/woff2",
         Some("woff") => "font/woff",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_secrets_masks_keys_and_removes_token() {
+        let input = json!({
+            "openrouterKey": "sk-real-secret",
+            "customKey": "",
+            "remoteToken": "tok-123",
+            "model": "anthropic/claude-fable-5",
+        });
+        let out = strip_secrets(input);
+        // A configured key becomes the sentinel, never the real value.
+        assert_eq!(out["openrouterKey"], REMOTE_KEY_SENTINEL);
+        assert!(!out.to_string().contains("sk-real-secret"));
+        // An unset key stays empty; the token is removed entirely.
+        assert_eq!(out["customKey"], "");
+        assert!(out.get("remoteToken").is_none());
+        // Non-secret settings survive.
+        assert_eq!(out["model"], "anthropic/claude-fable-5");
+    }
+
+    #[test]
+    fn mac_key_for_picks_by_base_url() {
+        let s = json!({ "openrouterKey": "sk-or", "customKey": "sk-cust" });
+        assert_eq!(mac_key_for(&s, "https://openrouter.ai/api/v1"), "sk-or");
+        assert_eq!(mac_key_for(&s, "http://my-proxy.local/v1"), "sk-cust");
+        // With no custom key, a custom endpoint falls back to the OpenRouter key.
+        let s2 = json!({ "openrouterKey": "sk-or", "customKey": "" });
+        assert_eq!(mac_key_for(&s2, "http://my-proxy.local/v1"), "sk-or");
+    }
+
+    #[test]
+    fn inject_key_value_fills_placeholder_and_empty_only() {
+        let key = "sk-injected";
+        // Empty apiKey → filled.
+        let a = inject_key_value(json!({ "params": { "apiKey": "" } }), key);
+        assert_eq!(a["params"]["apiKey"], "sk-injected");
+        // Sentinel apiKey (what the phone holds) → filled.
+        let b = inject_key_value(json!({ "params": { "apiKey": REMOTE_KEY_SENTINEL } }), key);
+        assert_eq!(b["params"]["apiKey"], "sk-injected");
+        // A real key the caller set → left untouched.
+        let c = inject_key_value(json!({ "params": { "apiKey": "sk-caller" } }), key);
+        assert_eq!(c["params"]["apiKey"], "sk-caller");
+        // No key to inject → unchanged.
+        let d = inject_key_value(json!({ "params": { "apiKey": "" } }), "");
+        assert_eq!(d["params"]["apiKey"], "");
     }
 }
