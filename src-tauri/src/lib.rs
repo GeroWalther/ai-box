@@ -1333,6 +1333,38 @@ fn cancel_generation(registry: tauri::State<'_, server::CancelRegistry>, request
     registry.cancel(&request_id);
 }
 
+// ---- Secret storage (macOS Keychain) -------------------------------------
+// API keys live in the OS keychain at rest instead of plaintext localStorage.
+// These are desktop-only Tauri commands (not exposed over the companion server),
+// so a paired phone can never read the Mac's keychain.
+
+const KEYCHAIN_SERVICE: &str = "com.novelstudio.app";
+
+/// Store (or, with an empty value, delete) a secret in the OS keychain.
+#[tauri::command]
+fn secret_set(name: String, value: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &name).map_err(|e| e.to_string())?;
+    if value.is_empty() {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    } else {
+        entry.set_password(&value).map_err(|e| e.to_string())
+    }
+}
+
+/// Read a secret from the OS keychain (null if not set).
+#[tauri::command]
+fn secret_get(name: String) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &name).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(v) => Ok(Some(v)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 // ---- Shared key/value store (chat history etc.) --------------------------
 // A small JSON file on the Mac, reachable from BOTH the desktop (Tauri IPC) and
 // a paired phone (through the server), so history is the same on every device.
@@ -1618,6 +1650,8 @@ pub fn run() {
             resolve_remote_approval,
             set_remote_settings,
             cancel_generation,
+            secret_set,
+            secret_get,
             remote_store_get,
             remote_store_set,
             store_merge_list,

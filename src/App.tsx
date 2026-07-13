@@ -14,6 +14,8 @@ import {
 import {
   DEFAULT_SETTINGS,
   loadSettings,
+  loadSecrets,
+  saveSecrets,
   resolveTextProvider,
   saveSettings,
   type Settings,
@@ -196,8 +198,21 @@ export default function App() {
     setSettings(loaded);
     if (!loaded.onboarded) setShowOnboarding(true);
     if (isTauri()) {
-      // Desktop: publish our settings so a paired phone can adopt them.
-      pushRemoteSettings(loaded);
+      // Desktop: hydrate API keys from the OS keychain (migrating any legacy key
+      // still in localStorage), scrub the plaintext copy, then publish settings so
+      // a paired phone can adopt them (and the Mac can inject the key server-side).
+      (async () => {
+        const secrets = await loadSecrets();
+        const migrated: Partial<Settings> = {};
+        for (const k of ["openrouterKey", "customKey"] as const) {
+          if (!secrets[k] && loaded[k]) migrated[k] = loaded[k]; // legacy localStorage → keychain
+        }
+        const hydrated = { ...loaded, ...secrets, ...migrated };
+        if (Object.keys(migrated).length) await saveSecrets(hydrated);
+        saveSettings(hydrated); // rewrites localStorage without the keys
+        setSettings(hydrated);
+        pushRemoteSettings(hydrated);
+      })();
     } else {
       // Phone: adopt the desktop's settings (API key, model, options) instead of
       // this device's empty defaults, so it "just works" with what's set up on the Mac.
@@ -332,6 +347,8 @@ export default function App() {
       const next = { ...prev, ...patch };
       saveSettings(next);
       pushRemoteSettings(next);
+      // Persist API keys to the keychain only when they actually change.
+      if ("openrouterKey" in patch || "customKey" in patch) saveSecrets(next);
       return next;
     });
 

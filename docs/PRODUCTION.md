@@ -52,7 +52,7 @@ Everything else (signing, sync, packaging) makes it *shippable*; these three mak
 
 1. ⬜ **Finish signing + notarization** — needs your Apple Developer account; steps
    in `docs/SIGNING.md`. **Hard gate**: nobody can install an unsigned `.dmg`.
-2. 🔨 **API-key security**
+2. ✅ **API-key security**
    - ✅ **Keys never leave the Mac.** `get_remote_settings` now strips secrets — a
      configured key becomes a non-empty sentinel (so the phone's "key configured?"
      UI still works) but never the real value; the pairing token is removed.
@@ -60,9 +60,15 @@ Everything else (signing, sync, packaging) makes it *shippable*; these three mak
      OpenRouter image gen) run on the Mac, which injects its own key server-side, so
      the key never traverses the cleartext LAN or lives in phone storage.
      Unit-tested (strip/inject/pick-by-base-url).
-   - ⬜ **At rest**: store desktop keys in the **macOS Keychain**
-     (tauri-plugin-stronghold or a keychain plugin) instead of plaintext
-     localStorage. Larger refactor (settings load becomes async) — separate step.
+   - ✅ **At rest**: desktop API keys now live in the **macOS Keychain**
+     (`keyring` crate; `secret_get`/`secret_set` commands), never plaintext
+     localStorage. On startup the app hydrates keys from the keychain, migrating any
+     legacy key still in localStorage and scrubbing the plaintext copy; keys are
+     re-persisted to the keychain only when they change. Desktop-only commands (not
+     exposed over the companion server), so a phone can't read the Mac's keychain.
+     Round-trip verified on-device. NOTE: unsigned dev builds may show a keychain
+     access prompt; a Developer ID-signed build (Phase 1 #1) makes access stable and
+     silent across launches.
 3. ✅ **Server-side cancel + streaming timeouts** — Stop now aborts the upstream
    request server-side (no more burning cloud credits). A client `requestId` flows
    into `generate_text`; a `CancelRegistry` flag is polled by the stream loop

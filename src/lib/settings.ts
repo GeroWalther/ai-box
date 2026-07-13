@@ -1,4 +1,5 @@
 // App settings: shape, defaults, persistence, and provider resolution.
+import { invokeCmd, isTauri } from "./transport";
 
 export type Provider = "openrouter" | "ollama" | "custom";
 
@@ -119,6 +120,10 @@ export const DEFAULT_SETTINGS: Settings = {
 
 const STORAGE_KEY = "novel-studio.settings";
 
+// API keys are secrets — kept in the OS keychain at rest (desktop) or injected by
+// the Mac (phone), never written to localStorage.
+const SECRET_FIELDS = ["openrouterKey", "customKey"] as const;
+
 export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -131,7 +136,37 @@ export function loadSettings(): Settings {
 }
 
 export function saveSettings(s: Settings): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+  // Never persist API keys to localStorage — strip them from the on-disk blob.
+  const redacted = { ...s };
+  for (const k of SECRET_FIELDS) redacted[k] = "";
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(redacted));
+}
+
+/** Load API keys from the OS keychain (desktop only; no-op on the phone). */
+export async function loadSecrets(): Promise<Partial<Settings>> {
+  if (!isTauri()) return {};
+  const out: Partial<Settings> = {};
+  for (const k of SECRET_FIELDS) {
+    try {
+      const v = await invokeCmd<string | null>("secret_get", { name: k });
+      if (v) out[k] = v;
+    } catch {
+      /* ignore — keychain unavailable */
+    }
+  }
+  return out;
+}
+
+/** Persist API keys to the OS keychain (desktop only; no-op on the phone). */
+export async function saveSecrets(s: Settings): Promise<void> {
+  if (!isTauri()) return;
+  for (const k of SECRET_FIELDS) {
+    try {
+      await invokeCmd("secret_set", { name: k, value: s[k] ?? "" });
+    } catch {
+      /* ignore — keychain unavailable */
+    }
+  }
 }
 
 /** Resolve the active text provider into a concrete endpoint. */
