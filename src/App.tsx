@@ -6,6 +6,7 @@ import { generateText, listOllamaModels } from "./lib/api";
 import {
   buildContinuationMessages,
   buildRewriteMessages,
+  buildImagePromptMessages,
   EMPTY_BIBLE,
   LANGUAGES,
   type StoryBibleData,
@@ -521,13 +522,39 @@ export default function App() {
     setStatus("");
   }
 
-  // Write → Images: send the selected scene over as an image prompt.
-  function handleIllustrate() {
+  // Write → Images: compose a scene-aware image prompt from the selected passage
+  // (or recent text) plus the Story Bible, so illustrations match the prose and
+  // recurring characters stay visually consistent. Falls back to raw prose if no
+  // model is configured.
+  async function handleIllustrate() {
     if (!editor) return;
     const { from, to } = editor.state.selection;
-    if (to <= from) return;
-    setImagePrefill(editor.state.doc.textBetween(from, to, " ").slice(0, 800));
+    const passage =
+      to > from ? editor.state.doc.textBetween(from, to, " ") : editor.getText().slice(-1200);
+    if (!passage.trim()) {
+      setStatus("Write or select a scene to illustrate first.");
+      return;
+    }
     setView("images");
+    if (!canGenerate) {
+      setImagePrefill(passage.slice(0, 800));
+      return;
+    }
+    setImagePrefill(null);
+    try {
+      const msg = await chatCompletion({
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        model: provider.model,
+        messages: buildImagePromptMessages(passage, activeBible),
+        tools: [],
+        temperature: 0.5,
+      });
+      const composed = (msg.content || "").trim();
+      setImagePrefill(composed || passage.slice(0, 800));
+    } catch {
+      setImagePrefill(passage.slice(0, 800));
+    }
   }
 
   // Chat agent → Write: append generated prose to the active manuscript.

@@ -520,6 +520,35 @@ export function buildRewriteMessages(
   ];
 }
 
+/**
+ * Turn a scene of prose into a single text-to-image prompt, carrying character
+ * appearance + world from the Story Bible so recurring characters stay visually
+ * consistent across illustrations. Output is meant to be the raw image prompt.
+ */
+export function buildImagePromptMessages(passage: string, bible?: StoryBibleData): ChatMsg[] {
+  const chars = (bible?.characters || [])
+    .filter((c) => c.name.trim())
+    .map((c) => `${c.name.trim()}${c.traits.trim() ? `: ${c.traits.trim()}` : ""}`);
+  const notes = [
+    chars.length ? `Character appearance notes: ${chars.join("; ")}` : "",
+    bible?.world?.trim() ? `World/setting: ${bible.world.trim()}` : "",
+  ].filter(Boolean);
+
+  const system =
+    "You turn a scene of prose into ONE image-generation prompt for a text-to-image model. " +
+    "Output ONLY the prompt: a single concise line of comma-separated visual descriptors — " +
+    "the subject(s) and their appearance, the setting, time of day, lighting, mood, and a " +
+    "fitting art style. Use the character/world notes so recurring characters look consistent. " +
+    "No preamble, no quotes, no explanation.";
+
+  const user = [...notes, "", "Scene:", passage.slice(0, 1500)].filter(Boolean).join("\n");
+
+  return [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ];
+}
+
 // A tiny, editorial "Featured" pin list with a "best for" note. Kept short on
 // purpose — these are the few models worth spotlighting and rarely change. The
 // full catalog is live from OpenRouter, so everything else stays current on its
