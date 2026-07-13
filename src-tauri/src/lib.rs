@@ -1368,7 +1368,129 @@ fn remote_store_set(key: String, value: String) -> Result<(), String> {
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
     map.insert(key, serde_json::Value::String(value));
-    std::fs::write(&path, serde_json::Value::Object(map).to_string()).map_err(|e| e.to_string())
+    atomic_write(&path, &serde_json::Value::Object(map).to_string()).map_err(|e| e.to_string())
+}
+
+// ---- Conflict-free list sync ---------------------------------------------
+// Documents and chat sessions are lists of items keyed by `id` with an `updatedAt`
+// timestamp. Devices used to overwrite the whole list, so concurrent edits on the
+// desktop and phone silently clobbered each other. `store_merge_list` instead
+// merges item-by-item: last-writer-wins by `updatedAt`, with tombstones (a
+// `deleted: {id: ts}` map) so a delete on one device isn't resurrected by the
+// other. Both saving and syncing go through this one merge, so no committed edit
+// is ever lost in either direction.
+
+fn item_updated_at(v: &serde_json::Value) -> i64 {
+    v.get("updatedAt").and_then(|x| x.as_i64()).unwrap_or(0)
+}
+
+/// Parse a stored value (a JSON string) into (items-by-id, deleted-by-id). Accepts
+/// the new `{items, deleted}` shape and a legacy bare `[...]` array.
+fn parse_sync_list(
+    raw: Option<&str>,
+) -> (
+    serde_json::Map<String, serde_json::Value>,
+    serde_json::Map<String, serde_json::Value>,
+) {
+    let mut items = serde_json::Map::new();
+    let mut deleted = serde_json::Map::new();
+    let v: serde_json::Value = raw
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let take_items = |arr: &Vec<serde_json::Value>, into: &mut serde_json::Map<String, serde_json::Value>| {
+        for it in arr {
+            if let Some(id) = it.get("id").and_then(|x| x.as_str()) {
+                into.insert(id.to_string(), it.clone());
+            }
+        }
+    };
+    match v {
+        serde_json::Value::Array(arr) => take_items(&arr, &mut items),
+        serde_json::Value::Object(o) => {
+            if let Some(serde_json::Value::Array(arr)) = o.get("items") {
+                take_items(arr, &mut items);
+            }
+            if let Some(serde_json::Value::Object(d)) = o.get("deleted") {
+                deleted = d.clone();
+            }
+        }
+        _ => {}
+    }
+    (items, deleted)
+}
+
+/// Merge `incoming` into `base` (item LWW by updatedAt + tombstone union) and
+/// return the merged list serialized as `{items:[…], deleted:{…}}`, items sorted
+/// most-recently-updated first.
+fn merge_sync_lists(
+    base: (serde_json::Map<String, serde_json::Value>, serde_json::Map<String, serde_json::Value>),
+    incoming: (serde_json::Map<String, serde_json::Value>, serde_json::Map<String, serde_json::Value>),
+) -> String {
+    let (mut items, mut deleted) = base;
+    let (in_items, in_deleted) = incoming;
+
+    for (id, it) in in_items {
+        let take = match items.get(&id) {
+            Some(existing) => item_updated_at(&it) >= item_updated_at(existing),
+            None => true,
+        };
+        if take {
+            items.insert(id, it);
+        }
+    }
+    for (id, ts) in in_deleted {
+        let t = ts.as_i64().unwrap_or(0);
+        let cur = deleted.get(&id).and_then(|x| x.as_i64()).unwrap_or(0);
+        if t >= cur {
+            deleted.insert(id, serde_json::Value::from(t));
+        }
+    }
+    // Apply tombstones: drop an item deleted at or after its last edit. (An edit
+    // newer than the delete wins — the item survives.)
+    let ids: Vec<String> = items.keys().cloned().collect();
+    for id in ids {
+        if let Some(dts) = deleted.get(&id).and_then(|x| x.as_i64()) {
+            if dts >= item_updated_at(&items[&id]) {
+                items.remove(&id);
+            }
+        }
+    }
+
+    let mut arr: Vec<serde_json::Value> = items.into_iter().map(|(_, v)| v).collect();
+    arr.sort_by(|a, b| item_updated_at(b).cmp(&item_updated_at(a)));
+    serde_json::json!({ "items": arr, "deleted": serde_json::Value::Object(deleted) }).to_string()
+}
+
+/// Merge a device's list into the shared store and return the merged union.
+/// `incoming` is a JSON string `{items:[…], deleted:{…}}`.
+#[tauri::command]
+fn store_merge_list(key: String, incoming: String) -> Result<String, String> {
+    let _g = remote_store_lock().lock().map_err(|_| "store lock poisoned".to_string())?;
+    let path = remote_store_path();
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut map = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+
+    let base = parse_sync_list(map.get(&key).and_then(|v| v.as_str()));
+    let incoming_list = parse_sync_list(Some(&incoming));
+    let merged = merge_sync_lists(base, incoming_list);
+
+    map.insert(key, serde_json::Value::String(merged.clone()));
+    atomic_write(&path, &serde_json::Value::Object(map).to_string()).map_err(|e| e.to_string())?;
+    Ok(merged)
+}
+
+/// Write a file atomically (temp file + rename) so a crash or concurrent write
+/// can't leave the shared store half-written / corrupt.
+fn atomic_write(path: &str, contents: &str) -> std::io::Result<()> {
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path)
 }
 
 // ---- Shared image gallery ------------------------------------------------
@@ -1498,6 +1620,7 @@ pub fn run() {
             cancel_generation,
             remote_store_get,
             remote_store_set,
+            store_merge_list,
             image_put,
             image_list,
             image_get,
@@ -1588,6 +1711,58 @@ mod tests {
         let n = tokens.load(Ordering::Relaxed);
         assert!(n > 0 && n < 30, "cancel should stop early (got {n} tokens of 100)");
         assert!(elapsed < std::time::Duration::from_secs(2), "should return promptly (took {elapsed:?})");
+    }
+
+    fn merge(base: &str, incoming: &str) -> serde_json::Value {
+        let m = merge_sync_lists(parse_sync_list(Some(base)), parse_sync_list(Some(incoming)));
+        serde_json::from_str(&m).unwrap()
+    }
+
+    #[test]
+    fn merge_keeps_newer_edit_per_item() {
+        // Desktop edited doc A (t=200); phone still has old A (t=100) but edited B.
+        // Neither edit should be lost.
+        let desktop = r#"{"items":[{"id":"A","html":"A-new","updatedAt":200},{"id":"B","html":"B-old","updatedAt":50}],"deleted":{}}"#;
+        let phone = r#"{"items":[{"id":"A","html":"A-old","updatedAt":100},{"id":"B","html":"B-new","updatedAt":300}],"deleted":{}}"#;
+        let out = merge(desktop, phone);
+        let items = out["items"].as_array().unwrap();
+        let a = items.iter().find(|i| i["id"] == "A").unwrap();
+        let b = items.iter().find(|i| i["id"] == "B").unwrap();
+        assert_eq!(a["html"], "A-new", "desktop's newer A wins");
+        assert_eq!(b["html"], "B-new", "phone's newer B wins");
+    }
+
+    #[test]
+    fn merge_adds_new_items_from_both() {
+        let a = r#"{"items":[{"id":"A","updatedAt":1}],"deleted":{}}"#;
+        let b = r#"{"items":[{"id":"C","updatedAt":1}],"deleted":{}}"#;
+        let out = merge(a, b);
+        let ids: Vec<&str> = out["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"A") && ids.contains(&"C"));
+    }
+
+    #[test]
+    fn merge_honours_tombstones_but_edit_after_delete_wins() {
+        // A deleted at 200 — stays deleted even though a stale copy (t=100) exists.
+        let store = r#"{"items":[{"id":"A","updatedAt":100},{"id":"B","updatedAt":100}],"deleted":{}}"#;
+        let del = r#"{"items":[],"deleted":{"A":200}}"#;
+        let out = merge(store, del);
+        let ids: Vec<&str> = out["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
+        assert!(!ids.contains(&"A"), "tombstoned A is removed");
+        assert!(ids.contains(&"B"));
+        // But a re-edit of A at t=300 (after the 200 delete) resurrects it.
+        let reedit = r#"{"items":[{"id":"A","updatedAt":300}],"deleted":{}}"#;
+        let out2 = merge(&out.to_string(), reedit);
+        let ids2: Vec<&str> = out2["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
+        assert!(ids2.contains(&"A"), "edit newer than the delete wins");
+    }
+
+    #[test]
+    fn merge_migrates_legacy_bare_array() {
+        let legacy = r#"[{"id":"A","html":"x","updatedAt":5}]"#;
+        let incoming = r#"{"items":[{"id":"A","html":"y","updatedAt":9}],"deleted":{}}"#;
+        let out = merge(legacy, incoming);
+        assert_eq!(out["items"][0]["html"], "y");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

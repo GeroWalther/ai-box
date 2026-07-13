@@ -70,10 +70,15 @@ Everything else (signing, sync, packaging) makes it *shippable*; these three mak
    WS cancel frame drive it from both transports. Wired into the Write flow
    (`App.tsx`) and Chat (`Chat.tsx`). Connect-timeout added to the streaming client.
    Verified by mock-SSE integration tests (cancel stops early; uncancelled completes).
-4. ⬜ **Sync data integrity** — desktop↔phone sync is last-writer-wins on the whole
-   array (`lib.rs` `remote_store_set`, `App.tsx`, `Chat.tsx`); concurrent edits
-   silently clobber a manuscript. Add per-item ids + `updatedAt`, merge on write,
-   or lock editing to one device at a time.
+4. ✅ **Sync data integrity** — was last-writer-wins on the whole array (a
+   concurrent desktop/phone edit silently clobbered a manuscript). Now a
+   conflict-free item-level merge: docs and chat sessions carry `id` + `updatedAt`;
+   `store_merge_list` (lib.rs) merges last-writer-wins per item with **tombstones**
+   (a `deleted:{id:ts}` map) so deletes aren't resurrected and an edit newer than a
+   delete wins. Both saving and syncing go through the one merge, so neither
+   direction loses data; the store is written atomically (temp+rename). Wired into
+   `App.tsx` (documents) and `Chat.tsx` (sessions). Verified: Rust merge tests
+   (concurrent edits preserved, tombstones, legacy migration) + TS parser tests.
 
 ---
 

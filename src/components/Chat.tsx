@@ -15,7 +15,8 @@ import {
 } from "../lib/agent";
 import { resolveTextProvider, type Settings } from "../lib/settings";
 import { isTauri, cancelStream } from "../lib/transport";
-import { remoteStoreGet, remoteStoreSet } from "../lib/remoteStore";
+import { remoteStoreMerge } from "../lib/remoteStore";
+import { parseSyncList } from "../lib/syncList";
 import { useOpenrouterModels } from "../lib/openrouterModels";
 import { useToast } from "../lib/toast";
 import ModelManager from "./ModelManager";
@@ -34,6 +35,8 @@ interface Session {
   id: string;
   title: string;
   messages: Msg[];
+  /** Last-edit timestamp (ms) used to merge concurrent desktop/phone edits. */
+  updatedAt?: number;
 }
 
 interface Props {
@@ -47,6 +50,7 @@ interface Props {
 }
 
 const SESSIONS_KEY = "ai-studio.sessions";
+const SESSIONS_DEL_KEY = "ai-studio.sessions.deleted";
 
 const AGENT_SYSTEM =
   "You are AI Studio, an agentic coworker running on the user's Mac (macOS, Apple Silicon). " +
@@ -74,7 +78,7 @@ function safeParse(s: string): any {
   }
 }
 function newSession(): Session {
-  return { id: crypto.randomUUID(), title: "New chat", messages: [] };
+  return { id: crypto.randomUUID(), title: "New chat", messages: [], updatedAt: Date.now() };
 }
 
 export default function Chat({ settings, onChange, onOpenSettings, onInsertManuscript, sidebarSlot, onCloseDrawer }: Props) {
@@ -106,11 +110,24 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeIdRef = useRef("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const [deletedSessions, setDeletedSessions] = useState<Record<string, number>>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(SESSIONS_DEL_KEY) || "null");
+      if (v && typeof v === "object") return v;
+    } catch {
+      /* ignore */
+    }
+    return {};
+  });
   const sessionsRef = useRef(sessions); // latest sessions for async saves
+  const deletedRef = useRef(deletedSessions); // latest tombstones for async saves
   const loadedRef = useRef(false); // shared history loaded — safe to write back
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+  useEffect(() => {
+    deletedRef.current = deletedSessions;
+  }, [deletedSessions]);
 
   function onAttach(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -153,63 +170,67 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load the shared chat history (same on desktop + phone) once on mount. If the
-  // shared store is empty, seed it from whatever this device already has locally.
+  // Adopt the merged union (from store_merge_list) into local session state.
+  function adoptSessions(raw: string) {
+    const { items, deleted } = parseSyncList<Session>(raw);
+    if (!items.length) return;
+    setDeletedSessions(deleted);
+    setSessions(items);
+    if (!items.find((s) => s.id === activeIdRef.current)) setActiveId(items[0].id);
+  }
+
+  // Push this device's chat history and adopt the merged union back. A conflict-free
+  // merge (last-writer-wins by updatedAt + tombstones) so concurrent desktop/phone
+  // chats don't clobber each other. Used for the initial load and manual Sync.
+  async function syncSessions() {
+    try {
+      const merged = await remoteStoreMerge(
+        SESSIONS_KEY,
+        JSON.stringify({ items: sessionsRef.current, deleted: deletedRef.current })
+      );
+      adoptSessions(merged);
+    } catch {
+      /* offline / no server — keep working locally */
+    }
+  }
+
+  // Load + merge the shared chat history once on mount.
   useEffect(() => {
     let cancelled = false;
-    remoteStoreGet(SESSIONS_KEY)
-      .then((raw) => {
-        if (cancelled) return;
-        if (raw) {
-          try {
-            const s = JSON.parse(raw);
-            if (Array.isArray(s) && s.length) setSessions(s);
-          } catch {
-            /* ignore corrupt payload */
-          }
-        } else {
-          remoteStoreSet(SESSIONS_KEY, JSON.stringify(sessionsRef.current)).catch(() => {});
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) loadedRef.current = true;
-      });
+    syncSessions().finally(() => {
+      if (!cancelled) loadedRef.current = true;
+    });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-pull shared chat history when the user taps Sync (in the nav rail).
+  // Re-sync shared chat history when the user taps Sync (in the nav rail).
   useEffect(() => {
     function onSync() {
-      remoteStoreGet(SESSIONS_KEY)
-        .then((raw) => {
-          if (!raw) return;
-          try {
-            const s = JSON.parse(raw);
-            if (Array.isArray(s) && s.length) setSessions(s);
-          } catch {
-            /* ignore */
-          }
-        })
-        .catch(() => {});
+      syncSessions();
     }
     window.addEventListener("ai-studio-sync", onSync);
     return () => window.removeEventListener("ai-studio-sync", onSync);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+    localStorage.setItem(SESSIONS_DEL_KEY, JSON.stringify(deletedSessions));
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-    // Mirror to the shared store, debounced so streaming doesn't hammer the file.
+    // Mirror to the shared store as a MERGE (not overwrite), debounced so streaming
+    // doesn't hammer the file.
     if (!loadedRef.current) return;
     const t = setTimeout(() => {
-      remoteStoreSet(SESSIONS_KEY, JSON.stringify(sessionsRef.current)).catch(() => {});
+      remoteStoreMerge(
+        SESSIONS_KEY,
+        JSON.stringify({ items: sessionsRef.current, deleted: deletedRef.current })
+      ).catch(() => {});
     }, 600);
     return () => clearTimeout(t);
-  }, [sessions, activeId]);
+  }, [sessions, activeId, deletedSessions]);
 
   // Update the ACTIVE session's messages (targets whatever is active now).
   function setMessages(updater: Msg[] | ((prev: Msg[]) => Msg[])) {
@@ -222,7 +243,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
           const firstUser = msgs.find((m: Msg) => m.role === "user");
           if (firstUser) title = firstUser.content.slice(0, 40);
         }
-        return { ...s, messages: msgs, title };
+        return { ...s, messages: msgs, title, updatedAt: Date.now() };
       })
     );
   }
@@ -247,6 +268,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     setActiveId(id);
   }
   function deleteChat(id: string) {
+    setDeletedSessions((prev) => ({ ...prev, [id]: Date.now() }));
     setSessions((prev) => {
       const next = prev.filter((s) => s.id !== id);
       return next.length ? next : [newSession()];

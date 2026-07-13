@@ -22,7 +22,8 @@ import { chatCompletion } from "./lib/agent";
 import { buildExtractionMessages, parseExtraction, type Extraction } from "./lib/extract";
 import { useOpenrouterModels } from "./lib/openrouterModels";
 import { isTauri, invokeCmd, cancelStream } from "./lib/transport";
-import { remoteStoreGet, remoteStoreSet } from "./lib/remoteStore";
+import { remoteStoreMerge } from "./lib/remoteStore";
+import { parseSyncList } from "./lib/syncList";
 import { useToast } from "./lib/toast";
 import PromptBar from "./components/PromptBar";
 import SettingsModal from "./components/SettingsModal";
@@ -40,13 +41,26 @@ import Onboarding from "./components/Onboarding";
 import "./App.css";
 
 const DOCS_KEY = "ai-studio.documents";
+const DOCS_DEL_KEY = "ai-studio.documents.deleted";
 const LEGACY_DOC_KEY = "novel-studio.document";
+
+function loadDeletedDocs(): Record<string, number> {
+  try {
+    const v = JSON.parse(localStorage.getItem(DOCS_DEL_KEY) || "null");
+    if (v && typeof v === "object") return v;
+  } catch {
+    /* ignore */
+  }
+  return {};
+}
 
 interface Doc {
   id: string;
   title: string;
   html: string;
   bible?: StoryBibleData;
+  /** Last-edit timestamp (ms) used to merge concurrent desktop/phone edits. */
+  updatedAt?: number;
 }
 
 function docTitle(text: string): string {
@@ -145,12 +159,17 @@ export default function App() {
   const stoppedRef = useRef(false);
   const requestIdRef = useRef(""); // id of the in-flight generation, for server-side cancel
   const activeDocIdRef = useRef("");
+  const [deletedDocs, setDeletedDocs] = useState<Record<string, number>>(loadDeletedDocs);
   const docsRef = useRef(documents); // latest docs for async saves
+  const deletedRef = useRef(deletedDocs); // latest tombstones for async saves
   const docsFetchedRef = useRef(false); // shared docs load kicked off
   const docsLoadedRef = useRef(false); // shared docs loaded — safe to write back
   useEffect(() => {
     docsRef.current = documents;
   }, [documents]);
+  useEffect(() => {
+    deletedRef.current = deletedDocs;
+  }, [deletedDocs]);
 
   const editor = useEditor({
     extensions: [
@@ -165,7 +184,9 @@ export default function App() {
       const html = editor.getHTML();
       const title = docTitle(editor.getText());
       setDocuments((prev) =>
-        prev.map((d) => (d.id === activeDocIdRef.current ? { ...d, html, title } : d))
+        prev.map((d) =>
+          d.id === activeDocIdRef.current ? { ...d, html, title, updatedAt: Date.now() } : d
+        )
       );
     },
   });
@@ -208,56 +229,68 @@ export default function App() {
   }, [activeDocId]);
   useEffect(() => {
     localStorage.setItem(DOCS_KEY, JSON.stringify(documents));
+    localStorage.setItem(DOCS_DEL_KEY, JSON.stringify(deletedDocs));
     // Mirror Write documents to the shared store on the Mac (debounced so typing
-    // doesn't hammer the file). The phone and desktop then share the same drafts.
+    // doesn't hammer the file). A conflict-free MERGE — not an overwrite — so a
+    // concurrent edit on the other device is never clobbered.
     if (!docsLoadedRef.current) return;
     const t = setTimeout(() => {
-      remoteStoreSet(DOCS_KEY, JSON.stringify(docsRef.current)).catch(() => {});
+      remoteStoreMerge(
+        DOCS_KEY,
+        JSON.stringify({ items: docsRef.current, deleted: deletedRef.current })
+      ).catch(() => {});
     }, 700);
     return () => clearTimeout(t);
-  }, [documents]);
+  }, [documents, deletedDocs]);
 
-  // Replace the local document set with the shared one and load it into the editor.
-  function applyRemoteDocs(raw: string | null) {
-    if (!raw || !editor) return;
+  // Adopt the merged union (from store_merge_list) into local state + the editor.
+  function adoptDocs(raw: string) {
+    if (!editor) return;
+    const { items, deleted } = parseSyncList<Doc>(raw);
+    if (!items.length) return;
+    setDeletedDocs(deleted);
+    setDocuments(items);
+    const active = items.find((d) => d.id === activeDocIdRef.current) || items[0];
+    setActiveDocId(active.id);
+    const html = active.html || "";
+    // Only reset the editor if the active doc's content actually differs, so an
+    // in-progress edit (newer locally) isn't clobbered by a background sync.
+    if (html !== editor.getHTML()) editor.commands.setContent(html, false);
+  }
+
+  // Push this device's documents and adopt the merged union back. Used for both the
+  // initial load (seeds the store) and manual Sync (pulls the other device's edits)
+  // — the same merge guarantees neither direction loses data.
+  async function syncDocs() {
     try {
-      const docs = JSON.parse(raw);
-      if (Array.isArray(docs) && docs.length) {
-        setDocuments(docs);
-        setActiveDocId(docs[0].id);
-        editor.commands.setContent(docs[0].html || "", false);
-      }
+      const merged = await remoteStoreMerge(
+        DOCS_KEY,
+        JSON.stringify({ items: docsRef.current, deleted: deletedRef.current })
+      );
+      adoptDocs(merged);
     } catch {
-      /* ignore corrupt payload */
+      /* offline / no server — keep working locally */
     }
   }
 
-  // Load shared Write documents (kept on the Mac) once the editor is ready; seed
-  // the shared store from this device if it's empty.
+  // Load + merge shared Write documents once the editor is ready.
   useEffect(() => {
     if (!editor || docsFetchedRef.current) return;
     docsFetchedRef.current = true;
     let cancelled = false;
-    remoteStoreGet(DOCS_KEY)
-      .then((raw) => {
-        if (cancelled) return;
-        if (raw) applyRemoteDocs(raw);
-        else remoteStoreSet(DOCS_KEY, JSON.stringify(docsRef.current)).catch(() => {});
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) docsLoadedRef.current = true;
-      });
+    syncDocs().finally(() => {
+      if (!cancelled) docsLoadedRef.current = true;
+    });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor]);
 
-  // Re-pull shared documents when the user taps Sync (nav rail).
+  // Re-sync shared documents when the user taps Sync (nav rail).
   useEffect(() => {
     function onSync() {
-      remoteStoreGet(DOCS_KEY).then(applyRemoteDocs).catch(() => {});
+      syncDocs();
     }
     window.addEventListener("ai-studio-sync", onSync);
     return () => window.removeEventListener("ai-studio-sync", onSync);
@@ -273,7 +306,7 @@ export default function App() {
     editor?.commands.focus("end");
   }
   function newDoc() {
-    const d: Doc = { id: crypto.randomUUID(), title: "Untitled", html: "" };
+    const d: Doc = { id: crypto.randomUUID(), title: "Untitled", html: "", updatedAt: Date.now() };
     setDocuments((prev) => [d, ...prev]);
     setActiveDocId(d.id);
     setLastGen(null);
@@ -281,10 +314,12 @@ export default function App() {
     editor?.commands.focus("end");
   }
   function deleteDoc(id: string) {
+    // Record a tombstone so the delete propagates and isn't resurrected on sync.
+    setDeletedDocs((prev) => ({ ...prev, [id]: Date.now() }));
     const next = documents.filter((d) => d.id !== id);
     const docs = next.length
       ? next
-      : [{ id: crypto.randomUUID(), title: "Untitled", html: "" }];
+      : [{ id: crypto.randomUUID(), title: "Untitled", html: "", updatedAt: Date.now() }];
     setDocuments(docs);
     if (id === activeDocId) {
       setActiveDocId(docs[0].id);
@@ -328,7 +363,9 @@ export default function App() {
   const activeDoc = documents.find((d) => d.id === activeDocId) || documents[0];
   const activeBible = activeDoc?.bible || EMPTY_BIBLE;
   function updateBible(b: StoryBibleData) {
-    setDocuments((prev) => prev.map((d) => (d.id === activeDocId ? { ...d, bible: b } : d)));
+    setDocuments((prev) =>
+      prev.map((d) => (d.id === activeDocId ? { ...d, bible: b, updatedAt: Date.now() } : d))
+    );
   }
 
   const refreshOllama = () =>
