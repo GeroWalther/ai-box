@@ -2092,6 +2092,17 @@ input[type="range"]:focus {
     max-width: 94vw;
     max-height: 88vh;
   }
+  /* .modal.onboarding's own max-width:560px (higher specificity) otherwise wins
+     here and, with the non-shrinking card row below, overflows the viewport. */
+  .modal.onboarding,
+  .modal.wide {
+    max-width: 94vw;
+  }
+  /* Stack the two provider cards instead of a side-by-side row that can't shrink
+     below its content width on a phone. */
+  .onboard-choices {
+    flex-direction: column;
+  }
   .remote-qr {
     flex: 1 1 100%;
   }
