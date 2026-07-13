@@ -10,6 +10,7 @@ import {
   fsRead,
   fsSearch,
   fsWrite,
+  parseTextToolCall,
   runCommandStream,
   webFetch,
 } from "../lib/agent";
@@ -58,7 +59,12 @@ const AGENT_SYSTEM =
   "Tools: read_file, write_file, edit_file (targeted unique-match replace — prefer for small changes), " +
   "list_dir, search_files (grep/find), move_file, delete_file, run_command (shell), and web_fetch. " +
   "Explore with search_files/list_dir/read_file before editing. Prefer edit_file over rewriting whole files. " +
-  "Prefer absolute paths (the Desktop is ~/Desktop). Take actions with the tools first, then briefly summarize what you did.";
+  "Prefer absolute paths (the Desktop is ~/Desktop). Take actions with the tools first, then briefly summarize what you did. " +
+  // ReAct fallback for local models without native tool-calling: they can act by
+  // emitting a JSON action, which the app parses and executes.
+  'If you cannot call tools natively, emit EXACTLY one action as JSON on its own line and nothing else: ' +
+  '{"tool":"<tool_name>","args":{ … }} — then STOP and wait for the "Observation:" before your next step. ' +
+  "When the task is complete, reply normally with a short summary and no JSON.";
 
 const CHAT_SYSTEM =
   "You are AI Studio, a capable, friendly assistant. Help with coding, writing, analysis, and general questions. Write correct, well-explained code. Be clear and concise.";
@@ -381,10 +387,35 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
       }
       if (genIdRef.current !== myGen) return;
       convo.push(msg);
-      if (msg.content) pushMsg({ role: "assistant", content: msg.content, reasoning: "" });
 
-      const calls = msg.tool_calls || [];
-      if (!calls.length) return;
+      // Native tool_calls when the model supports them; otherwise fall back to
+      // parsing an action out of the text (ReAct) so local models can act too.
+      const nativeCalls = msg.tool_calls || [];
+      const isText = nativeCalls.length === 0;
+      let calls = nativeCalls;
+      if (isText) {
+        const tcall = parseTextToolCall(msg.content || "");
+        if (!tcall) {
+          // No tool referenced → this is the model's final answer.
+          if (msg.content) pushMsg({ role: "assistant", content: msg.content, reasoning: "" });
+          return;
+        }
+        calls = [
+          { id: `react-${step}`, function: { name: tcall.name, arguments: JSON.stringify(tcall.args) } },
+        ];
+      } else if (msg.content) {
+        pushMsg({ role: "assistant", content: msg.content, reasoning: "" });
+      }
+
+      // Feed a tool result back to the model — as a structured tool message
+      // (native) or a plain-text Observation (ReAct fallback).
+      const observe = (tc: any, content: string) => {
+        if (isText) {
+          convo.push({ role: "user", content: `Observation (${tc.function?.name}): ${content}` });
+        } else {
+          convo.push({ role: "tool", tool_call_id: tc.id, content });
+        }
+      };
 
       for (const tc of calls) {
         if (genIdRef.current !== myGen) return;
@@ -400,7 +431,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
           const approved = await requestApproval("Run this command?", args.command);
           if (!approved) {
             pushMsg({ role: "tool", content: `Denied: ${args.command}`, reasoning: "", ok: false });
-            convo.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ denied: true }) });
+            observe(tc, JSON.stringify({ denied: true }));
             continue;
           }
           pushMsg({ role: "tool", content: `$ ${args.command}`, reasoning: "", detail: "", ok: true });
@@ -413,10 +444,10 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
               content: `$ ${args.command}  (exit ${out.code})`,
               ok: out.code === 0,
             }));
-            convo.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(out).slice(0, 12000) });
+            observe(tc, JSON.stringify(out).slice(0, 12000));
           } catch (e) {
             patchLast((m) => ({ ...m, content: `$ ${args.command}  (failed)`, ok: false, detail: (m.detail || "") + String(e) }));
-            convo.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ error: String(e) }) });
+            observe(tc, JSON.stringify({ error: String(e) }));
           }
           continue;
         }
@@ -490,11 +521,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
           label = `Error — ${name}: ${String(e)}`;
         }
         pushMsg({ role: "tool", content: label, reasoning: "", detail, ok });
-        convo.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: JSON.stringify(result).slice(0, 12000),
-        });
+        observe(tc, JSON.stringify(result).slice(0, 12000));
       }
     }
     pushMsg({ role: "assistant", content: "(stopped after 16 steps)", reasoning: "" });

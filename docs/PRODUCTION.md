@@ -124,15 +124,15 @@ Everything else (signing, sync, packaging) makes it *shippable*; these three mak
 
 ## Phase 3 — Differentiators (make it genuinely better)
 
-10. ⬜ **Local model = local agent** — a **ReAct-style prompt fallback** so Ollama
-    models without native tool-calling can still drive the agent. Detect empty
-    `tool_calls`, switch to a `Thought/Action/Observation` loop with a JSON/text
-    tool-call parser (`src/lib/agent.ts`, `Chat.tsx` dispatch). This is the core
-    "works locally" claim and the main differentiator vs cloud-only tools.
-11. ⬜ **Diff-preview before writes** — replace the yes/no approval with the actual
-    file **diff** rendered on the Mac before applying (`RemoteApprovalListener.tsx`;
-    `fs_edit` already returns a diff). Far more trustworthy for phone-driven edits.
-    Also serialize concurrent approvals (a 2nd request currently overwrites the 1st).
+10. ✅ **Local model = local agent** — ReAct fallback shipped. When a model returns
+    no native `tool_calls`, `parseTextToolCall` (`src/lib/agent.ts`) extracts an
+    action from the text (JSON `{"tool","args"}` in several shapes, or
+    `Action:/Action Input:`), the agent executes it, and feeds the result back as a
+    plain-text `Observation:` — so Ollama models without native tool-calling can
+    drive the agent. Native tool-calling path unchanged. Parser tested (9/9).
+11. 🔨 **Diff-preview before writes** — ✅ diff rendered on the Mac before applying a
+    remote write/edit (`RemoteApprovalListener.tsx` + `preview_diff`). ⬜ Still
+    todo: serialize concurrent approvals (a 2nd request overwrites the 1st).
 12. 🔨 **Story Bible → retrieval** (pillar #1) — v1 shipped (Phase 0). Next: (a)
     **auto-extract** canon facts from prose as you write (offer "add to bible" chips
     for new names/places/claims); (b) optional **embeddings** retrieval for large

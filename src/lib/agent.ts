@@ -143,6 +143,77 @@ export const AGENT_TOOLS = [
   },
 ];
 
+const TOOL_NAMES = new Set(AGENT_TOOLS.map((t) => t.function.name));
+
+function tryJson(s: string): any {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+/** Extract the first balanced {...} JSON object from text (handles ``` fences). */
+function extractJsonObject(text: string): any {
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const body = fence ? fence[1] : text;
+  const start = body.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < body.length; i++) {
+    if (body[i] === "{") depth++;
+    else if (body[i] === "}") {
+      depth--;
+      if (depth === 0) return tryJson(body.slice(start, i + 1));
+    }
+  }
+  return null;
+}
+
+/**
+ * Parse a tool call from a model's FREE-TEXT reply — the ReAct fallback for local
+ * models (Ollama, etc.) that don't emit native OpenAI `tool_calls`. Supports:
+ *   - JSON: {"tool"|"name"|"action": "read_file", "args"|"arguments"|"action_input": {…}}
+ *   - ReAct: "Action: read_file\nAction Input: {…}"
+ * Returns null when no known tool is referenced → the caller treats it as the
+ * model's final answer. Only names in AGENT_TOOLS are accepted.
+ */
+export function parseTextToolCall(content: string): { name: string; args: any } | null {
+  if (!content) return null;
+
+  // 1. A JSON object naming a tool.
+  const obj = extractJsonObject(content);
+  if (obj && typeof obj === "object") {
+    const name = obj.tool || obj.name || obj.action || obj.function?.name;
+    if (typeof name === "string" && TOOL_NAMES.has(name)) {
+      let args =
+        obj.args ??
+        obj.arguments ??
+        obj.action_input ??
+        obj.parameters ??
+        obj.input ??
+        obj.function?.arguments ??
+        {};
+      if (typeof args === "string") args = tryJson(args) ?? {};
+      return { name, args: args && typeof args === "object" ? args : {} };
+    }
+  }
+
+  // 2. ReAct "Action: <tool>" + "Action Input: <json>".
+  const nameM = content.match(/(?:^|\n)\s*(?:action|tool)\s*:\s*["']?([a-zA-Z_]+)/i);
+  if (nameM && TOOL_NAMES.has(nameM[1])) {
+    const inM = content.match(/(?:action[ _]?input|args|arguments|input)\s*:\s*([\s\S]+)/i);
+    let args: any = {};
+    if (inM) {
+      const parsed = extractJsonObject(inM[1]) ?? tryJson(inM[1].trim());
+      if (parsed && typeof parsed === "object") args = parsed;
+    }
+    return { name: nameM[1], args };
+  }
+
+  return null;
+}
+
 export interface AssistantMessage {
   role: "assistant";
   content: string | null;
