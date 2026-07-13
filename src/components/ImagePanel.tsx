@@ -4,6 +4,7 @@ import {
   COMFY_SAMPLERS,
   COMFY_SCHEDULERS,
   OPENROUTER_IMAGE_MODELS,
+  OPENROUTER_IMAGE_MODEL_INFO,
   OPENROUTER_IMAGE_EDIT_MODELS,
   IMAGE_RESOLUTIONS,
   IMAGE_ASPECTS,
@@ -14,16 +15,43 @@ import {
   generateImageOpenrouter,
   editImageOpenrouter,
   listComfyCheckpoints,
+  type OpenrouterModel,
 } from "../lib/api";
-import { addImage, allImages, deleteImage, type ImageRecord } from "../lib/imageStore";
+import {
+  addImage,
+  allImages,
+  deleteImage,
+  getImage,
+  migrateLegacyImages,
+  type ImageRecord,
+} from "../lib/imageStore";
+import { useToast } from "../lib/toast";
 import ImageModelManager from "./ImageModelManager";
+import { SidebarSlot } from "./SidebarList";
 
 interface Props {
   settings: Settings;
   onChange: (patch: Partial<Settings>) => void;
+  /** Live OpenRouter catalog — image models are filtered from it. */
+  orModels?: OpenrouterModel[];
+  /** Scene text sent over from the Write tab to seed a prompt. */
+  prefill?: string | null;
+  onPrefillConsumed?: () => void;
+  /** DOM node in App's unified sidebar where the image history is portaled. */
+  sidebarSlot: HTMLElement | null;
+  onCloseDrawer?: () => void;
 }
 
-export default function ImagePanel({ settings, onChange }: Props) {
+export default function ImagePanel({
+  settings,
+  onChange,
+  orModels = [],
+  prefill,
+  onPrefillConsumed,
+  sidebarSlot,
+  onCloseDrawer,
+}: Props) {
+  const { success: toastOk, error: toastError } = useToast();
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -33,17 +61,44 @@ export default function ImagePanel({ settings, onChange }: Props) {
   const [sourceImage, setSourceImage] = useState<string | null>(null); // data URL
   const [strength, setStrength] = useState(0.6);
   const [showImgModels, setShowImgModels] = useState(false);
-  const [history, setHistory] = useState<ImageRecord[]>([]);
+  const [history, setHistory] = useState<ImageRecord[]>([]); // metadata only (no dataUrl)
+  const [activeId, setActiveId] = useState<string | null>(null); // selected image id
+  const [seed, setSeed] = useState(-1); // -1 = random each generation
 
-  // Load the saved gallery once; show the newest as the current image.
+  // A scene handed over from Write prefills the prompt and focuses this tab.
   useEffect(() => {
-    allImages()
-      .then((rows) => {
-        setHistory(rows);
-        if (rows.length) setImage(rows[0].dataUrl);
-      })
-      .catch(() => {});
+    if (prefill && prefill.trim()) {
+      setPrompt(prefill.trim().slice(0, 800));
+      onPrefillConsumed?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill]);
+
+  // Load the shared gallery (lives on the Mac). Migrate any old local images
+  // first, then show the newest as the current image.
+  async function loadGallery(showNewest: boolean) {
+    const rows = await allImages().catch(() => [] as ImageRecord[]);
+    setHistory(rows);
+    if (showNewest && rows.length) {
+      setActiveId(rows[0].id);
+      const full = await getImage(rows[0].id).catch(() => null);
+      if (full?.dataUrl) setImage(full.dataUrl);
+    }
+  }
+  useEffect(() => {
+    migrateLegacyImages().finally(() => loadGallery(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-pull the gallery when the user taps Sync (nav rail).
+  useEffect(() => {
+    function onSync() {
+      loadGallery(!image);
+    }
+    window.addEventListener("ai-studio-sync", onSync);
+    return () => window.removeEventListener("ai-studio-sync", onSync);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [image]);
 
   function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -86,6 +141,8 @@ export default function ImagePanel({ settings, onChange }: Props) {
     }
     setBusy(true);
     setError("");
+    // A concrete seed each run makes local generations reproducible.
+    const usedSeed = seed >= 0 ? seed : Math.floor(Math.random() * 1_000_000_000_000);
     try {
       const b64 = isCloud
         ? sourceImage
@@ -114,6 +171,7 @@ export default function ImagePanel({ settings, onChange }: Props) {
             scheduler: settings.comfyScheduler,
             denoise: strength,
             imageBase64: sourceImage.split(",")[1],
+            seed: usedSeed,
           })
         : await generateImageComfy({
             baseUrl: settings.comfyUrl,
@@ -126,6 +184,7 @@ export default function ImagePanel({ settings, onChange }: Props) {
             cfgScale: settings.imageCfg,
             samplerName: settings.comfySampler,
             scheduler: settings.comfyScheduler,
+            seed: usedSeed,
           });
       const dataUrl = `data:image/png;base64,${b64}`;
       setImage(dataUrl);
@@ -136,19 +195,27 @@ export default function ImagePanel({ settings, onChange }: Props) {
         model: isCloud ? settings.openrouterImageModel : settings.comfyCheckpoint,
         dataUrl,
         at: Date.now(),
+        seed: isCloud ? undefined : usedSeed,
       };
-      setHistory((prev) => [rec, ...prev]);
-      addImage(rec).catch(() => {});
+      setActiveId(rec.id);
+      // Persist to the Mac first so the thumbnail can fetch it, then list it.
+      await addImage(rec).catch(() => {});
+      const { dataUrl: _omit, ...meta } = rec;
+      setHistory((prev) => [meta, ...prev]);
     } catch (e) {
       setError(String(e));
+      toastError(String(e));
     } finally {
       setBusy(false);
     }
   }
 
-  function openHistory(rec: ImageRecord) {
-    setImage(rec.dataUrl);
+  async function openHistory(rec: ImageRecord) {
+    setActiveId(rec.id);
     setPrompt(rec.prompt);
+    if (rec.seed != null) setSeed(rec.seed);
+    const full = rec.dataUrl ? rec : await getImage(rec.id).catch(() => null);
+    if (full?.dataUrl) setImage(full.dataUrl);
   }
   async function removeHistory(id: string) {
     setHistory((prev) => prev.filter((r) => r.id !== id));
@@ -159,42 +226,99 @@ export default function ImagePanel({ settings, onChange }: Props) {
     if (!image) return;
     const a = document.createElement("a");
     a.href = image;
-    a.download = "novel-studio-image.png";
+    a.download = "ai-studio-image.png";
     a.click();
   }
 
+  async function copyImage() {
+    if (!image) return;
+    try {
+      const blob = await (await fetch(image)).blob();
+      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+      toastOk("Image copied to clipboard");
+    } catch {
+      toastError("Copy failed — your system may not allow image clipboard access.");
+    }
+  }
+
+  function useAsSource() {
+    if (image) setSourceImage(image);
+  }
+
+  // Clear the canvas to start a fresh image. History is untouched — the old
+  // image stays saved and reachable in the History rail.
+  function newImage() {
+    setImage(null);
+    setActiveId(null);
+    setSourceImage(null);
+    setError("");
+  }
+
+  // Remove the image currently on the canvas (also from saved History), then
+  // show the next most recent one.
+  async function deleteCurrent() {
+    if (!activeId) return;
+    const next = history.find((r) => r.id !== activeId);
+    const id = activeId;
+    if (next) {
+      await openHistory(next);
+    } else {
+      setImage(null);
+      setActiveId(null);
+    }
+    await removeHistory(id);
+  }
+
+  function readImageFile(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => setSourceImage(reader.result as string);
+    reader.readAsDataURL(file);
+  }
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (file && file.type.startsWith("image/")) readImageFile(file);
+  }
+
   const isCloud = settings.imageBackend === "openrouter";
+  // Live image models from the OpenRouter catalog (beyond the curated set), so
+  // new image models appear automatically. Edit-capable = accepts image input.
+  const curatedIds = new Set(OPENROUTER_IMAGE_MODELS);
+  const liveImageModels = orModels.filter((m) => m.outputImage && !curatedIds.has(m.id));
+  const liveEditable = new Set(orModels.filter((m) => m.inputImage).map((m) => m.id));
+  const canEditModel = (id: string) =>
+    OPENROUTER_IMAGE_EDIT_MODELS.includes(id) || liveEditable.has(id);
 
   return (
     <div className="image-tab">
-      <aside className="image-history">
-        <div className="image-history-head">History</div>
+      <SidebarSlot slot={sidebarSlot}>
+        <button
+          className="sidebar-new"
+          onClick={() => {
+            newImage();
+            onCloseDrawer?.();
+          }}
+        >
+          + New image
+        </button>
         <div className="image-history-list">
           {history.length === 0 && (
             <div className="image-history-empty">Your generations appear here.</div>
           )}
           {history.map((r) => (
-            <div
+            <HistoryThumb
               key={r.id}
-              className={image === r.dataUrl ? "history-thumb active" : "history-thumb"}
-              onClick={() => openHistory(r)}
-              title={r.prompt}
-            >
-              <img src={r.dataUrl} alt={r.prompt} />
-              <button
-                className="history-del"
-                title="Delete"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  removeHistory(r.id);
-                }}
-              >
-                ×
-              </button>
-            </div>
+              rec={r}
+              active={activeId === r.id}
+              onOpen={() => {
+                openHistory(r);
+                onCloseDrawer?.();
+              }}
+              onDelete={() => removeHistory(r.id)}
+            />
           ))}
         </div>
-      </aside>
+      </SidebarSlot>
 
       <div className="image-controls-col">
         <div className="field">
@@ -223,12 +347,29 @@ export default function ImagePanel({ settings, onChange }: Props) {
                 value={settings.openrouterImageModel}
                 onChange={(e) => onChange({ openrouterImageModel: e.target.value })}
               >
-                {OPENROUTER_IMAGE_MODELS.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
+                {["Best quality", "Fast & budget", "Editing (input image)", "Design & text"].map(
+                  (g) => (
+                    <optgroup key={g} label={`Recommended · ${g}`}>
+                      {OPENROUTER_IMAGE_MODEL_INFO.filter((m) => m.group === g).map((m) => (
+                        <option key={m.id} value={m.id} title={m.note}>
+                          {m.label} — {m.note}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )
+                )}
+                {liveImageModels.length > 0 && (
+                  <optgroup label={`All image models · live (${liveImageModels.length})`}>
+                    {liveImageModels.map((m) => (
+                      <option key={m.id} value={m.id} title={m.id}>
+                        {m.name || m.id}
+                        {m.inputImage ? " · edits" : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
                 {!OPENROUTER_IMAGE_MODELS.includes(settings.openrouterImageModel) &&
+                  !liveImageModels.some((m) => m.id === settings.openrouterImageModel) &&
                   settings.openrouterImageModel && (
                     <option value={settings.openrouterImageModel}>
                       {settings.openrouterImageModel}
@@ -336,18 +477,21 @@ export default function ImagePanel({ settings, onChange }: Props) {
               </div>
             </div>
           ) : (
-            <label className="upload-drop">
+            <label
+              className="upload-drop"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={onDrop}
+            >
               <input type="file" accept="image/*" onChange={onFile} hidden />
-              + Upload an image
+              + Upload or drop an image
             </label>
           )}
-          {isCloud && sourceImage &&
-            !OPENROUTER_IMAGE_EDIT_MODELS.includes(settings.openrouterImageModel) && (
-              <p className="hint error">
-                This model can't edit images. Pick an edit-capable model:{" "}
-                {OPENROUTER_IMAGE_EDIT_MODELS.join(", ")}.
-              </p>
-            )}
+          {isCloud && sourceImage && !canEditModel(settings.openrouterImageModel) && (
+            <p className="hint error">
+              This model can't edit images — pick one from the “Editing (input image)” group
+              (or a live model marked “· edits”).
+            </p>
+          )}
           {isCloud && (
             <p className="hint">
               Cloud editing works with image-input models (Gemini Flash Image, FLUX
@@ -452,6 +596,19 @@ export default function ImagePanel({ settings, onChange }: Props) {
               </div>
             </div>
             <div className="field">
+              <label>Seed <span className="muted">(-1 = random each time)</span></label>
+              <div className="row-inline">
+                <input
+                  type="number"
+                  value={seed}
+                  onChange={(e) => setSeed(Number(e.target.value))}
+                />
+                <button className="btn" title="Randomize" onClick={() => setSeed(-1)}>
+                  🎲
+                </button>
+              </div>
+            </div>
+            <div className="field">
               <label>ComfyUI URL</label>
               <input
                 value={settings.comfyUrl}
@@ -478,9 +635,23 @@ export default function ImagePanel({ settings, onChange }: Props) {
         ) : image ? (
           <>
             <img src={image} alt="generated" />
-            <button className="btn" onClick={save}>
-              Save PNG
-            </button>
+            <div className="preview-actions">
+              <button className="btn" onClick={save}>
+                Save PNG
+              </button>
+              <button className="btn" onClick={copyImage}>
+                Copy
+              </button>
+              <button className="btn" onClick={useAsSource} title="Use this image as an img2img source">
+                Use as source
+              </button>
+              <button className="btn ghost" onClick={newImage} title="Clear the canvas for a new image (keeps this one in History)">
+                + New
+              </button>
+              <button className="btn danger" onClick={deleteCurrent} title="Delete this image (also removes it from History)">
+                Delete
+              </button>
+            </div>
           </>
         ) : (
           <div className="image-placeholder">
@@ -497,6 +668,53 @@ export default function ImagePanel({ settings, onChange }: Props) {
           onChanged={detect}
         />
       )}
+    </div>
+  );
+}
+
+/** Gallery thumbnail: lazily fetches its own image data (kept on the Mac). */
+function HistoryThumb({
+  rec,
+  active,
+  onOpen,
+  onDelete,
+}: {
+  rec: ImageRecord;
+  active: boolean;
+  onOpen: () => void;
+  onDelete: () => void;
+}) {
+  const [src, setSrc] = useState<string | null>(rec.dataUrl ?? null);
+  useEffect(() => {
+    if (src) return;
+    let alive = true;
+    getImage(rec.id)
+      .then((full) => {
+        if (alive && full?.dataUrl) setSrc(full.dataUrl);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rec.id]);
+  return (
+    <div
+      className={active ? "history-thumb active" : "history-thumb"}
+      onClick={onOpen}
+      title={rec.prompt}
+    >
+      {src ? <img src={src} alt={rec.prompt} /> : <div className="history-thumb-ph" />}
+      <button
+        className="history-del"
+        title="Delete"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+      >
+        ×
+      </button>
     </div>
   );
 }

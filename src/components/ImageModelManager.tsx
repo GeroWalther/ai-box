@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { IMAGE_MODEL_RECS, recommendForRam } from "../lib/presets";
 import { downloadFile, systemInfo, type SystemInfo } from "../lib/api";
 
@@ -64,6 +65,10 @@ export default function ImageModelManager({ onClose, onChanged }: Props) {
           )}
 
           <h3>Recommended by style</h3>
+          <p className="hint">
+            These are suggestions — click <b>Find on Civitai</b> to open the model, copy its
+            <code>.safetensors</code> download link, then paste it below to install.
+          </p>
           <div className="model-list">
             {IMAGE_MODEL_RECS.map((m) => (
               <div key={m.name} className="model-row">
@@ -75,6 +80,14 @@ export default function ImageModelManager({ onClose, onChanged }: Props) {
                     {m.style} · {m.base} — {m.note}
                   </div>
                 </div>
+                <button
+                  className="btn"
+                  onClick={() =>
+                    openUrl(`https://civitai.com/search/models?query=${encodeURIComponent(m.search)}`)
+                  }
+                >
+                  Find on Civitai ↗
+                </button>
               </div>
             ))}
           </div>
@@ -84,7 +97,7 @@ export default function ImageModelManager({ onClose, onChanged }: Props) {
             <p className="hint">
               Paste a direct <code>.safetensors</code> URL. For Civitai models, copy the
               download link and append <code>?token=YOUR_TOKEN</code> (Account → API Keys).
-              Saved to <code>{CKPT_DIR}</code>.
+              Saved to <code>{CKPT_DIR}</code>. Requires ComfyUI installed &amp; running.
             </p>
             <label>Download URL</label>
             <input

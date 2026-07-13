@@ -8,6 +8,12 @@ export interface Settings {
   // Appearance
   theme: "light" | "dark";
 
+  // First-run onboarding shown until dismissed/completed.
+  onboarded: boolean;
+
+  // Left sidebar (chats / documents / image history) collapsed — shared across tabs.
+  sidebarCollapsed: boolean;
+
   // OpenRouter (BYOK)
   openrouterKey: string;
   openrouterModel: string;
@@ -28,6 +34,7 @@ export interface Settings {
   systemPrompt: string;
   authorsNote: string;
   language: string; // "auto" | "Japanese" | "English" | ...
+  writingPreset: string; // WRITING_PRESETS id, or "" for freeform
 
   // Image generation
   imageBackend: "comfyui" | "openrouter" | "a1111";
@@ -51,6 +58,12 @@ export interface Settings {
   openrouterImageModel: string;
   imageResolution: string; // "512" | "1K" | "2K" | "4K"
   imageAspect: string; // "1:1" | "16:9" | "9:16" | "3:4" | "4:3"
+
+  // Phone / remote access (companion server). The token pairs a device; the
+  // wake-lock keeps the Mac awake while "Away mode" is on.
+  remotePort: number;
+  remoteToken: string;
+  remoteWakeLock: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -58,8 +71,11 @@ export const DEFAULT_SETTINGS: Settings = {
 
   theme: "light",
 
+  onboarded: false,
+  sidebarCollapsed: false,
+
   openrouterKey: "",
-  openrouterModel: "deepseek/deepseek-chat",
+  openrouterModel: "anthropic/claude-fable-5",
 
   ollamaUrl: "http://localhost:11434/v1",
   ollamaModel: "",
@@ -74,6 +90,7 @@ export const DEFAULT_SETTINGS: Settings = {
   systemPrompt: "",
   authorsNote: "",
   language: "auto",
+  writingPreset: "",
 
   imageBackend: "comfyui",
   imageNegative:
@@ -94,6 +111,10 @@ export const DEFAULT_SETTINGS: Settings = {
   openrouterImageModel: "black-forest-labs/flux-1.1-pro",
   imageResolution: "1K",
   imageAspect: "3:4",
+
+  remotePort: 8787,
+  remoteToken: "",
+  remoteWakeLock: true,
 };
 
 const STORAGE_KEY = "novel-studio.settings";

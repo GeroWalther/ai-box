@@ -6,6 +6,9 @@ import { generateText, listOllamaModels } from "./lib/api";
 import {
   buildContinuationMessages,
   buildRewriteMessages,
+  EMPTY_BIBLE,
+  LANGUAGES,
+  type StoryBibleData,
 } from "./lib/presets";
 import {
   DEFAULT_SETTINGS,
@@ -15,12 +18,22 @@ import {
   type Settings,
 } from "./lib/settings";
 import { useOpenrouterModels } from "./lib/openrouterModels";
+import { isTauri, invokeCmd } from "./lib/transport";
+import { remoteStoreGet, remoteStoreSet } from "./lib/remoteStore";
+import { useToast } from "./lib/toast";
 import PromptBar from "./components/PromptBar";
 import SettingsModal from "./components/SettingsModal";
+import RemoteApprovalListener from "./components/RemoteApprovalListener";
 import ImagePanel from "./components/ImagePanel";
 import Chat from "./components/Chat";
 import ModelSelect from "./components/ModelSelect";
-import SessionSidebar from "./components/SessionSidebar";
+import WritingPresets from "./components/WritingPresets";
+import SidebarList, { SidebarSlot } from "./components/SidebarList";
+import StoryBible from "./components/StoryBible";
+import ExportMenu from "./components/ExportMenu";
+import WritingSettings from "./components/WritingSettings";
+import ModelManager from "./components/ModelManager";
+import Onboarding from "./components/Onboarding";
 import "./App.css";
 
 const DOCS_KEY = "ai-studio.documents";
@@ -30,6 +43,7 @@ interface Doc {
   id: string;
   title: string;
   html: string;
+  bible?: StoryBibleData;
 }
 
 function docTitle(text: string): string {
@@ -55,26 +69,90 @@ function escapeText(t: string): string {
   return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** Desktop only: publish the current settings so a paired phone can adopt them. */
+function pushRemoteSettings(s: Settings): void {
+  if (!isTauri()) return;
+  invokeCmd("set_remote_settings", { settings: JSON.stringify(s) }).catch(() => {});
+}
+
+const ICON_STROKE = {
+  fill: "none" as const,
+  stroke: "currentColor",
+  strokeWidth: 1.8,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+};
+
+type ViewKey = "chat" | "write" | "images";
+const SECTIONS: { key: ViewKey; label: string; icon: React.ReactNode }[] = [
+  {
+    key: "chat",
+    label: "Agentic Chat",
+    icon: (
+      <svg viewBox="0 0 24 24" {...ICON_STROKE}>
+        <path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.38 8.38 0 0 1 4 11.5 8.5 8.5 0 0 1 12.5 3 8.38 8.38 0 0 1 21 11.5z" />
+      </svg>
+    ),
+  },
+  {
+    key: "write",
+    label: "Write",
+    icon: (
+      <svg viewBox="0 0 24 24" {...ICON_STROKE}>
+        <path d="M12 20h9" />
+        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+      </svg>
+    ),
+  },
+  {
+    key: "images",
+    label: "Images",
+    icon: (
+      <svg viewBox="0 0 24 24" {...ICON_STROKE}>
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <circle cx="8.5" cy="8.5" r="1.5" />
+        <path d="M21 15l-5-5L5 21" />
+      </svg>
+    ),
+  },
+];
+
 export default function App() {
+  const { error: toastError, success: toastSuccess } = useToast();
+  const [syncing, setSyncing] = useState(false);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showModels, setShowModels] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false); // mobile nav drawer
+  const [sidebarSlot, setSidebarSlot] = useState<HTMLDivElement | null>(null); // list portal target
   const [view, setView] = useState<"chat" | "write" | "images">("chat");
+  const [imagePrefill, setImagePrefill] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [status, setStatus] = useState("");
   const [prompt, setPrompt] = useState("");
   const [rewriteHow, setRewriteHow] = useState("");
+  const [bibleOpen, setBibleOpen] = useState(false);
+  const [lastGen, setLastGen] = useState<
+    { from: number; to: number; instruction: string } | null
+  >(null);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [documents, setDocuments] = useState<Doc[]>(loadDocs);
   const [activeDocId, setActiveDocId] = useState<string>("");
   const stoppedRef = useRef(false);
   const activeDocIdRef = useRef("");
+  const docsRef = useRef(documents); // latest docs for async saves
+  const docsFetchedRef = useRef(false); // shared docs load kicked off
+  const docsLoadedRef = useRef(false); // shared docs loaded — safe to write back
+  useEffect(() => {
+    docsRef.current = documents;
+  }, [documents]);
 
   const editor = useEditor({
     extensions: [
       StarterKit,
       Placeholder.configure({
-        placeholder:
-          "Write an opening line, or just tell the AI what to write in the bar below…",
+        placeholder: "Begin your story here…",
       }),
     ],
     content: documents[0]?.html || "",
@@ -88,7 +166,29 @@ export default function App() {
     },
   });
 
-  useEffect(() => setSettings(loadSettings()), []);
+  useEffect(() => {
+    const loaded = loadSettings();
+    setSettings(loaded);
+    if (!loaded.onboarded) setShowOnboarding(true);
+    if (isTauri()) {
+      // Desktop: publish our settings so a paired phone can adopt them.
+      pushRemoteSettings(loaded);
+    } else {
+      // Phone: adopt the desktop's settings (API key, model, options) instead of
+      // this device's empty defaults, so it "just works" with what's set up on the Mac.
+      invokeCmd<Partial<Settings> | null>("get_remote_settings")
+        .then((remote) => {
+          if (remote && typeof remote === "object") {
+            setSettings((prev) => {
+              const merged = { ...prev, ...remote };
+              saveSettings(merged);
+              return merged;
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }, []);
 
   // Apply the light/dark theme to the document root.
   useEffect(() => {
@@ -104,12 +204,67 @@ export default function App() {
   }, [activeDocId]);
   useEffect(() => {
     localStorage.setItem(DOCS_KEY, JSON.stringify(documents));
+    // Mirror Write documents to the shared store on the Mac (debounced so typing
+    // doesn't hammer the file). The phone and desktop then share the same drafts.
+    if (!docsLoadedRef.current) return;
+    const t = setTimeout(() => {
+      remoteStoreSet(DOCS_KEY, JSON.stringify(docsRef.current)).catch(() => {});
+    }, 700);
+    return () => clearTimeout(t);
   }, [documents]);
+
+  // Replace the local document set with the shared one and load it into the editor.
+  function applyRemoteDocs(raw: string | null) {
+    if (!raw || !editor) return;
+    try {
+      const docs = JSON.parse(raw);
+      if (Array.isArray(docs) && docs.length) {
+        setDocuments(docs);
+        setActiveDocId(docs[0].id);
+        editor.commands.setContent(docs[0].html || "", false);
+      }
+    } catch {
+      /* ignore corrupt payload */
+    }
+  }
+
+  // Load shared Write documents (kept on the Mac) once the editor is ready; seed
+  // the shared store from this device if it's empty.
+  useEffect(() => {
+    if (!editor || docsFetchedRef.current) return;
+    docsFetchedRef.current = true;
+    let cancelled = false;
+    remoteStoreGet(DOCS_KEY)
+      .then((raw) => {
+        if (cancelled) return;
+        if (raw) applyRemoteDocs(raw);
+        else remoteStoreSet(DOCS_KEY, JSON.stringify(docsRef.current)).catch(() => {});
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) docsLoadedRef.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor]);
+
+  // Re-pull shared documents when the user taps Sync (nav rail).
+  useEffect(() => {
+    function onSync() {
+      remoteStoreGet(DOCS_KEY).then(applyRemoteDocs).catch(() => {});
+    }
+    window.addEventListener("ai-studio-sync", onSync);
+    return () => window.removeEventListener("ai-studio-sync", onSync);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor]);
 
   function switchDoc(id: string) {
     if (id === activeDocId) return;
     const d = documents.find((x) => x.id === id);
     setActiveDocId(id);
+    setLastGen(null);
     editor?.commands.setContent(d?.html || "", false); // false = don't emit onUpdate
     editor?.commands.focus("end");
   }
@@ -117,6 +272,7 @@ export default function App() {
     const d: Doc = { id: crypto.randomUUID(), title: "Untitled", html: "" };
     setDocuments((prev) => [d, ...prev]);
     setActiveDocId(d.id);
+    setLastGen(null);
     editor?.commands.setContent("", false);
     editor?.commands.focus("end");
   }
@@ -136,13 +292,48 @@ export default function App() {
     setSettings((prev) => {
       const next = { ...prev, ...patch };
       saveSettings(next);
+      pushRemoteSettings(next);
       return next;
     });
 
-  useEffect(() => {
+  // Pull the latest shared state (chat history + desktop settings) from the Mac.
+  // Tabs listen for the "ai-studio-sync" event to re-read their own data.
+  async function syncNow() {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      if (!isTauri()) {
+        const remote = await invokeCmd<Partial<Settings> | null>("get_remote_settings").catch(
+          () => null
+        );
+        if (remote && typeof remote === "object") {
+          setSettings((prev) => {
+            const merged = { ...prev, ...remote };
+            saveSettings(merged);
+            return merged;
+          });
+        }
+      }
+      window.dispatchEvent(new Event("ai-studio-sync"));
+      toastSuccess("Synced with your other devices");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  const activeDoc = documents.find((d) => d.id === activeDocId) || documents[0];
+  const activeBible = activeDoc?.bible || EMPTY_BIBLE;
+  function updateBible(b: StoryBibleData) {
+    setDocuments((prev) => prev.map((d) => (d.id === activeDocId ? { ...d, bible: b } : d)));
+  }
+
+  const refreshOllama = () =>
     listOllamaModels(settings.ollamaUrl)
       .then(setOllamaModels)
       .catch(() => setOllamaModels([]));
+  useEffect(() => {
+    refreshOllama();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.ollamaUrl]);
 
   const provider = useMemo(() => resolveTextProvider(settings), [settings]);
@@ -184,20 +375,22 @@ export default function App() {
     return false;
   }
 
-  // Prompt bar: write a passage from the instruction (empty = continue).
-  async function handleGenerate() {
-    if (!editor || generating || !ensureModel()) return;
 
-    const instruction = prompt.trim();
+  // Core continuation: append a passage from `instruction` (empty = free
+  // continue), recording its inserted range so it can be regenerated.
+  async function generateContinuation(instruction: string) {
+    if (!editor) return;
     stoppedRef.current = false;
     setGenerating(true);
     setStatus(instruction ? "Writing…" : "Continuing…");
 
     const storyText = editor.getText();
-    const messages = buildContinuationMessages(storyText, settings, {
-      wordTarget: settings.wordTarget,
-      instruction,
-    });
+    const messages = buildContinuationMessages(
+      storyText,
+      settings,
+      { wordTarget: settings.wordTarget, instruction },
+      activeBible
+    );
 
     editor.commands.focus("end");
     const nlRef = { current: false };
@@ -208,41 +401,72 @@ export default function App() {
       editor.commands.insertContent(" ");
     }
 
-    await stream(messages, settings.maxTokens, nlRef);
+    const startPos = editor.state.selection.to;
+    await stream(messages, settings.maxTokens, nlRef, provider);
+    const endPos = editor.state.selection.to;
+    if (endPos > startPos) setLastGen({ from: startPos, to: endPos, instruction });
+  }
+
+  // Prompt bar: write a passage from the instruction (empty = continue).
+  async function handleGenerate() {
+    if (!editor || generating || !ensureModel()) return;
+    await generateContinuation(prompt.trim());
     setPrompt("");
   }
 
-  // Bubble menu: rewrite the current selection in place.
-  async function handleRewrite() {
+  // Delete the last AI passage and write a fresh one from the same instruction.
+  async function handleRegenerate() {
+    if (!editor || generating || !lastGen || !ensureModel()) return;
+    const size = editor.state.doc.content.size;
+    const to = Math.min(lastGen.to, size);
+    editor.chain().focus().setTextSelection({ from: lastGen.from, to }).deleteSelection().run();
+    await generateContinuation(lastGen.instruction);
+  }
+
+  // Bubble menu: rewrite the current selection in place. howOverride lets
+  // quick-action buttons (Expand, Shorten, …) reuse this path.
+  async function handleRewrite(howOverride?: string) {
     if (!editor || generating || !ensureModel()) return;
     const { from, to } = editor.state.selection;
     if (to <= from) return;
 
+    const how = howOverride ?? rewriteHow;
     const passage = editor.state.doc.textBetween(from, to, "\n");
     const before = editor.state.doc.textBetween(0, from, "\n");
-    const messages = buildRewriteMessages(before, passage, rewriteHow, settings);
+    const messages = buildRewriteMessages(before, passage, how, settings, activeBible);
 
     stoppedRef.current = false;
     setGenerating(true);
     setStatus("Rewriting…");
     editor.chain().focus().deleteSelection().run();
     const nlRef = { current: false };
-    await stream(messages, Math.max(settings.maxTokens, 600), nlRef);
+    await stream(messages, Math.max(settings.maxTokens, 600), nlRef, provider);
     setRewriteHow("");
   }
 
-  // Shared streaming runner.
+  // Quick selection actions map to preset rewrite directions.
+  const QUICK_ACTIONS: { label: string; how: string }[] = [
+    { label: "Expand", how: "Expand this passage with more detail, sensory texture, and beats, staying in the same voice — roughly double the length." },
+    { label: "Shorten", how: "Tighten this passage — cut redundancy and keep only the strongest lines, preserving meaning and voice." },
+    { label: "Rephrase", how: "Rephrase this passage in fresh words while keeping the same meaning, length, and voice." },
+    { label: "Describe", how: "Make this passage more vivid — heighten imagery, sensory detail, and atmosphere without changing events." },
+    { label: "To dialogue", how: "Rework this passage to foreground natural, character-revealing dialogue with light beats." },
+  ];
+
+  // Shared streaming runner. Pass the resolved provider to route the request to
+  // the main model or the secondary "spicy" model.
   async function stream(
     messages: ReturnType<typeof buildContinuationMessages>,
     maxTokens: number,
-    nlRef: { current: boolean }
+    nlRef: { current: boolean },
+    which: { baseUrl: string; apiKey: string; model: string } = provider
   ) {
     try {
       await generateText(
         {
-          baseUrl: provider.baseUrl,
-          apiKey: provider.apiKey,
-          model: provider.model,
+          baseUrl: which.baseUrl,
+          apiKey: which.apiKey,
+          model: which.model,
           messages,
           temperature: settings.temperature,
           maxTokens,
@@ -257,13 +481,15 @@ export default function App() {
           },
           onError: (msg) => {
             setGenerating(false);
-            setStatus(`Error: ${msg}`);
+            setStatus("");
+            toastError(msg);
           },
         }
       );
     } catch (e) {
       setGenerating(false);
-      setStatus(`Error: ${String(e)}`);
+      setStatus("");
+      toastError(String(e));
     }
   }
 
@@ -273,58 +499,145 @@ export default function App() {
     setStatus("");
   }
 
+  // Write → Images: send the selected scene over as an image prompt.
+  function handleIllustrate() {
+    if (!editor) return;
+    const { from, to } = editor.state.selection;
+    if (to <= from) return;
+    setImagePrefill(editor.state.doc.textBetween(from, to, " ").slice(0, 800));
+    setView("images");
+  }
+
+  // Chat agent → Write: append generated prose to the active manuscript.
+  function insertIntoManuscript(text: string) {
+    if (!editor || !text.trim()) return;
+    const end = editor.state.doc.content.size;
+    const html = text
+      .split(/\n\n+/)
+      .map((p) => `<p>${escapeText(p).replace(/\n/g, "<br>")}</p>`)
+      .join("");
+    editor.commands.insertContentAt(end, html);
+  }
+
+  // Global keyboard shortcuts. A ref holds the latest handlers so the listener
+  // (bound once) never fires a stale closure.
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const kbdRef = useRef({ generate: () => {}, stop: () => {}, newDoc: () => {} });
+  kbdRef.current = { generate: handleGenerate, stop: handleStop, newDoc };
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key === "1") { e.preventDefault(); setView("chat"); return; }
+      if (mod && e.key === "2") { e.preventDefault(); setView("write"); return; }
+      if (mod && e.key === "3") { e.preventDefault(); setView("images"); return; }
+      if (mod && e.key === ",") { e.preventDefault(); setShowSettings(true); return; }
+      if (viewRef.current === "write") {
+        if (mod && e.key === "Enter") { e.preventDefault(); kbdRef.current.generate(); }
+        else if (e.key === "Escape") { kbdRef.current.stop(); }
+        else if (mod && e.key.toLowerCase() === "n") { e.preventDefault(); kbdRef.current.newDoc(); }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const wordCount = editor
     ? editor.getText().trim().split(/\s+/).filter(Boolean).length
     : 0;
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">AI Studio</div>
-        <div className="tabs">
-          <button
-            className={view === "chat" ? "tab active" : "tab"}
-            onClick={() => setView("chat")}
-          >
-            Chat
-          </button>
-          <button
-            className={view === "write" ? "tab active" : "tab"}
-            onClick={() => setView("write")}
-          >
-            Write
-          </button>
-          <button
-            className={view === "images" ? "tab active" : "tab"}
-            onClick={() => setView("images")}
-          >
-            Images
-          </button>
-        </div>
-        <div className="topbar-actions">
-          {view === "write" && <span className="wordcount">{wordCount} words</span>}
-          <button className="btn ghost" onClick={() => setShowSettings(true)}>
-            Settings
-          </button>
-        </div>
+      {/* Mobile top bar: hamburger opens the sidebar */}
+      <header className="mobiletopbar">
+        <button className="mtb-btn" aria-label="Menu" onClick={() => setDrawerOpen(true)}>
+          <svg viewBox="0 0 24 24" {...ICON_STROKE} width="22" height="22">
+            <path d="M3 6h18M3 12h18M3 18h18" />
+          </svg>
+        </button>
+        <span className="mtb-title">{SECTIONS.find((s) => s.key === view)?.label}</span>
+        <button className="mtb-btn" aria-label="Sync" onClick={syncNow} disabled={syncing}>
+          <span className={syncing ? "sync-spin" : ""} style={{ fontSize: 18 }}>↻</span>
+        </button>
       </header>
 
+      {/* Backdrop behind the mobile drawer */}
+      {drawerOpen && <div className="sidebar-backdrop" onClick={() => setDrawerOpen(false)} />}
+
+      {/* Unified sidebar: sections + the active view's list + footer.
+          Persistent on desktop, an overlay drawer on mobile. */}
+      <aside
+        className={`sidebar${settings.sidebarCollapsed ? " collapsed" : ""}${drawerOpen ? " open" : ""}`}
+      >
+        <div className="sidebar-head">
+          <span className="sidebar-brand">AI Studio</span>
+          <button
+            className="sidebar-collapse"
+            title={settings.sidebarCollapsed ? "Expand" : "Collapse"}
+            onClick={() => updateSettings({ sidebarCollapsed: !settings.sidebarCollapsed })}
+          >
+            {settings.sidebarCollapsed ? "»" : "«"}
+          </button>
+        </div>
+        <div className="sidebar-sections">
+          {SECTIONS.map((s) => (
+            <button
+              key={s.key}
+              className={view === s.key ? "sidebar-sec active" : "sidebar-sec"}
+              title={s.label}
+              onClick={() => {
+                setView(s.key);
+                setDrawerOpen(false);
+              }}
+            >
+              <span className="sidebar-sec-icon">{s.icon}</span>
+              <span className="sidebar-sec-label">{s.label}</span>
+            </button>
+          ))}
+        </div>
+        {/* Active view portals its list (chats / docs / images) in here. */}
+        <div className="sidebar-list" ref={setSidebarSlot} />
+        <div className="sidebar-foot">
+          {view === "write" && <span className="navrail-count">{wordCount} words</span>}
+          <button
+            className="sidebar-sec"
+            title="Sync chats, docs & settings with your other devices"
+            onClick={syncNow}
+            disabled={syncing}
+          >
+            <span className={`sidebar-sec-icon ${syncing ? "sync-spin" : ""}`}>↻</span>
+            <span className="sidebar-sec-label">Sync devices</span>
+          </button>
+          <button className="sidebar-sec" onClick={() => setShowSettings(true)}>
+            <span className="sidebar-sec-icon">⚙</span>
+            <span className="sidebar-sec-label">Settings</span>
+          </button>
+        </div>
+      </aside>
+
+      <main className="main">
       {view === "chat" ? (
         <Chat
           settings={settings}
           onChange={updateSettings}
           onOpenSettings={() => setShowSettings(true)}
+          onInsertManuscript={insertIntoManuscript}
+          sidebarSlot={sidebarSlot}
+          onCloseDrawer={() => setDrawerOpen(false)}
         />
       ) : view === "write" ? (
         <div className="write-layout">
-          <SessionSidebar
-            items={documents}
-            activeId={activeDocId}
-            onSelect={switchDoc}
-            onNew={newDoc}
-            onDelete={deleteDoc}
-            newLabel="+ New document"
-          />
+          <SidebarSlot slot={sidebarSlot}>
+            <SidebarList
+              items={documents}
+              activeId={activeDocId}
+              onSelect={switchDoc}
+              onNew={newDoc}
+              onDelete={deleteDoc}
+              newLabel="+ New document"
+              onAfterAction={() => setDrawerOpen(false)}
+            />
+          </SidebarSlot>
           <div className="write-view">
           <div className="write-topbar">
             <ModelSelect
@@ -334,6 +647,32 @@ export default function App() {
               onChange={updateSettings}
               onRefresh={refreshOR}
               loading={orLoading}
+              onManageModels={() => setShowModels(true)}
+            />
+            <WritingPresets settings={settings} onChange={updateSettings} />
+            <select
+              className="lang-select"
+              title="Output language"
+              value={settings.language}
+              onChange={(e) => updateSettings({ language: e.target.value })}
+            >
+              {LANGUAGES.map((l) => (
+                <option key={l} value={l}>
+                  {l === "auto" ? "🌐 Auto" : l}
+                </option>
+              ))}
+            </select>
+            <div className="topbar-spacer" />
+            {lastGen && !generating && (
+              <button className="btn ghost" title="Regenerate the last AI passage" onClick={handleRegenerate}>
+                ↻ Regenerate
+              </button>
+            )}
+            <WritingSettings settings={settings} onChange={updateSettings} />
+            <ExportMenu
+              title={activeDoc?.title || "manuscript"}
+              getText={() => editor?.getText() ?? ""}
+              getHTML={() => editor?.getHTML() ?? ""}
             />
           </div>
           <div className="editor-scroll">
@@ -345,21 +684,42 @@ export default function App() {
                 tippyOptions={{ duration: 100, placement: "top" }}
               >
                 <div className="bubble">
-                  <input
-                    className="bubble-input"
-                    placeholder="improve… (or say how)"
-                    value={rewriteHow}
-                    onChange={(e) => setRewriteHow(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        handleRewrite();
-                      }
-                    }}
-                  />
-                  <button className="btn primary bubble-btn" onClick={handleRewrite}>
-                    Rewrite
-                  </button>
+                  <div className="bubble-actions">
+                    {QUICK_ACTIONS.map((a) => (
+                      <button
+                        key={a.label}
+                        className="bubble-quick"
+                        title={a.how}
+                        onClick={() => handleRewrite(a.how)}
+                      >
+                        {a.label}
+                      </button>
+                    ))}
+                    <button
+                      className="bubble-quick"
+                      title="Generate an image from this scene in the Images tab"
+                      onClick={handleIllustrate}
+                    >
+                      🎨 Illustrate
+                    </button>
+                  </div>
+                  <div className="bubble-row">
+                    <input
+                      className="bubble-input"
+                      placeholder="rewrite how…"
+                      value={rewriteHow}
+                      onChange={(e) => setRewriteHow(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleRewrite();
+                        }
+                      }}
+                    />
+                    <button className="btn primary bubble-btn" onClick={() => handleRewrite()}>
+                      Rewrite
+                    </button>
+                  </div>
                 </div>
               </BubbleMenu>
             )}
@@ -374,10 +734,25 @@ export default function App() {
             status={status}
           />
           </div>
+          <StoryBible
+            bible={activeBible}
+            onChange={updateBible}
+            open={bibleOpen}
+            onToggle={() => setBibleOpen((v) => !v)}
+          />
         </div>
       ) : (
-        <ImagePanel settings={settings} onChange={updateSettings} />
+        <ImagePanel
+          settings={settings}
+          onChange={updateSettings}
+          orModels={orModels}
+          prefill={imagePrefill}
+          onPrefillConsumed={() => setImagePrefill(null)}
+          sidebarSlot={sidebarSlot}
+          onCloseDrawer={() => setDrawerOpen(false)}
+        />
       )}
+      </main>
 
       {showSettings && (
         <SettingsModal
@@ -386,6 +761,29 @@ export default function App() {
           onClose={() => setShowSettings(false)}
         />
       )}
+
+      {showModels && (
+        <ModelManager
+          settings={settings}
+          installed={ollamaModels}
+          onClose={() => setShowModels(false)}
+          onChanged={refreshOllama}
+        />
+      )}
+
+      {showOnboarding && (
+        <Onboarding
+          settings={settings}
+          onChange={updateSettings}
+          onOpenModels={() => {
+            setView("chat");
+            setShowOnboarding(false);
+          }}
+          onClose={() => setShowOnboarding(false)}
+        />
+      )}
+
+      <RemoteApprovalListener />
     </div>
   );
 }

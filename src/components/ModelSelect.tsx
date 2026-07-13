@@ -1,8 +1,9 @@
-// Shared model picker: local Ollama models + OpenRouter's live catalog
-// (a short "Popular" group, then everything else newest-first).
+// Model picker: local Ollama models + a small Featured pin list + an Uncensored
+// group and full catalog derived LIVE from OpenRouter (so new models appear on
+// their own). ✦ discreetly marks uncensored / adult-friendly models.
 import type { OpenrouterModel } from "../lib/api";
 import type { Settings } from "../lib/settings";
-import { OPENROUTER_CHAT_SUGGESTIONS } from "../lib/presets";
+import { FEATURED_MODELS, isUncensoredModel } from "../lib/presets";
 
 interface Props {
   settings: Settings;
@@ -11,6 +12,8 @@ interface Props {
   onChange: (patch: Partial<Settings>) => void;
   onRefresh: () => void;
   loading: boolean;
+  /** Opens the local (Ollama) model installer. Shown as a "Local models" button. */
+  onManageModels?: () => void;
 }
 
 export default function ModelSelect({
@@ -20,6 +23,7 @@ export default function ModelSelect({
   onChange,
   onRefresh,
   loading,
+  onManageModels,
 }: Props) {
   const value =
     settings.provider === "ollama"
@@ -33,8 +37,15 @@ export default function ModelSelect({
     else onChange({ provider: "openrouter", openrouterModel: id });
   }
 
-  const rest = orModels.filter((m) => !OPENROUTER_CHAT_SUGGESTIONS.includes(m.id));
-  const known = new Set([...OPENROUTER_CHAT_SUGGESTIONS, ...orModels.map((m) => m.id)]);
+  const featuredIds = new Set(FEATURED_MODELS.map((m) => m.id));
+  // Text models only (drop pure image generators); groups derived from the live catalog.
+  const textModels = orModels.filter((m) => m.outputText);
+  const uncensored = textModels.filter(
+    (m) => !featuredIds.has(m.id) && isUncensoredModel(`${m.id} ${m.name}`)
+  );
+  const uncensoredIds = new Set(uncensored.map((m) => m.id));
+  const rest = textModels.filter((m) => !featuredIds.has(m.id) && !uncensoredIds.has(m.id));
+  const known = new Set([...featuredIds, ...orModels.map((m) => m.id)]);
   const selectedOR = settings.openrouterModel;
 
   return (
@@ -48,13 +59,22 @@ export default function ModelSelect({
             </option>
           ))}
         </optgroup>
-        <optgroup label="OpenRouter · Popular">
-          {OPENROUTER_CHAT_SUGGESTIONS.map((m) => (
-            <option key={m} value={`openrouter|${m}`}>
-              {m}
+        <optgroup label="OpenRouter · Featured">
+          {FEATURED_MODELS.map((m) => (
+            <option key={m.id} value={`openrouter|${m.id}`} title={m.note}>
+              {m.label} — {m.note}
             </option>
           ))}
         </optgroup>
+        {uncensored.length > 0 && (
+          <optgroup label={`OpenRouter · Uncensored (${uncensored.length})`}>
+            {uncensored.map((m) => (
+              <option key={m.id} value={`openrouter|${m.id}`} title={m.id}>
+                ✦ {m.name || m.id}
+              </option>
+            ))}
+          </optgroup>
+        )}
         {rest.length > 0 && (
           <optgroup label={`OpenRouter · All ${rest.length} (newest first)`}>
             {rest.map((m) => (
@@ -78,6 +98,11 @@ export default function ModelSelect({
       >
         {loading ? "…" : "Refresh"}
       </button>
+      {onManageModels && (
+        <button className="btn ghost" title="Install / manage local (Ollama) models" onClick={onManageModels}>
+          Local models
+        </button>
+      )}
     </div>
   );
 }

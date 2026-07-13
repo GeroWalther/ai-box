@@ -1,5 +1,7 @@
-// Thin typed wrappers over the Rust commands.
-import { invoke, Channel } from "@tauri-apps/api/core";
+// Thin typed wrappers over the Rust commands. Everything goes through the
+// transport layer so the exact same calls work in the desktop app (Tauri IPC)
+// and over the network on a phone (HTTP + WebSocket).
+import { invokeCmd, streamCmd } from "./transport";
 import type { ChatMsg } from "./presets";
 
 export type StreamEvent =
@@ -29,29 +31,29 @@ export async function generateText(
   args: GenerateArgs,
   handlers: StreamHandlers
 ): Promise<void> {
-  const channel = new Channel<StreamEvent>();
-  channel.onmessage = (msg) => {
-    if (msg.type === "token") handlers.onToken(msg.content);
-    else if (msg.type === "reasoning") handlers.onReasoning?.(msg.content);
-    else if (msg.type === "done") handlers.onDone();
-    else if (msg.type === "error") handlers.onError(msg.message);
-  };
-
-  await invoke("generate_text", {
-    params: {
-      baseUrl: args.baseUrl,
-      apiKey: args.apiKey,
-      model: args.model,
-      messages: args.messages,
-      temperature: args.temperature,
-      maxTokens: args.maxTokens,
+  await streamCmd<void>(
+    "generate_text",
+    {
+      params: {
+        baseUrl: args.baseUrl,
+        apiKey: args.apiKey,
+        model: args.model,
+        messages: args.messages,
+        temperature: args.temperature,
+        maxTokens: args.maxTokens,
+      },
     },
-    onEvent: channel,
-  });
+    (msg: StreamEvent) => {
+      if (msg.type === "token") handlers.onToken(msg.content);
+      else if (msg.type === "reasoning") handlers.onReasoning?.(msg.content);
+      else if (msg.type === "done") handlers.onDone();
+      else if (msg.type === "error") handlers.onError(msg.message);
+    }
+  );
 }
 
 export async function listOllamaModels(baseUrl: string): Promise<string[]> {
-  return invoke<string[]>("list_ollama_models", { baseUrl });
+  return invokeCmd<string[]>("list_ollama_models", { baseUrl });
 }
 
 export interface OpenrouterModel {
@@ -60,11 +62,14 @@ export interface OpenrouterModel {
   contextLength: number;
   promptPrice: number;
   created: number;
+  outputText: boolean;
+  outputImage: boolean;
+  inputImage: boolean;
 }
 
 /** Fetch OpenRouter's live model catalog (newest first). Key is optional. */
 export async function listOpenrouterModels(apiKey?: string): Promise<OpenrouterModel[]> {
-  return invoke<OpenrouterModel[]>("list_openrouter_models", { apiKey: apiKey || null });
+  return invokeCmd<OpenrouterModel[]>("list_openrouter_models", { apiKey: apiKey || null });
 }
 
 export interface SystemInfo {
@@ -72,7 +77,7 @@ export interface SystemInfo {
   chip: string;
 }
 export async function systemInfo(): Promise<SystemInfo> {
-  return invoke<SystemInfo>("system_info");
+  return invokeCmd<SystemInfo>("system_info");
 }
 
 /** Download a URL to a destination path (~ allowed), streaming progress. */
@@ -81,9 +86,7 @@ export async function downloadFile(
   dest: string,
   onProgress: (line: string) => void
 ): Promise<void> {
-  const channel = new Channel<string>();
-  channel.onmessage = (line) => onProgress(line);
-  await invoke("download_file", { url, dest, onEvent: channel });
+  await streamCmd<void>("download_file", { url, dest }, (line: string) => onProgress(line));
 }
 
 /** Pull an Ollama model, streaming progress lines. Resolves when finished. */
@@ -92,9 +95,9 @@ export async function pullOllamaModel(
   model: string,
   onProgress: (line: string) => void
 ): Promise<void> {
-  const channel = new Channel<string>();
-  channel.onmessage = (line) => onProgress(line);
-  await invoke("pull_ollama_model", { baseUrl, model, onEvent: channel });
+  await streamCmd<void>("pull_ollama_model", { baseUrl, model }, (line: string) =>
+    onProgress(line)
+  );
 }
 
 export interface ImageArgs {
@@ -110,7 +113,7 @@ export interface ImageArgs {
 
 /** Returns a base64 PNG (no data-URI prefix). Automatic1111 / Forge backend. */
 export async function generateImage(args: ImageArgs): Promise<string> {
-  return invoke<string>("generate_image", { params: args });
+  return invokeCmd<string>("generate_image", { params: args });
 }
 
 export interface ComfyArgs {
@@ -124,15 +127,16 @@ export interface ComfyArgs {
   cfgScale: number;
   samplerName: string;
   scheduler: string;
+  seed: number;
 }
 
 /** Returns a base64 PNG (no data-URI prefix). ComfyUI backend. */
 export async function generateImageComfy(args: ComfyArgs): Promise<string> {
-  return invoke<string>("generate_image_comfy", { params: args });
+  return invokeCmd<string>("generate_image_comfy", { params: args });
 }
 
 export async function listComfyCheckpoints(baseUrl: string): Promise<string[]> {
-  return invoke<string[]>("list_comfy_checkpoints", { baseUrl });
+  return invokeCmd<string[]>("list_comfy_checkpoints", { baseUrl });
 }
 
 export interface Img2ImgArgs {
@@ -146,11 +150,12 @@ export interface Img2ImgArgs {
   scheduler: string;
   denoise: number;
   imageBase64: string; // source image, no data-URI prefix
+  seed: number;
 }
 
 /** Transform an uploaded image. Returns a base64 PNG (no prefix). */
 export async function generateImg2imgComfy(args: Img2ImgArgs): Promise<string> {
-  return invoke<string>("generate_img2img_comfy", { params: args });
+  return invokeCmd<string>("generate_img2img_comfy", { params: args });
 }
 
 export interface OpenrouterImageArgs {
@@ -163,7 +168,7 @@ export interface OpenrouterImageArgs {
 
 /** Cloud image via OpenRouter. Returns base64 (no prefix). */
 export async function generateImageOpenrouter(args: OpenrouterImageArgs): Promise<string> {
-  return invoke<string>("generate_image_openrouter", { params: args });
+  return invokeCmd<string>("generate_image_openrouter", { params: args });
 }
 
 export interface OpenrouterEditArgs {
@@ -175,5 +180,5 @@ export interface OpenrouterEditArgs {
 
 /** Edit/transform an uploaded image via OpenRouter. Returns base64 (no prefix). */
 export async function editImageOpenrouter(args: OpenrouterEditArgs): Promise<string> {
-  return invoke<string>("edit_image_openrouter", { params: args });
+  return invokeCmd<string>("edit_image_openrouter", { params: args });
 }

@@ -1,5 +1,5 @@
 import type { Settings } from "../lib/settings";
-import { LANGUAGES } from "../lib/presets";
+import RemoteAccess from "./RemoteAccess";
 
 interface Props {
   settings: Settings;
@@ -20,8 +20,8 @@ export default function SettingsModal({ settings, onChange, onClose }: Props) {
 
         <div className="modal-body">
           <p className="hint">
-            Keys &amp; endpoints live here. Pick the actual <b>model</b> in each tab
-            (Chat, Write, Images) — not here.
+            Global settings. Model &amp; writing options live in each tab (⚙ in Write,
+            model picker in every tab).
           </p>
 
           <section>
@@ -47,9 +47,9 @@ export default function SettingsModal({ settings, onChange, onClose }: Props) {
             <label>API key</label>
             <input
               type="password"
-              placeholder="sk-or-…"
+              placeholder="sk-or-v1-…"
               value={settings.openrouterKey}
-              onChange={(e) => onChange({ openrouterKey: e.target.value })}
+              onChange={(e) => onChange({ openrouterKey: e.target.value.trim() })}
             />
             <p className="hint">
               Stored locally on this machine only. Get a key at openrouter.ai/keys.
@@ -57,58 +57,11 @@ export default function SettingsModal({ settings, onChange, onClose }: Props) {
           </section>
 
           <p className="hint">
-            Local models run through Ollama automatically — install or switch them
-            with the <b>Models</b> button in the Chat tab. No URLs to configure.
+            Local models run through Ollama — install them with <b>Local models</b> next
+            to any model picker. No URLs to configure.
           </p>
 
-          <section>
-            <h3>Writing defaults</h3>
-            <label>Language</label>
-            <select
-              value={settings.language}
-              onChange={(e) => onChange({ language: e.target.value })}
-            >
-              {LANGUAGES.map((l) => (
-                <option key={l} value={l}>
-                  {l === "auto" ? "Auto (match text)" : l}
-                </option>
-              ))}
-            </select>
-            <label>Passage length ({settings.wordTarget} words)</label>
-            <input
-              type="range"
-              min={60}
-              max={600}
-              step={20}
-              value={settings.wordTarget}
-              onChange={(e) => onChange({ wordTarget: Number(e.target.value) })}
-            />
-            <label>Creativity ({settings.temperature.toFixed(2)})</label>
-            <input
-              type="range"
-              min={0}
-              max={1.5}
-              step={0.05}
-              value={settings.temperature}
-              onChange={(e) => onChange({ temperature: Number(e.target.value) })}
-            />
-            <label>Style note (optional — persistent tone / POV)</label>
-            <textarea
-              rows={2}
-              placeholder="e.g. refined, sensual, literary; first person, present tense…"
-              value={settings.authorsNote}
-              onChange={(e) => onChange({ authorsNote: e.target.value })}
-            />
-            <label>Max tokens per passage ({settings.maxTokens})</label>
-            <input
-              type="range"
-              min={100}
-              max={2000}
-              step={50}
-              value={settings.maxTokens}
-              onChange={(e) => onChange({ maxTokens: Number(e.target.value) })}
-            />
-          </section>
+          <RemoteAccess settings={settings} onChange={onChange} />
         </div>
 
         <div className="modal-foot">

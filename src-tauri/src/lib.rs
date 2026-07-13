@@ -7,6 +7,28 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
+mod server;
+
+/// A sink for streamed events, abstracting over the Tauri IPC Channel (desktop
+/// webview) and a WebSocket connection (remote/phone). Streaming command cores
+/// emit through this so the exact same logic serves both transports.
+pub(crate) trait EventSink: Send + Sync {
+    fn emit(&self, value: serde_json::Value);
+}
+
+/// Serialize a typed event and push it into a sink.
+pub(crate) fn emit_ev<T: Serialize>(sink: &dyn EventSink, ev: T) {
+    sink.emit(serde_json::to_value(ev).unwrap_or(serde_json::Value::Null));
+}
+
+/// EventSink backed by a Tauri IPC Channel — the desktop webview transport.
+struct ChannelSink(Channel<serde_json::Value>);
+impl EventSink for ChannelSink {
+    fn emit(&self, value: serde_json::Value) {
+        let _ = self.0.send(value);
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ChatMessage {
@@ -41,7 +63,12 @@ enum StreamEvent {
 /// Stream a chat completion token-by-token to the frontend via a Channel.
 /// Works with any OpenAI-compatible endpoint (OpenRouter, Ollama, LM Studio, ...).
 #[tauri::command]
-async fn generate_text(params: GenerateParams, on_event: Channel<StreamEvent>) -> Result<(), String> {
+async fn generate_text(params: GenerateParams, on_event: Channel<serde_json::Value>) -> Result<(), String> {
+    generate_text_core(params, &ChannelSink(on_event)).await
+}
+
+/// Core streaming logic shared by the Tauri command and the remote WS server.
+pub(crate) async fn generate_text_core(params: GenerateParams, sink: &dyn EventSink) -> Result<(), String> {
     let url = format!("{}/chat/completions", params.base_url.trim_end_matches('/'));
 
     let body = serde_json::json!({
@@ -60,18 +87,18 @@ async fn generate_text(params: GenerateParams, on_event: Channel<StreamEvent>) -
         .post(&url)
         .header("Content-Type", "application/json")
         // OpenRouter asks for these; harmless for other providers.
-        .header("HTTP-Referer", "https://novel-studio.local")
-        .header("X-Title", "Novel Studio")
+        .header("HTTP-Referer", "https://ai-studio.local")
+        .header("X-Title", "AI Studio")
         .json(&body);
 
     if !params.api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", params.api_key));
+        req = req.header("Authorization", format!("Bearer {}", params.api_key.trim()));
     }
 
     let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
-            let _ = on_event.send(StreamEvent::Error { message: format!("Request failed: {e}") });
+            emit_ev(sink, StreamEvent::Error { message: format!("Request failed: {e}") });
             return Ok(());
         }
     };
@@ -79,7 +106,7 @@ async fn generate_text(params: GenerateParams, on_event: Channel<StreamEvent>) -
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        let _ = on_event.send(StreamEvent::Error {
+        emit_ev(sink, StreamEvent::Error {
             message: format!("HTTP {status}: {text}"),
         });
         return Ok(());
@@ -93,7 +120,7 @@ async fn generate_text(params: GenerateParams, on_event: Channel<StreamEvent>) -
         let bytes = match chunk {
             Ok(b) => b,
             Err(e) => {
-                let _ = on_event.send(StreamEvent::Error { message: format!("Stream error: {e}") });
+                emit_ev(sink, StreamEvent::Error { message: format!("Stream error: {e}") });
                 return Ok(());
             }
         };
@@ -109,7 +136,7 @@ async fn generate_text(params: GenerateParams, on_event: Channel<StreamEvent>) -
                 None => continue,
             };
             if data == "[DONE]" {
-                let _ = on_event.send(StreamEvent::Done);
+                emit_ev(sink, StreamEvent::Done);
                 return Ok(());
             }
             if data.is_empty() {
@@ -124,19 +151,19 @@ async fn generate_text(params: GenerateParams, on_event: Channel<StreamEvent>) -
                     .or_else(|| delta["reasoning_content"].as_str());
                 if let Some(r) = reasoning {
                     if !r.is_empty() {
-                        let _ = on_event.send(StreamEvent::Reasoning { content: r.to_string() });
+                        emit_ev(sink, StreamEvent::Reasoning { content: r.to_string() });
                     }
                 }
                 if let Some(content) = delta["content"].as_str() {
                     if !content.is_empty() {
-                        let _ = on_event.send(StreamEvent::Token { content: content.to_string() });
+                        emit_ev(sink, StreamEvent::Token { content: content.to_string() });
                     }
                 }
             }
         }
     }
 
-    let _ = on_event.send(StreamEvent::Done);
+    emit_ev(sink, StreamEvent::Done);
     Ok(())
 }
 
@@ -151,6 +178,10 @@ struct OpenrouterModel {
     prompt_price: f64,
     /// Unix seconds the model was added — used to sort newest-first.
     created: u64,
+    /// Modality flags so the frontend can split text vs image pickers itself.
+    output_text: bool,
+    output_image: bool,
+    input_image: bool,
 }
 
 /// Fetch OpenRouter's live model catalog so the picker never goes stale.
@@ -164,7 +195,7 @@ async fn list_openrouter_models(api_key: Option<String>) -> Result<Vec<Openroute
         .header("X-Title", "AI Studio");
     if let Some(key) = api_key {
         if !key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", key));
+            req = req.header("Authorization", format!("Bearer {}", key.trim()));
         }
     }
     let resp = req.send().await.map_err(|e| format!("Request failed: {e}"))?;
@@ -175,28 +206,31 @@ async fn list_openrouter_models(api_key: Option<String>) -> Result<Vec<Openroute
     }
     let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     let arr = json["data"].as_array().cloned().unwrap_or_default();
+    // Helper: does an architecture modality array/string contain a modality?
+    fn has_modality(arch: &serde_json::Value, key: &str, want: &str) -> Option<bool> {
+        match arch[key].as_array() {
+            Some(mods) => Some(mods.iter().any(|x| x.as_str() == Some(want))),
+            None => arch["modality"].as_str().map(|s| s.contains(want)),
+        }
+    }
     let mut models: Vec<OpenrouterModel> = arr
         .iter()
-        .filter(|m| {
-            // Keep only models that can OUTPUT text (drop pure image/audio generators).
-            let out = &m["architecture"]["output_modalities"];
-            match out.as_array() {
-                Some(mods) => mods.iter().any(|x| x.as_str() == Some("text")),
-                None => m["architecture"]["modality"]
+        .map(|m| {
+            let arch = &m["architecture"];
+            OpenrouterModel {
+                id: m["id"].as_str().unwrap_or("").to_string(),
+                name: m["name"].as_str().unwrap_or("").to_string(),
+                context_length: m["context_length"].as_u64().unwrap_or(0),
+                prompt_price: m["pricing"]["prompt"]
                     .as_str()
-                    .map(|s| s.contains("text"))
-                    .unwrap_or(true),
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0),
+                created: m["created"].as_u64().unwrap_or(0),
+                // Default text-out true when unknown (most models are text).
+                output_text: has_modality(arch, "output_modalities", "text").unwrap_or(true),
+                output_image: has_modality(arch, "output_modalities", "image").unwrap_or(false),
+                input_image: has_modality(arch, "input_modalities", "image").unwrap_or(false),
             }
-        })
-        .map(|m| OpenrouterModel {
-            id: m["id"].as_str().unwrap_or("").to_string(),
-            name: m["name"].as_str().unwrap_or("").to_string(),
-            context_length: m["context_length"].as_u64().unwrap_or(0),
-            prompt_price: m["pricing"]["prompt"]
-                .as_str()
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(0.0),
-            created: m["created"].as_u64().unwrap_or(0),
         })
         .filter(|m| !m.id.is_empty())
         .collect();
@@ -236,7 +270,16 @@ async fn list_ollama_models(base_url: String) -> Result<Vec<String>, String> {
 async fn pull_ollama_model(
     base_url: String,
     model: String,
-    on_event: Channel<String>,
+    on_event: Channel<serde_json::Value>,
+) -> Result<(), String> {
+    pull_ollama_model_core(base_url, model, &ChannelSink(on_event)).await
+}
+
+/// Core shared by the Tauri command and the remote WS server.
+pub(crate) async fn pull_ollama_model_core(
+    base_url: String,
+    model: String,
+    sink: &dyn EventSink,
 ) -> Result<(), String> {
     let root = base_url
         .trim_end_matches('/')
@@ -274,11 +317,11 @@ async fn pull_ollama_model(
                     (Some(c), Some(t)) if t > 0 => format!("{status} — {}%", c * 100 / t),
                     _ => status.to_string(),
                 };
-                let _ = on_event.send(msg);
+                sink.emit(serde_json::Value::String(msg));
             }
         }
     }
-    let _ = on_event.send("done".to_string());
+    sink.emit(serde_json::Value::String("done".to_string()));
     Ok(())
 }
 
@@ -348,6 +391,8 @@ struct ComfyParams {
     cfg_scale: f32,
     sampler_name: String, // ComfyUI sampler id, e.g. "dpmpp_2m"
     scheduler: String,    // e.g. "karras"
+    /// Fixed seed for reproducibility (the frontend supplies one each call).
+    seed: u64,
 }
 
 /// Generate an image via ComfyUI: submit a standard txt2img graph, poll the
@@ -356,12 +401,7 @@ struct ComfyParams {
 async fn generate_image_comfy(params: ComfyParams) -> Result<String, String> {
     let root = params.base_url.trim_end_matches('/').to_string();
     let client = reqwest::Client::new();
-
-    // Vary the seed each call without Math.random on the frontend.
-    let seed: u64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
+    let seed = params.seed;
 
     let workflow = serde_json::json!({
         "3": {"class_type": "KSampler", "inputs": {
@@ -475,6 +515,8 @@ struct Img2ImgParams {
     denoise: f32,
     /// Source image as base64 (no data-URI prefix).
     image_base64: String,
+    /// Fixed seed for reproducibility.
+    seed: u64,
 }
 
 /// Transform an uploaded image via ComfyUI img2img (upload → VAE encode → sample).
@@ -482,6 +524,7 @@ struct Img2ImgParams {
 async fn generate_img2img_comfy(params: Img2ImgParams) -> Result<String, String> {
     let root = params.base_url.trim_end_matches('/').to_string();
     let client = reqwest::Client::new();
+    let seed = params.seed;
 
     // Decode the source image and upload it to ComfyUI's input folder.
     let bytes = base64::engine::general_purpose::STANDARD
@@ -516,11 +559,6 @@ async fn generate_img2img_comfy(params: Img2ImgParams) -> Result<String, String>
     } else {
         format!("{subfolder}/{name}")
     };
-
-    let seed: u64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
 
     let workflow = serde_json::json!({
         "3": {"class_type": "KSampler", "inputs": {
@@ -564,7 +602,7 @@ async fn generate_image_openrouter(params: OpenrouterImageParams) -> Result<Stri
     });
     let resp = client
         .post("https://openrouter.ai/api/v1/images")
-        .header("Authorization", format!("Bearer {}", params.api_key))
+        .header("Authorization", format!("Bearer {}", params.api_key.trim()))
         .header("HTTP-Referer", "https://ai-studio.local")
         .header("X-Title", "AI Studio")
         .json(&body)
@@ -620,7 +658,7 @@ async fn edit_image_openrouter(params: OpenrouterEditParams) -> Result<String, S
     });
     let resp = client
         .post("https://openrouter.ai/api/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", params.api_key))
+        .header("Authorization", format!("Bearer {}", params.api_key.trim()))
         .header("HTTP-Referer", "https://ai-studio.local")
         .header("X-Title", "AI Studio")
         .json(&body)
@@ -744,7 +782,7 @@ async fn chat_completion(params: ChatCompletionParams) -> Result<serde_json::Val
         .header("X-Title", "AI Studio")
         .json(&body);
     if !params.api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", params.api_key));
+        req = req.header("Authorization", format!("Bearer {}", params.api_key.trim()));
     }
     let resp = req.send().await.map_err(|e| format!("Request failed: {e}"))?;
     if !resp.status().is_success() {
@@ -822,13 +860,261 @@ async fn run_command(command: String) -> Result<serde_json::Value, String> {
     }))
 }
 
+/// Live events streamed while a command runs.
+#[derive(Serialize, Clone)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum CmdEvent {
+    Line { text: String },
+    Done { code: i32 },
+    Error { message: String },
+}
+
+/// Run a shell command, streaming stdout/stderr lines to the frontend and
+/// enforcing a timeout. Also returns the aggregated output + exit code for the
+/// agent loop. FRONTEND gates this behind user approval. kill_on_drop ensures a
+/// timed-out (dropped) child is terminated.
+#[tauri::command]
+async fn run_command_stream(
+    command: String,
+    timeout_secs: Option<u64>,
+    on_event: Channel<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    run_command_stream_core(command, timeout_secs, &ChannelSink(on_event)).await
+}
+
+/// Core shared by the Tauri command and the remote WS server.
+pub(crate) async fn run_command_stream_core(
+    command: String,
+    timeout_secs: Option<u64>,
+    sink: &dyn EventSink,
+) -> Result<serde_json::Value, String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut child = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("spawn failed: {e}"))?;
+
+    let mut out_lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut err_lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let dur = std::time::Duration::from_secs(timeout_secs.unwrap_or(120).clamp(1, 1800));
+
+    let mut collected = String::new();
+    let run = async {
+        let (mut out_done, mut err_done) = (false, false);
+        while !(out_done && err_done) {
+            tokio::select! {
+                l = out_lines.next_line(), if !out_done => match l {
+                    Ok(Some(s)) => { collected.push_str(&s); collected.push('\n'); emit_ev(sink, CmdEvent::Line { text: s }); }
+                    _ => out_done = true,
+                },
+                l = err_lines.next_line(), if !err_done => match l {
+                    Ok(Some(s)) => { collected.push_str(&s); collected.push('\n'); emit_ev(sink, CmdEvent::Line { text: s }); }
+                    _ => err_done = true,
+                },
+            }
+        }
+        child.wait().await.ok().and_then(|s| s.code()).unwrap_or(-1)
+    };
+
+    match tokio::time::timeout(dur, run).await {
+        Ok(code) => {
+            emit_ev(sink, CmdEvent::Done { code });
+            Ok(serde_json::json!({ "output": collected, "code": code }))
+        }
+        Err(_) => {
+            emit_ev(sink, CmdEvent::Error {
+                message: format!("timed out after {}s (process killed)", dur.as_secs()),
+            });
+            Ok(serde_json::json!({ "output": "", "code": -1, "timedOut": true }))
+        }
+    }
+}
+
+/// Recursively search a directory by filename and/or file content. Bounded to
+/// keep results and time in check; skips heavy/hidden dirs. Auto (read-only).
+#[tauri::command]
+fn fs_search(root: String, query: String, kind: Option<String>) -> Result<Vec<String>, String> {
+    let root = expand_path(&root);
+    let kind = kind.unwrap_or_else(|| "both".to_string());
+    let want_name = kind == "name" || kind == "both";
+    let want_content = kind == "content" || kind == "both";
+    let q = query.to_lowercase();
+    const LIMIT: usize = 200;
+    let skip = ["node_modules", ".git", "target", "dist", "build", ".next", ".venv"];
+    let mut out: Vec<String> = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from(&root)];
+    while let Some(dir) = stack.pop() {
+        if out.len() >= LIMIT {
+            break;
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            if out.len() >= LIMIT {
+                break;
+            }
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                if skip.contains(&name.as_str()) || name.starts_with('.') {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if want_name && name.to_lowercase().contains(&q) {
+                out.push(path.to_string_lossy().to_string());
+                continue;
+            }
+            if want_content {
+                if entry.metadata().map(|m| m.len() > 1_000_000).unwrap_or(true) {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    for (i, line) in content.lines().enumerate() {
+                        if line.to_lowercase().contains(&q) {
+                            let snip: String = line.trim().chars().take(160).collect();
+                            out.push(format!("{}:{}: {snip}", path.to_string_lossy(), i + 1));
+                            if out.len() >= LIMIT {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Replace the first exact occurrence of `old` with `new` in a file, returning
+/// a compact diff. Requires `old` to be unique. Auto (a diff is surfaced in UI).
+#[tauri::command]
+fn fs_edit(path: String, old: String, new: String) -> Result<serde_json::Value, String> {
+    let path = expand_path(&path);
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?;
+    let count = content.matches(&old).count();
+    if count == 0 {
+        return Err("`old` string not found in file".into());
+    }
+    if count > 1 {
+        return Err(format!(
+            "`old` string is not unique ({count} matches) — include more surrounding context"
+        ));
+    }
+    let updated = content.replacen(&old, &new, 1);
+    std::fs::write(&path, &updated).map_err(|e| format!("write {path}: {e}"))?;
+    let diff = old
+        .lines()
+        .map(|l| format!("- {l}"))
+        .chain(new.lines().map(|l| format!("+ {l}")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(serde_json::json!({ "message": format!("Edited {path}"), "diff": diff }))
+}
+
+/// Move/rename a path. FRONTEND gates this behind user approval.
+#[tauri::command]
+fn fs_move(from: String, to: String) -> Result<String, String> {
+    let from = expand_path(&from);
+    let to = expand_path(&to);
+    if let Some(p) = std::path::Path::new(&to).parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
+    std::fs::rename(&from, &to).map_err(|e| format!("move: {e}"))?;
+    Ok(format!("Moved {from} → {to}"))
+}
+
+/// Delete a file or directory (recursive). FRONTEND gates this behind approval.
+#[tauri::command]
+fn fs_delete(path: String) -> Result<String, String> {
+    let path = expand_path(&path);
+    let meta = std::fs::metadata(&path).map_err(|e| format!("stat {path}: {e}"))?;
+    if meta.is_dir() {
+        std::fs::remove_dir_all(&path).map_err(|e| format!("delete {path}: {e}"))?;
+    } else {
+        std::fs::remove_file(&path).map_err(|e| format!("delete {path}: {e}"))?;
+    }
+    Ok(format!("Deleted {path}"))
+}
+
+/// Fetch a URL and return readable text (HTML stripped, capped). Auto.
+#[tauri::command]
+async fn web_fetch(url: String) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "AI Studio/1.0")
+        .send()
+        .await
+        .map_err(|e| format!("fetch failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+    let text = if ct.contains("html") { strip_html(&body) } else { body };
+    Ok(text.chars().take(100_000).collect())
+}
+
+/// Strip HTML tags (and script/style bodies) to plain, whitespace-collapsed text.
+fn strip_html(html: &str) -> String {
+    let mut out = String::new();
+    let mut tag = String::new();
+    let mut in_tag = false;
+    let mut skip = false; // inside a <script>/<style> body
+    for c in html.chars() {
+        if in_tag {
+            if c == '>' {
+                in_tag = false;
+                let t = tag.trim().to_lowercase();
+                if t.starts_with("script") || t.starts_with("style") {
+                    skip = true;
+                } else if t.starts_with("/script") || t.starts_with("/style") {
+                    skip = false;
+                }
+                tag.clear();
+            } else {
+                tag.push(c);
+            }
+        } else if c == '<' {
+            in_tag = true;
+        } else if !skip {
+            out.push(c);
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Download a URL to a destination path, streaming progress lines. For installing
 /// image checkpoints into ComfyUI. Supports ~ in the destination.
 #[tauri::command]
 async fn download_file(
     url: String,
     dest: String,
-    on_event: Channel<String>,
+    on_event: Channel<serde_json::Value>,
+) -> Result<(), String> {
+    download_file_core(url, dest, &ChannelSink(on_event)).await
+}
+
+/// Core shared by the Tauri command and the remote WS server.
+pub(crate) async fn download_file_core(
+    url: String,
+    dest: String,
+    sink: &dyn EventSink,
 ) -> Result<(), String> {
     use std::io::Write;
     let dest = expand_path(&dest);
@@ -857,13 +1143,13 @@ async fn download_file(
             let pct = downloaded * 100 / total;
             if pct != last_pct {
                 last_pct = pct;
-                let _ = on_event.send(format!("{pct}%  ({} MB)", downloaded / 1_000_000));
+                sink.emit(serde_json::Value::String(format!("{pct}%  ({} MB)", downloaded / 1_000_000)));
             }
         } else {
-            let _ = on_event.send(format!("{} MB", downloaded / 1_000_000));
+            sink.emit(serde_json::Value::String(format!("{} MB", downloaded / 1_000_000)));
         }
     }
-    let _ = on_event.send("done".to_string());
+    sink.emit(serde_json::Value::String("done".to_string()));
     Ok(())
 }
 
@@ -893,10 +1179,171 @@ fn system_info() -> serde_json::Value {
     serde_json::json!({ "ramGb": ram_gb, "chip": chip })
 }
 
+// ---- Remote access (phone) server control --------------------------------
+
+/// Start the companion HTTP+WebSocket server that serves the built UI and mirrors
+/// commands to remote devices. Returns the reachable URLs + token.
+#[tauri::command]
+async fn start_remote_server(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, server::RemoteState>,
+    registry: tauri::State<'_, server::ApprovalRegistry>,
+    settings: tauri::State<'_, server::RemoteSettings>,
+    port: Option<u16>,
+    token: String,
+    wake_lock: bool,
+) -> Result<serde_json::Value, String> {
+    server::start(
+        app,
+        state.inner(),
+        registry.inner(),
+        settings.inner(),
+        port.unwrap_or(8787),
+        token,
+        wake_lock,
+    )
+    .await
+}
+
+/// Push the desktop's current settings into the shared store so a paired phone
+/// uses the same configuration (API key, model, generation options, …).
+#[tauri::command]
+fn set_remote_settings(store: tauri::State<'_, server::RemoteSettings>, settings: String) {
+    store.set(settings);
+}
+
+// ---- Shared key/value store (chat history etc.) --------------------------
+// A small JSON file on the Mac, reachable from BOTH the desktop (Tauri IPC) and
+// a paired phone (through the server), so history is the same on every device.
+
+fn remote_store_path() -> String {
+    expand_path("~/.ai-studio/store.json")
+}
+fn remote_store_lock() -> &'static std::sync::Mutex<()> {
+    static L: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    L.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+/// Read one key from the shared store (null if absent).
+#[tauri::command]
+fn remote_store_get(key: String) -> Option<String> {
+    let _g = remote_store_lock().lock().ok()?;
+    let content = std::fs::read_to_string(remote_store_path()).ok()?;
+    let map: serde_json::Value = serde_json::from_str(&content).ok()?;
+    map.get(&key).and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+/// Write one key into the shared store (read-modify-write under a lock).
+#[tauri::command]
+fn remote_store_set(key: String, value: String) -> Result<(), String> {
+    let _g = remote_store_lock().lock().map_err(|_| "store lock poisoned".to_string())?;
+    let path = remote_store_path();
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut map = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    map.insert(key, serde_json::Value::String(value));
+    std::fs::write(&path, serde_json::Value::Object(map).to_string()).map_err(|e| e.to_string())
+}
+
+// ---- Shared image gallery ------------------------------------------------
+// Each generated image is one JSON file on the Mac (record + base64 data), so
+// the gallery is the same on the desktop and any paired phone. The list returns
+// metadata only (no image bytes); thumbnails are fetched per-image on demand.
+
+fn images_dir() -> String {
+    expand_path("~/.ai-studio/images")
+}
+/// Keep ids filesystem-safe (they're UUIDs, but guard against traversal).
+fn safe_id(id: &str) -> String {
+    id.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
+}
+
+/// Save one image record (JSON incl. its base64 data) as its own file.
+#[tauri::command]
+fn image_put(id: String, record: String) -> Result<(), String> {
+    let id = safe_id(&id);
+    if id.is_empty() {
+        return Err("bad image id".into());
+    }
+    let dir = images_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{dir}/{id}.json"), record).map_err(|e| e.to_string())
+}
+
+/// List image metadata (newest first), WITHOUT the heavy `dataUrl` field.
+#[tauri::command]
+fn image_list() -> Vec<serde_json::Value> {
+    let dir = images_dir();
+    let mut items = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            if e.path().extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(e.path()) {
+                if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(o) = v.as_object_mut() {
+                        o.remove("dataUrl");
+                    }
+                    items.push(v);
+                }
+            }
+        }
+    }
+    items.sort_by(|a, b| b["at"].as_i64().unwrap_or(0).cmp(&a["at"].as_i64().unwrap_or(0)));
+    items
+}
+
+/// Full record (with `dataUrl`) for one image.
+#[tauri::command]
+fn image_get(id: String) -> Option<String> {
+    std::fs::read_to_string(format!("{}/{}.json", images_dir(), safe_id(&id))).ok()
+}
+
+/// Delete one image from the shared gallery.
+#[tauri::command]
+fn image_delete(id: String) -> Result<(), String> {
+    let _ = std::fs::remove_file(format!("{}/{}.json", images_dir(), safe_id(&id)));
+    Ok(())
+}
+
+/// Stop the remote server and release the wake-lock.
+#[tauri::command]
+fn stop_remote_server(state: tauri::State<'_, server::RemoteState>) {
+    server::stop(state.inner());
+}
+
+/// Reachable URLs (LAN + Tailscale) + current token / running state.
+#[tauri::command]
+fn remote_urls(state: tauri::State<'_, server::RemoteState>) -> serde_json::Value {
+    server::urls(state.inner())
+}
+
+/// Fulfil a pending remote approval — called by the desktop after the user
+/// approves/denies on the Mac.
+#[tauri::command]
+fn resolve_remote_approval(
+    registry: tauri::State<'_, server::ApprovalRegistry>,
+    id: String,
+    approved: bool,
+) {
+    registry.resolve(&id, approved);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(server::ApprovalRegistry::default())
+        .manage(server::RemoteState::default())
+        .manage(server::RemoteSettings::default())
         .invoke_handler(tauri::generate_handler![
             generate_text,
             list_openrouter_models,
@@ -912,9 +1359,26 @@ pub fn run() {
             fs_read,
             fs_write,
             fs_list,
+            fs_search,
+            fs_edit,
+            fs_move,
+            fs_delete,
+            web_fetch,
             run_command,
+            run_command_stream,
             system_info,
-            download_file
+            download_file,
+            start_remote_server,
+            stop_remote_server,
+            remote_urls,
+            resolve_remote_approval,
+            set_remote_settings,
+            remote_store_get,
+            remote_store_set,
+            image_put,
+            image_list,
+            image_get,
+            image_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
