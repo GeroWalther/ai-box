@@ -17,6 +17,8 @@ import {
   saveSettings,
   type Settings,
 } from "./lib/settings";
+import { chatCompletion } from "./lib/agent";
+import { buildExtractionMessages, parseExtraction, type Extraction } from "./lib/extract";
 import { useOpenrouterModels } from "./lib/openrouterModels";
 import { isTauri, invokeCmd } from "./lib/transport";
 import { remoteStoreGet, remoteStoreSet } from "./lib/remoteStore";
@@ -375,6 +377,26 @@ export default function App() {
     return false;
   }
 
+  // Story Bible auto-fill: ask the model for new characters + canon facts in the
+  // current manuscript. Returns null if there's no model/text or the call fails.
+  async function extractBible(): Promise<Extraction | null> {
+    if (!editor || !ensureModel()) return null;
+    const text = editor.getText();
+    if (!text.trim()) return null;
+    try {
+      const msg = await chatCompletion({
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        model: provider.model,
+        messages: buildExtractionMessages(text, activeBible),
+        tools: [],
+        temperature: 0.2,
+      });
+      return parseExtraction(msg.content ?? null);
+    } catch {
+      return null;
+    }
+  }
 
   // Core continuation: append a passage from `instruction` (empty = free
   // continue), recording its inserted range so it can be regenerated.
@@ -739,6 +761,8 @@ export default function App() {
             onChange={updateBible}
             open={bibleOpen}
             onToggle={() => setBibleOpen((v) => !v)}
+            storyText={editor?.getText() ?? ""}
+            onExtract={extractBible}
           />
         </div>
       ) : (

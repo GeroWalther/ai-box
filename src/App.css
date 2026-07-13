@@ -1730,6 +1730,22 @@ input[type="range"]:focus {
   padding: 0 2px;
 }
 .bible-char-del:hover { color: var(--accent-2); }
+.bible-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 4px; }
+.bible-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bible-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
+.bible-chip.fact { border-radius: 8px; white-space: normal; text-align: left; }
 
 /* ---- Phase 2: agent transcript, approvals, attach ---- */
 .tool-line.has-detail { padding: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
