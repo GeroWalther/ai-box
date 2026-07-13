@@ -2161,3 +2161,118 @@ input[type="range"]:focus {
     flex: 1 1 100%;
   }
 }
+
+/* ---- Local image setup wizard (ComfySetup) ---- */
+.curated-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.curated-row:hover {
+  border-color: var(--accent);
+}
+.curated-row.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.curated-row input[type="radio"] {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+.rec-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 999px;
+  vertical-align: middle;
+}
+.setup-progress {
+  margin-top: 4px;
+}
+.setup-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+.setup-step {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.setup-step.active {
+  color: var(--text);
+  font-weight: 600;
+}
+.setup-step.ok {
+  color: #3a9a4a;
+}
+.setup-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 11px;
+  background: var(--panel-2);
+}
+.setup-step.ok .setup-dot {
+  background: rgba(58, 154, 74, 0.16);
+}
+.setup-step.active .setup-dot {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.setup-bar {
+  height: 8px;
+  background: var(--panel-2);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.setup-bar-fill {
+  height: 100%;
+  background: var(--accent-grad);
+  transition: width 0.25s ease;
+}
+.setup-log {
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.hint.ok {
+  color: #3a9a4a;
+}
+.comfy-cta {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.comfy-cta .btn.primary {
+  align-self: flex-start;
+}

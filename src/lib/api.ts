@@ -142,6 +142,46 @@ export async function listComfyCheckpoints(baseUrl: string): Promise<string[]> {
   return invokeCmd<string[]>("list_comfy_checkpoints", { baseUrl });
 }
 
+// ---- Managed local image generation (ComfyUI) ----------------------------
+
+export interface ComfyStatus {
+  installed: boolean;
+  running: boolean;
+  url: string;
+}
+/** Is the managed ComfyUI runtime installed, and is an instance answering? */
+export async function comfyStatus(): Promise<ComfyStatus> {
+  return invokeCmd<ComfyStatus>("comfy_status");
+}
+
+export interface ComfySetupProgress {
+  stage: string; // uv | source | deps | model | done
+  message: string;
+  pct?: number;
+}
+/** Run the one-click first-run install, streaming stage/message/pct progress. */
+export async function comfySetup(
+  modelUrl: string,
+  modelName: string,
+  onProgress: (p: ComfySetupProgress) => void
+): Promise<void> {
+  await streamCmd<void>(
+    "comfy_setup",
+    { modelUrl, modelName },
+    (p: ComfySetupProgress) => onProgress(p)
+  );
+}
+
+/** Start the managed ComfyUI (reuses a running instance). Returns its URL. */
+export async function comfyStart(): Promise<string> {
+  return invokeCmd<string>("comfy_start");
+}
+
+/** Stop the ComfyUI we started. */
+export async function comfyStop(): Promise<void> {
+  return invokeCmd<void>("comfy_stop");
+}
+
 export interface Img2ImgArgs {
   baseUrl: string;
   checkpoint: string;

@@ -7,6 +7,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
+mod comfy;
 mod server;
 
 /// A sink for streamed events, abstracting over the Tauri IPC Channel (desktop
@@ -902,7 +903,7 @@ async fn chat_completion(params: ChatCompletionParams) -> Result<serde_json::Val
 }
 
 /// Expand a leading ~ to the user's home directory.
-fn expand_path(p: &str) -> String {
+pub(crate) fn expand_path(p: &str) -> String {
     if p == "~" {
         return std::env::var("HOME").unwrap_or_else(|_| p.to_string());
     }
@@ -1356,6 +1357,44 @@ fn system_info() -> serde_json::Value {
     serde_json::json!({ "ramGb": ram_gb, "chip": chip })
 }
 
+// ---- Managed local image generation (ComfyUI) ----------------------------
+
+/// Report whether the managed ComfyUI runtime is installed and whether an
+/// instance is currently answering on the port (ours or the user's own).
+#[tauri::command]
+async fn comfy_status() -> serde_json::Value {
+    let url = comfy::url();
+    let running = comfy::probe(&url).await;
+    serde_json::json!({
+        "installed": comfy::is_installed(),
+        "running": running,
+        "url": url,
+    })
+}
+
+/// One-click first-run install: uv toolchain → ComfyUI source → venv + PyTorch →
+/// a curated checkpoint. Streams stage/message/pct progress to the wizard.
+#[tauri::command]
+async fn comfy_setup(
+    model_url: String,
+    model_name: String,
+    on_event: Channel<serde_json::Value>,
+) -> Result<(), String> {
+    comfy::setup(model_url, model_name, &ChannelSink(on_event)).await
+}
+
+/// Start the managed ComfyUI (reuses an already-running instance on the port).
+#[tauri::command]
+async fn comfy_start(managed: tauri::State<'_, comfy::ManagedComfy>) -> Result<String, String> {
+    comfy::start(managed.inner()).await
+}
+
+/// Stop the ComfyUI we spawned (leaves a user-launched instance alone).
+#[tauri::command]
+fn comfy_stop(managed: tauri::State<'_, comfy::ManagedComfy>) {
+    managed.kill();
+}
+
 // ---- Remote access (phone) server control --------------------------------
 
 /// Start the companion HTTP+WebSocket server that serves the built UI and mirrors
@@ -1770,6 +1809,7 @@ pub fn run() {
         .manage(server::RemoteState::default())
         .manage(server::RemoteSettings::default())
         .manage(server::CancelRegistry::default())
+        .manage(comfy::ManagedComfy::default())
         .invoke_handler(tauri::generate_handler![
             generate_text,
             list_openrouter_models,
@@ -1808,10 +1848,22 @@ pub fn run() {
             image_put,
             image_list,
             image_get,
-            image_delete
+            image_delete,
+            comfy_status,
+            comfy_setup,
+            comfy_start,
+            comfy_stop
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            // Reap the managed ComfyUI child on quit so we don't orphan a Python
+            // process holding gigabytes of model in memory.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                use tauri::Manager;
+                app.state::<comfy::ManagedComfy>().kill();
+            }
+        });
 }
 
 #[cfg(test)]

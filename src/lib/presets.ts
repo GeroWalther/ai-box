@@ -195,6 +195,72 @@ export const IMAGE_MODEL_RECS: ImageModelRec[] = [
   },
 ];
 
+// One-click curated checkpoints for the managed ComfyUI setup wizard. These are
+// direct, no-login downloads (Hugging Face `resolve` URLs) verified to work with
+// ComfyUI's single-checkpoint graph (CheckpointLoaderSimple). `recommended` is
+// the default the wizard preselects.
+export interface CuratedModel {
+  id: string;
+  label: string;
+  file: string; // saved filename
+  url: string;
+  sizeGb: number;
+  base: "SDXL" | "SD1.5";
+  note: string;
+  /** Sensible generation defaults for this checkpoint. */
+  steps: number;
+  cfg: number;
+  recommended?: boolean;
+  nsfw?: boolean;
+}
+export const CURATED_MODELS: CuratedModel[] = [
+  {
+    id: "dreamshaper-xl-lightning",
+    label: "DreamShaper XL Lightning",
+    file: "DreamShaperXL_Lightning.safetensors",
+    url: "https://huggingface.co/Lykon/dreamshaper-xl-lightning/resolve/main/DreamShaperXL_Lightning.safetensors",
+    sizeGb: 6.9,
+    base: "SDXL",
+    note: "Fast (4–8 steps) SDXL — seconds per image. Best all-round pick for scene art.",
+    steps: 6,
+    cfg: 2,
+    recommended: true,
+  },
+  {
+    id: "dreamshaper-xl-turbo",
+    label: "DreamShaper XL Turbo",
+    file: "DreamShaperXL_Turbo_V2-SFW.safetensors",
+    url: "https://huggingface.co/Lykon/dreamshaper-xl-v2-turbo/resolve/main/DreamShaperXL_Turbo_V2-SFW.safetensors",
+    sizeGb: 6.9,
+    base: "SDXL",
+    note: "Even faster turbo variant. Great for quick iteration.",
+    steps: 6,
+    cfg: 2,
+  },
+  {
+    id: "sdxl-base",
+    label: "Stable Diffusion XL (base)",
+    file: "sd_xl_base_1.0.safetensors",
+    url: "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors",
+    sizeGb: 6.9,
+    base: "SDXL",
+    note: "Highest fidelity, slower (~28 steps, 30–90s/image on Mac).",
+    steps: 28,
+    cfg: 6,
+  },
+  {
+    id: "sd15",
+    label: "Stable Diffusion 1.5 (small)",
+    file: "v1-5-pruned-emaonly-fp16.safetensors",
+    url: "https://huggingface.co/Comfy-Org/stable-diffusion-v1-5-archive/resolve/main/v1-5-pruned-emaonly-fp16.safetensors",
+    sizeGb: 2.1,
+    base: "SD1.5",
+    note: "Smallest & fastest download. Best for low-RAM Macs; lower fidelity.",
+    steps: 24,
+    cfg: 7,
+  },
+];
+
 // Writing style/genre presets — one click preadjusts how the AI writes by
 // injecting a style directive (and sensible generation defaults) into the
 // prompt. Free-form writing stays available by picking none.

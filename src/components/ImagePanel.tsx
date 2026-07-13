@@ -15,8 +15,11 @@ import {
   generateImageOpenrouter,
   editImageOpenrouter,
   listComfyCheckpoints,
+  comfyStatus,
+  comfyStart,
   type OpenrouterModel,
 } from "../lib/api";
+import ComfySetup from "./ComfySetup";
 import {
   addImage,
   allImages,
@@ -64,6 +67,10 @@ export default function ImagePanel({
   const [history, setHistory] = useState<ImageRecord[]>([]); // metadata only (no dataUrl)
   const [activeId, setActiveId] = useState<string | null>(null); // selected image id
   const [seed, setSeed] = useState(-1); // -1 = random each generation
+  // Managed ComfyUI: is it installed, and is it up? Drives the setup/start CTAs.
+  const [comfy, setComfy] = useState<{ installed: boolean; running: boolean } | null>(null);
+  const [showSetup, setShowSetup] = useState(false);
+  const [startingComfy, setStartingComfy] = useState(false);
 
   // A scene handed over from Write prefills the prompt and focuses this tab.
   useEffect(() => {
@@ -117,14 +124,48 @@ export default function ImagePanel({
       if (list.length && !list.includes(settings.comfyCheckpoint)) {
         onChange({ comfyCheckpoint: list[0] });
       }
-      setError(list.length ? "" : "No models found. Drop a .safetensors into ~/ComfyUI/models/checkpoints/");
+      setError(list.length ? "" : "No models found — click “Set up local images” to download one.");
     } catch {
-      setError("ComfyUI isn't running. Start it, then click Refresh.");
+      setError(""); // the setup/start CTA below explains what to do
+    }
+  }
+
+  // Check the managed ComfyUI runtime, auto-starting it if it's installed but
+  // idle so the user never has to think about a background process.
+  async function refreshComfy(autoStart: boolean) {
+    try {
+      const st = await comfyStatus();
+      setComfy({ installed: st.installed, running: st.running });
+      if (st.running) {
+        detect();
+      } else if (st.installed && autoStart) {
+        startComfy();
+      }
+    } catch {
+      // comfyStatus is desktop-only; on the phone just try the configured URL.
+      setComfy(null);
+      detect();
+    }
+  }
+
+  async function startComfy() {
+    if (startingComfy) return;
+    setStartingComfy(true);
+    setError("Starting ComfyUI… (first launch loads PyTorch — up to a minute)");
+    try {
+      await comfyStart();
+      setComfy((c) => (c ? { ...c, running: true } : { installed: true, running: true }));
+      await detect();
+      setError("");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setStartingComfy(false);
     }
   }
 
   useEffect(() => {
-    detect();
+    refreshComfy(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -436,6 +477,28 @@ export default function ImagePanel({
                 Get models
               </button>
             </div>
+            {comfy && !comfy.installed && !comfy.running && (
+              <div className="comfy-cta">
+                <p className="hint">
+                  Generate images 100% on your Mac — private and unlimited. One-click
+                  setup downloads everything (no terminal needed).
+                </p>
+                <button className="btn primary" onClick={() => setShowSetup(true)}>
+                  ⬇ Set up local images
+                </button>
+              </div>
+            )}
+            {comfy && comfy.installed && !comfy.running && (
+              <div className="comfy-cta">
+                <button
+                  className="btn primary"
+                  onClick={startComfy}
+                  disabled={startingComfy}
+                >
+                  {startingComfy ? "Starting…" : "▶ Start ComfyUI"}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -666,6 +729,20 @@ export default function ImagePanel({
         <ImageModelManager
           onClose={() => setShowImgModels(false)}
           onChanged={detect}
+        />
+      )}
+
+      {showSetup && (
+        <ComfySetup
+          onClose={() => {
+            setShowSetup(false);
+            refreshComfy(false);
+          }}
+          onChange={onChange}
+          onComplete={() => {
+            setComfy({ installed: true, running: true });
+            detect();
+          }}
         />
       )}
     </div>

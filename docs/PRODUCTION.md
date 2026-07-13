@@ -144,10 +144,15 @@ Everything else (signing, sync, packaging) makes it *shippable*; these three mak
     for new names/places/claims); (b) optional **embeddings** retrieval for large
     bibles (rank facts by semantic relevance, not just entity match); (c) a
     **continuity checker** that flags a draft passage contradicting a canon fact.
-12b. ⬜ **Tight local text + image, scene-aware** (pillar #2) — generate a scene
-    illustration from the *current* passage + Story Bible (character/world) context
-    with one click, 100% local (ComfyUI/A1111). Carry character appearance from the
-    bible into the image prompt for visual consistency.
+12b. 🔨 **Tight local text + image, scene-aware** (pillar #2) — ✅ generate a scene
+    illustration from the *current* passage + Story Bible (character/world) context,
+    100% local. ✅ **One-click local setup** (`src-tauri/src/comfy.rs` +
+    `ComfySetup.tsx`): the app installs and runs a *managed* ComfyUI itself — pinned
+    uv toolchain → ComfyUI release → venv + PyTorch (MPS wheels) → a curated
+    checkpoint (SDXL-Lightning default), streamed progress, no terminal. It reuses a
+    ComfyUI the user already runs, and reaps its own child on quit. This removes the
+    biggest adoption blocker for local images. ⬜ Next: carry character appearance
+    from the bible into the prompt for visual consistency.
 13. ⬜ **Token / credit meter** — surface OpenRouter usage + cost live (and per
     session), especially important since phone-triggered generation can run
     unattended.
