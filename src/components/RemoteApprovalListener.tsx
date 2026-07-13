@@ -10,6 +10,7 @@ interface Req {
   id: string;
   title: string;
   body: string;
+  diff?: string | null;
 }
 
 export default function RemoteApprovalListener() {
@@ -48,6 +49,22 @@ export default function RemoteApprovalListener() {
         <div className="modal-body">
           <p className="hint">A remote device (your phone) wants to take this action on your Mac:</p>
           <pre className="cmd-preview">{req.body}</pre>
+          {req.diff && (
+            <pre className="diff-preview" aria-label="change preview">
+              {req.diff.split("\n").map((line, i) => {
+                const cls = line.startsWith("+")
+                  ? "diff-add"
+                  : line.startsWith("-")
+                    ? "diff-del"
+                    : "diff-ctx";
+                return (
+                  <div key={i} className={cls}>
+                    {line || " "}
+                  </div>
+                );
+              })}
+            </pre>
+          )}
         </div>
         <div className="modal-foot approve-foot">
           <div className="approve-foot-right">

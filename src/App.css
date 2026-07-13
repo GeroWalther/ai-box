@@ -887,6 +887,43 @@ input[type="range"]:focus {
   word-break: break-word;
   margin-top: 8px;
 }
+.diff-preview {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 8px;
+  max-height: 42vh;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.diff-preview .diff-add {
+  color: #1a7f37;
+  background: rgba(26, 127, 55, 0.09);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.diff-preview .diff-del {
+  color: #cf222e;
+  background: rgba(207, 34, 46, 0.09);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.diff-preview .diff-ctx {
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+:root[data-theme="dark"] .diff-preview .diff-add {
+  color: #3fb950;
+  background: rgba(63, 185, 80, 0.12);
+}
+:root[data-theme="dark"] .diff-preview .diff-del {
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.12);
+}
 .modal-foot {
   gap: 10px;
 }

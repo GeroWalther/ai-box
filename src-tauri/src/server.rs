@@ -342,12 +342,23 @@ fn confine(ctx: &ServerCtx, path: &str) -> Result<String, String> {
 
 /// Block until the desktop user approves (or denies / times out) an action.
 async fn require_approval(ctx: &ServerCtx, title: &str, body: &str) -> Result<(), String> {
+    require_approval_diff(ctx, title, body, None).await
+}
+
+/// Like `require_approval`, but also sends a `diff` preview so the human at the Mac
+/// sees exactly what a file write/edit will change before approving.
+async fn require_approval_diff(
+    ctx: &ServerCtx,
+    title: &str,
+    body: &str,
+    diff: Option<String>,
+) -> Result<(), String> {
     let id = Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel::<bool>();
     ctx.registry.register(id.clone(), tx);
     let _ = ctx.app.emit(
         "remote-approval",
-        json!({ "id": id, "title": title, "body": body }),
+        json!({ "id": id, "title": title, "body": body, "diff": diff }),
     );
     match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
         Ok(Ok(true)) => Ok(()),
@@ -357,6 +368,30 @@ async fn require_approval(ctx: &ServerCtx, title: &str, body: &str) -> Result<()
             Err("No response on the desktop Mac (approval timed out)".to_string())
         }
     }
+}
+
+/// A capped, naive line-level diff for the approval preview: old lines as `-`,
+/// new lines as `+`. Good enough to see what an edit/overwrite does.
+fn preview_diff(old: &str, new: &str) -> String {
+    const MAX: usize = 200;
+    let mut out = String::new();
+    for l in old.lines().take(MAX) {
+        out.push_str("- ");
+        out.push_str(l);
+        out.push('\n');
+    }
+    if old.lines().count() > MAX {
+        out.push_str("… (truncated)\n");
+    }
+    for l in new.lines().take(MAX) {
+        out.push_str("+ ");
+        out.push_str(l);
+        out.push('\n');
+    }
+    if new.lines().count() > MAX {
+        out.push_str("… (truncated)\n");
+    }
+    out
 }
 
 // ---- API-key confidentiality ---------------------------------------------
@@ -524,12 +559,16 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
         // --- dangerous → confined AND approved on the Mac ---
         "fs_write" => {
             let path = confine(ctx, &s("path"))?;
-            require_approval(ctx, "Write a file?", &path).await?;
+            let old = std::fs::read_to_string(&path).unwrap_or_default();
+            let diff = preview_diff(&old, &s("content"));
+            let title = if old.is_empty() { "Create a file?" } else { "Overwrite a file?" };
+            require_approval_diff(ctx, title, &path, Some(diff)).await?;
             Ok(Value::String(crate::fs_write(path, s("content"))?))
         }
         "fs_edit" => {
             let path = confine(ctx, &s("path"))?;
-            require_approval(ctx, "Edit a file?", &path).await?;
+            let diff = preview_diff(&s("old"), &s("new"));
+            require_approval_diff(ctx, "Edit a file?", &path, Some(diff)).await?;
             crate::fs_edit(path, s("old"), s("new"))
         }
         "fs_move" => {
