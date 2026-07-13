@@ -266,20 +266,55 @@ export function presetGuidance(s: Settings): string {
 
 // Per-document Story Bible: persistent facts and voice the AI should honor for
 // this manuscript. Threaded into every continuation/rewrite for the active doc.
+export interface BibleCharacter {
+  name: string;
+  traits: string;
+  /** Comma/semicolon-separated other names this character is called (for scene detection). */
+  aliases?: string;
+}
+export interface CanonFact {
+  /** An established fact the story must not contradict. */
+  text: string;
+  /** Comma/semicolon-separated character names this fact concerns; empty = global. */
+  who?: string;
+}
 export interface StoryBibleData {
   synopsis: string;
-  characters: { name: string; traits: string }[];
+  characters: BibleCharacter[];
   world: string;
   styleNote: string;
+  /** Continuity facts kept in the prompt even once they scroll past the text window. */
+  facts?: CanonFact[];
 }
 export const EMPTY_BIBLE: StoryBibleData = {
   synopsis: "",
   characters: [],
   world: "",
   styleNote: "",
+  facts: [],
 };
 
-/** Render a compact Story Bible block for the prompt, or "" if empty. */
+/** All the names a character answers to (name + aliases), trimmed and non-empty. */
+function characterTerms(c: BibleCharacter): string[] {
+  return [c.name, ...(c.aliases ? c.aliases.split(/[,;]/) : [])]
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Does `textLower` (already lower-cased) mention `term`? Word-boundary for Latin
+ *  terms to avoid substrings like "Al" in "also"; plain substring for CJK/other
+ *  scripts where \b doesn't apply (so Japanese names still match). */
+function mentions(textLower: string, term: string): boolean {
+  const t = term.toLowerCase();
+  if (t.length < 2) return false;
+  if (/^[\x00-\x7f]+$/.test(t)) {
+    const esc = t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\b${esc}\\b`, "i").test(textLower);
+  }
+  return textLower.includes(t);
+}
+
+/** Full, unfiltered Story Bible dump (used as a fallback / for short works). */
 export function bibleBlock(b?: StoryBibleData): string {
   if (!b) return "";
   const parts: string[] = [];
@@ -293,6 +328,77 @@ export function bibleBlock(b?: StoryBibleData): string {
   if (b.styleNote?.trim()) parts.push(`Style: ${b.styleNote.trim()}`);
   return parts.length
     ? `[Story bible — honor these established facts, characters, and voice]\n${parts.join("\n")}`
+    : "";
+}
+
+/**
+ * Continuity-aware Story Bible context. Instead of dumping the whole bible, it
+ * surfaces what's relevant to the CURRENT scene (detected from the recent text):
+ *   - characters present in the scene get full detail; the rest are a name roster
+ *     (so a large cast doesn't blow the budget but the model still knows they exist)
+ *   - canon facts concerning a present character (or global facts) are prioritized,
+ *     so a fact established 50 pages ago survives even after it scrolls out of the
+ *     text window — the core edge for long-form consistency.
+ * Synopsis / world / style are always included (they're the through-line).
+ */
+export function buildBibleContext(b: StoryBibleData | undefined, recentText: string): string {
+  if (!b) return "";
+  const textLower = (recentText || "").toLowerCase();
+  const parts: string[] = [];
+
+  if (b.synopsis?.trim()) parts.push(`Synopsis: ${b.synopsis.trim()}`);
+
+  const chars = (b.characters || []).filter((c) => c.name.trim());
+  const present = chars.filter((c) => characterTerms(c).some((t) => mentions(textLower, t)));
+  const others = chars.filter((c) => !present.includes(c));
+
+  if (present.length) {
+    const lines = present
+      .map((c) => {
+        const aka = c.aliases?.trim() ? ` (aka ${c.aliases.trim()})` : "";
+        return `- ${c.name.trim()}${aka}${c.traits.trim() ? `: ${c.traits.trim()}` : ""}`;
+      })
+      .join("\n");
+    parts.push(`Characters in this scene:\n${lines}`);
+  }
+  if (others.length) {
+    parts.push(
+      `Other established characters (keep consistent if they enter): ${others
+        .map((c) => c.name.trim())
+        .join(", ")}`
+    );
+  }
+
+  if (b.world?.trim()) parts.push(`World/Setting: ${b.world.trim()}`);
+
+  const facts = (b.facts || []).filter((f) => f.text?.trim());
+  if (facts.length) {
+    const presentTermsLower = present.flatMap(characterTerms).map((t) => t.toLowerCase());
+    const relevant: string[] = [];
+    const rest: string[] = [];
+    for (const f of facts) {
+      const who = (f.who || "")
+        .split(/[,;]/)
+        .map((x) => x.trim().toLowerCase())
+        .filter(Boolean);
+      const isRelevant =
+        who.length === 0 ||
+        who.some((w) => presentTermsLower.some((t) => t.includes(w)) || textLower.includes(w));
+      (isRelevant ? relevant : rest).push(`- ${f.text.trim()}`);
+    }
+    // Relevant facts first; top up with the rest, capped so a huge canon list
+    // can't crowd out the actual prose.
+    const MAX_FACTS = 40;
+    const chosen = [...relevant, ...rest].slice(0, MAX_FACTS);
+    if (chosen.length) parts.push(`Established canon (do not contradict):\n${chosen.join("\n")}`);
+  }
+
+  if (b.styleNote?.trim()) parts.push(`Style: ${b.styleNote.trim()}`);
+
+  return parts.length
+    ? `[Story bible — honor these established facts, characters, and voice for continuity]\n${parts.join(
+        "\n"
+      )}`
     : "";
 }
 
@@ -336,18 +442,20 @@ export function buildContinuationMessages(
     task = `Continue the story from exactly where it stops. Write roughly ${wordTarget} words and finish on a complete sentence — do not stop mid-sentence.`;
   }
 
+  // The recent-text window is computed first so the Story Bible can retrieve the
+  // characters/facts relevant to what's actually happening right now.
+  const context = storyText.slice(-MAX_CONTEXT_CHARS);
+
   const systemParts = [
     "You are a masterful novelist and prose stylist collaborating with an author.",
     "Match the established voice, tense, point of view, and pacing seamlessly; begin mid-flow so it joins onto the last words.",
     presetGuidance(s),
-    bibleBlock(bible),
+    buildBibleContext(bible, context),
     langLine,
     task,
     "Output only the story prose — no summaries, headings, notes, or meta commentary. Never repeat text that already exists.",
     s.systemPrompt.trim(),
   ].filter(Boolean);
-
-  const context = storyText.slice(-MAX_CONTEXT_CHARS);
 
   const userParts = [
     s.authorsNote.trim() ? `[Author's note — keep in mind: ${s.authorsNote.trim()}]` : "",
@@ -388,7 +496,7 @@ export function buildRewriteMessages(
   const system = [
     "You are a masterful literary editor revising one passage of a longer story.",
     presetGuidance(s),
-    bibleBlock(bible),
+    buildBibleContext(bible, `${before.slice(-4000)}\n${passage}`),
     direction,
     langLine,
     "Match the surrounding voice, tense, and point of view. Output ONLY the rewritten passage — no quotes, labels, or commentary.",

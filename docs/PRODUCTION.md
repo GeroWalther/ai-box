@@ -7,6 +7,19 @@ phone** over the LAN/Tailscale.
 
 Status legend: ✅ done · 🔨 in progress · ⬜ todo
 
+## North star — why this beats "LM Studio + a writing tool"
+Running uncensored local models is commodity (LM Studio, Ollama). The reason to
+choose Novel Studio is the **combination no runtime offers**, carried by three
+pillars:
+1. **Continuity-aware Story Bible** — keeps characters/world/canon consistent across
+   a whole novel, not just the last few pages. *(v1 shipped — see Phase 0.)*
+2. **Tight local text + local image, scene-aware** — illustrate the scene you're
+   writing from the same context, 100% on-device.
+3. **Phone-controlled agent** — draft and manage the manuscript from the couch.
+
+Everything else (signing, sync, packaging) makes it *shippable*; these three make it
+*worth choosing*.
+
 ---
 
 ## Phase 0 — Done in this pass
@@ -25,6 +38,13 @@ Status legend: ✅ done · 🔨 in progress · ⬜ todo
   - Request timeouts added to `chat_completion` / `web_fetch`.
 - ✅ **Signing scaffolding**: `entitlements.plist` + `tauri.conf.json` macOS bundle
   config; clean bundle identifier. See `docs/SIGNING.md`.
+- ✅ **Story Bible retrieval v1** (pillar #1) — `src/lib/presets.ts`
+  `buildBibleContext()` + Story Bible UI (`aliases`, canon `facts`). Replaces the
+  blind full-bible dump: detects which characters are in the current scene (name +
+  aliases, CJK-safe), gives them full detail while collapsing the rest to a roster,
+  and always surfaces relevant **canon facts** so a fact set chapters ago survives
+  after it scrolls out of the text window. Deterministic → works with local models.
+  Behaviourally tested (9/9 assertions).
 
 ---
 
@@ -93,10 +113,15 @@ Status legend: ✅ done · 🔨 in progress · ⬜ todo
     file **diff** rendered on the Mac before applying (`RemoteApprovalListener.tsx`;
     `fs_edit` already returns a diff). Far more trustworthy for phone-driven edits.
     Also serialize concurrent approvals (a 2nd request currently overwrites the 1st).
-12. ⬜ **Story Bible → retrieval** — feed `doc.bible` (characters/world/continuity)
-    into generation as **structured context** instead of a blind `slice(-8000)`
-    (`presets.ts`). Continuity-aware prose is the killer feature for long-form
-    fiction. Optionally embed + retrieve the most relevant bible entries per scene.
+12. 🔨 **Story Bible → retrieval** (pillar #1) — v1 shipped (Phase 0). Next: (a)
+    **auto-extract** canon facts from prose as you write (offer "add to bible" chips
+    for new names/places/claims); (b) optional **embeddings** retrieval for large
+    bibles (rank facts by semantic relevance, not just entity match); (c) a
+    **continuity checker** that flags a draft passage contradicting a canon fact.
+12b. ⬜ **Tight local text + image, scene-aware** (pillar #2) — generate a scene
+    illustration from the *current* passage + Story Bible (character/world) context
+    with one click, 100% local (ComfyUI/A1111). Carry character appearance from the
+    bible into the image prompt for visual consistency.
 13. ⬜ **Token / credit meter** — surface OpenRouter usage + cost live (and per
     session), especially important since phone-triggered generation can run
     unattended.

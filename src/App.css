@@ -1708,7 +1708,7 @@ input[type="range"]:focus {
 .bible-chars-head { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
 .bible-chars-head label { font-size: 12px; font-weight: 600; color: var(--muted); }
 .btn.small { padding: 2px 8px; font-size: 12px; }
-.bible-char { display: flex; align-items: center; gap: 5px; }
+.bible-char { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .bible-char input {
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -1717,8 +1717,9 @@ input[type="range"]:focus {
   padding: 6px 8px;
   font-size: 12.5px;
 }
-.bible-char-name { width: 34%; }
-.bible-char-traits { flex: 1; min-width: 0; }
+.bible-char-name { width: 30%; min-width: 90px; }
+.bible-char-aka { width: 26%; min-width: 90px; }
+.bible-char-traits { flex: 1; min-width: 120px; }
 .bible-char-del {
   border: none;
   background: transparent;
