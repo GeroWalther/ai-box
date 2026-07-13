@@ -452,51 +452,54 @@ export default function ImagePanel({
         ) : (
           <div className="field">
             <label>Model</label>
-            <div className="row-inline">
-              <select
-                value={settings.comfyCheckpoint}
-                onChange={(e) => onChange({ comfyCheckpoint: e.target.value })}
-              >
-                {checkpoints.length === 0 && <option value="">— none detected —</option>}
-                {checkpoints.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-              <button className="btn" onClick={detect} title="Detect installed models">
-                Refresh
-              </button>
-              <button
-                className="btn"
-                onClick={() => setShowModels(true)}
-                title="Download & manage local models"
-              >
-                Local models
-              </button>
-            </div>
-            {comfy && !comfy.running && (
+            {comfy && !comfy.installed && !comfy.running ? (
+              // Nothing installed yet — one clear call to action, no empty dropdown.
               <div className="comfy-cta">
-                {!comfy.installed && (
-                  <p className="hint">
-                    Generate images 100% on your Mac — private and unlimited. Pick a
-                    model to download (installs everything, no terminal needed).
-                  </p>
-                )}
-                {comfy.installed ? (
-                  <button
-                    className="btn primary"
-                    onClick={startComfy}
-                    disabled={startingComfy}
-                  >
-                    {startingComfy ? "Starting…" : "▶ Start ComfyUI"}
-                  </button>
-                ) : (
-                  <button className="btn primary" onClick={() => setShowModels(true)}>
-                    ⬇ Set up local images
-                  </button>
-                )}
+                <p className="hint">
+                  Generate images 100% on your Mac — private and unlimited. Pick a
+                  model to download (installs everything, no terminal needed).
+                </p>
+                <button className="btn primary" onClick={() => setShowModels(true)}>
+                  ⬇ Set up local images
+                </button>
               </div>
+            ) : (
+              <>
+                <div className="row-inline">
+                  <select
+                    value={settings.comfyCheckpoint}
+                    onChange={(e) => onChange({ comfyCheckpoint: e.target.value })}
+                  >
+                    {checkpoints.length === 0 && <option value="">— none detected —</option>}
+                    {checkpoints.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                  <button className="btn" onClick={detect} title="Detect installed models">
+                    Refresh
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => setShowModels(true)}
+                    title="Download & manage local models"
+                  >
+                    Local models
+                  </button>
+                </div>
+                {comfy && comfy.installed && !comfy.running && (
+                  <div className="comfy-cta">
+                    <button
+                      className="btn primary"
+                      onClick={startComfy}
+                      disabled={startingComfy}
+                    >
+                      {startingComfy ? "Starting…" : "▶ Start ComfyUI"}
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
