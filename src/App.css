@@ -2276,3 +2276,40 @@ input[type="range"]:focus {
 .comfy-cta .btn.primary {
   align-self: flex-start;
 }
+
+/* ---- Unified local model library (ImageModels) ---- */
+.curated-row.static {
+  cursor: default;
+  justify-content: space-between;
+  align-items: center;
+}
+.curated-row.static:hover {
+  border-color: var(--border);
+}
+.advanced-models {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.advanced-models > summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  list-style: revert;
+}
+.advanced-models label {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.advanced-models input {
+  width: 100%;
+}
+.advanced-models .btn.primary {
+  margin-top: 10px;
+}
+.civitai-recs {
+  margin-top: 16px;
+}

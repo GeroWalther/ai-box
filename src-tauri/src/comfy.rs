@@ -83,9 +83,25 @@ fn emit(sink: &dyn EventSink, stage: &str, message: impl Into<String>, pct: Opti
 
 // ---- Setup ---------------------------------------------------------------
 
-/// Full first-run setup. Idempotent: each step is skipped if already present, so a
-/// retry after a failed/cancelled run resumes rather than redoing everything.
-pub async fn setup(model_url: String, model_name: String, sink: &dyn EventSink) -> Result<(), String> {
+/// Checkpoints already downloaded into the managed install.
+pub fn installed_models() -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(checkpoints_dir()) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.ends_with(".safetensors") || name.ends_with(".ckpt") {
+                out.push(name);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Install the ComfyUI runtime (Python toolchain, ComfyUI, venv + PyTorch) — no
+/// model. Idempotent: each step is skipped if already present, so it's cheap to
+/// call before every model download and resumes cleanly after a failure.
+pub async fn ensure_runtime(sink: &dyn EventSink) -> Result<(), String> {
     let base = base_dir();
     let src = src_dir();
     std::fs::create_dir_all(format!("{base}/bin")).map_err(|e| e.to_string())?;
@@ -153,16 +169,25 @@ pub async fn setup(model_url: String, model_name: String, sink: &dyn EventSink) 
         sink,
     )
     .await?;
+    Ok(())
+}
 
-    // 4. Model checkpoint.
+/// Ensure the runtime, then download one checkpoint into the managed install.
+/// This is the single entry point behind every model in the library — the first
+/// download bootstraps the runtime, later ones just fetch the file.
+pub async fn download_model(
+    model_url: String,
+    model_name: String,
+    sink: &dyn EventSink,
+) -> Result<(), String> {
+    ensure_runtime(sink).await?;
     let safe_name = sanitize_filename(&model_name);
     let ckpt = format!("{}/{safe_name}", checkpoints_dir());
     if !Path::new(&ckpt).exists() {
-        emit(sink, "model", format!("Downloading image model ({safe_name})…"), Some(0));
+        emit(sink, "model", format!("Downloading model ({safe_name})…"), Some(0));
         download_with_progress(&model_url, &ckpt, "model", sink).await?;
     }
-
-    emit(sink, "done", "Setup complete.", Some(100));
+    emit(sink, "done", "Ready.", Some(100));
     Ok(())
 }
 

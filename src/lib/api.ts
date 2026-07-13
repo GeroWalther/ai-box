@@ -159,17 +159,23 @@ export interface ComfySetupProgress {
   message: string;
   pct?: number;
 }
-/** Run the one-click first-run install, streaming stage/message/pct progress. */
-export async function comfySetup(
+/** Download one model into the managed install (bootstrapping the runtime on the
+ *  first call), streaming stage/message/pct progress. */
+export async function comfyDownloadModel(
   modelUrl: string,
   modelName: string,
   onProgress: (p: ComfySetupProgress) => void
 ): Promise<void> {
   await streamCmd<void>(
-    "comfy_setup",
+    "comfy_download_model",
     { modelUrl, modelName },
     (p: ComfySetupProgress) => onProgress(p)
   );
+}
+
+/** Checkpoints already downloaded into the managed install (filenames). */
+export async function comfyInstalledModels(): Promise<string[]> {
+  return invokeCmd<string[]>("comfy_installed_models");
 }
 
 /** Start the managed ComfyUI (reuses a running instance). Returns its URL. */

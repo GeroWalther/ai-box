@@ -1372,15 +1372,21 @@ async fn comfy_status() -> serde_json::Value {
     })
 }
 
-/// One-click first-run install: uv toolchain → ComfyUI source → venv + PyTorch →
-/// a curated checkpoint. Streams stage/message/pct progress to the wizard.
+/// Download one model into the managed install, bootstrapping the runtime (uv →
+/// ComfyUI → venv + PyTorch) on the first call. Streams stage/message/pct.
 #[tauri::command]
-async fn comfy_setup(
+async fn comfy_download_model(
     model_url: String,
     model_name: String,
     on_event: Channel<serde_json::Value>,
 ) -> Result<(), String> {
-    comfy::setup(model_url, model_name, &ChannelSink(on_event)).await
+    comfy::download_model(model_url, model_name, &ChannelSink(on_event)).await
+}
+
+/// Checkpoints already downloaded into the managed install (filenames).
+#[tauri::command]
+fn comfy_installed_models() -> Vec<String> {
+    comfy::installed_models()
 }
 
 /// Start the managed ComfyUI (reuses an already-running instance on the port).
@@ -1850,7 +1856,8 @@ pub fn run() {
             image_get,
             image_delete,
             comfy_status,
-            comfy_setup,
+            comfy_download_model,
+            comfy_installed_models,
             comfy_start,
             comfy_stop
         ])

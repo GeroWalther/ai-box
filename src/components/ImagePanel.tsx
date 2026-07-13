@@ -19,7 +19,7 @@ import {
   comfyStart,
   type OpenrouterModel,
 } from "../lib/api";
-import ComfySetup from "./ComfySetup";
+import ImageModels from "./ImageModels";
 import {
   addImage,
   allImages,
@@ -29,7 +29,6 @@ import {
   type ImageRecord,
 } from "../lib/imageStore";
 import { useToast } from "../lib/toast";
-import ImageModelManager from "./ImageModelManager";
 import { SidebarSlot } from "./SidebarList";
 
 interface Props {
@@ -63,13 +62,12 @@ export default function ImagePanel({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [sourceImage, setSourceImage] = useState<string | null>(null); // data URL
   const [strength, setStrength] = useState(0.6);
-  const [showImgModels, setShowImgModels] = useState(false);
+  const [showModels, setShowModels] = useState(false);
   const [history, setHistory] = useState<ImageRecord[]>([]); // metadata only (no dataUrl)
   const [activeId, setActiveId] = useState<string | null>(null); // selected image id
   const [seed, setSeed] = useState(-1); // -1 = random each generation
   // Managed ComfyUI: is it installed, and is it up? Drives the setup/start CTAs.
   const [comfy, setComfy] = useState<{ installed: boolean; running: boolean } | null>(null);
-  const [showSetup, setShowSetup] = useState(false);
   const [startingComfy, setStartingComfy] = useState(false);
 
   // A scene handed over from Write prefills the prompt and focuses this tab.
@@ -471,32 +469,33 @@ export default function ImagePanel({
               </button>
               <button
                 className="btn"
-                onClick={() => setShowImgModels(true)}
-                title="Get more models"
+                onClick={() => setShowModels(true)}
+                title="Download & manage local models"
               >
-                Get models
+                Local models
               </button>
             </div>
-            {comfy && !comfy.installed && !comfy.running && (
+            {comfy && !comfy.running && (
               <div className="comfy-cta">
-                <p className="hint">
-                  Generate images 100% on your Mac — private and unlimited. One-click
-                  setup downloads everything (no terminal needed).
-                </p>
-                <button className="btn primary" onClick={() => setShowSetup(true)}>
-                  ⬇ Set up local images
-                </button>
-              </div>
-            )}
-            {comfy && comfy.installed && !comfy.running && (
-              <div className="comfy-cta">
-                <button
-                  className="btn primary"
-                  onClick={startComfy}
-                  disabled={startingComfy}
-                >
-                  {startingComfy ? "Starting…" : "▶ Start ComfyUI"}
-                </button>
+                {!comfy.installed && (
+                  <p className="hint">
+                    Generate images 100% on your Mac — private and unlimited. Pick a
+                    model to download (installs everything, no terminal needed).
+                  </p>
+                )}
+                {comfy.installed ? (
+                  <button
+                    className="btn primary"
+                    onClick={startComfy}
+                    disabled={startingComfy}
+                  >
+                    {startingComfy ? "Starting…" : "▶ Start ComfyUI"}
+                  </button>
+                ) : (
+                  <button className="btn primary" onClick={() => setShowModels(true)}>
+                    ⬇ Set up local images
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -725,21 +724,14 @@ export default function ImagePanel({
         )}
       </div>
 
-      {showImgModels && (
-        <ImageModelManager
-          onClose={() => setShowImgModels(false)}
-          onChanged={detect}
-        />
-      )}
-
-      {showSetup && (
-        <ComfySetup
+      {showModels && (
+        <ImageModels
           onClose={() => {
-            setShowSetup(false);
+            setShowModels(false);
             refreshComfy(false);
           }}
           onChange={onChange}
-          onComplete={() => {
+          onChanged={() => {
             setComfy({ installed: true, running: true });
             detect();
           }}
