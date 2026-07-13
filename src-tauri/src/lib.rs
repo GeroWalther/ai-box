@@ -1400,6 +1400,7 @@ fn remote_store_set(key: String, value: String) -> Result<(), String> {
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
     map.insert(key, serde_json::Value::String(value));
+    snapshot_store(&path);
     atomic_write(&path, &serde_json::Value::Object(map).to_string()).map_err(|e| e.to_string())
 }
 
@@ -1513,6 +1514,7 @@ fn store_merge_list(key: String, incoming: String) -> Result<String, String> {
     let merged = merge_sync_lists(base, incoming_list);
 
     map.insert(key, serde_json::Value::String(merged.clone()));
+    snapshot_store(&path);
     atomic_write(&path, &serde_json::Value::Object(map).to_string()).map_err(|e| e.to_string())?;
     Ok(merged)
 }
@@ -1523,6 +1525,82 @@ fn atomic_write(path: &str, contents: &str) -> std::io::Result<()> {
     let tmp = format!("{path}.tmp");
     std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, path)
+}
+
+/// Keep up to this many hourly store snapshots for recovery.
+const STORE_BACKUPS: usize = 48;
+
+/// Before overwriting the shared store, keep an hourly snapshot in
+/// ~/.ai-studio/backups so a bad write or accidental mass-delete is recoverable.
+/// One snapshot per hour bucket (bounded I/O), pruned to the newest N.
+fn snapshot_store(path: &str) {
+    let src = std::path::Path::new(path);
+    if !src.exists() {
+        return;
+    }
+    let dir = expand_path("~/.ai-studio/backups");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let bucket = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() / 3600)
+        .unwrap_or(0);
+    let dest = format!("{dir}/store-{bucket}.json");
+    if !std::path::Path::new(&dest).exists() {
+        let _ = std::fs::copy(src, &dest);
+        prune_numbered(&dir, "store-", ".json", STORE_BACKUPS);
+    }
+}
+
+/// Keep only the `keep` newest `<prefix><number><suffix>` files in `dir`.
+fn prune_numbered(dir: &str, prefix: &str, suffix: &str, keep: usize) {
+    let mut nums: Vec<(u64, std::path::PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let name = p.file_name()?.to_str()?.to_string();
+            let n = name
+                .strip_prefix(prefix)?
+                .strip_suffix(suffix)?
+                .parse::<u64>()
+                .ok()?;
+            Some((n, p))
+        })
+        .collect();
+    if nums.len() <= keep {
+        return;
+    }
+    nums.sort_by(|a, b| b.0.cmp(&a.0)); // newest (highest) first
+    for (_, p) in nums.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Cap the image gallery: keep the newest N images (by mtime), delete the rest.
+fn prune_images(dir: &str, keep: usize) {
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                return None;
+            }
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((mtime, p))
+        })
+        .collect();
+    if files.len() <= keep {
+        return;
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    for (_, p) in files.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(p);
+    }
 }
 
 // ---- Shared image gallery ------------------------------------------------
@@ -1549,8 +1627,13 @@ fn image_put(id: String, record: String) -> Result<(), String> {
     }
     let dir = images_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::write(format!("{dir}/{id}.json"), record).map_err(|e| e.to_string())
+    std::fs::write(format!("{dir}/{id}.json"), record).map_err(|e| e.to_string())?;
+    prune_images(&dir, IMAGE_CAP);
+    Ok(())
 }
+
+/// Cap on stored images so the gallery can't grow without bound.
+const IMAGE_CAP: usize = 500;
 
 /// List image metadata (newest first), WITHOUT the heavy `dataUrl` field.
 #[tauri::command]
@@ -1797,6 +1880,28 @@ mod tests {
         let incoming = r#"{"items":[{"id":"A","html":"y","updatedAt":9}],"deleted":{}}"#;
         let out = merge(legacy, incoming);
         assert_eq!(out["items"][0]["html"], "y");
+    }
+
+    #[test]
+    fn prune_numbered_keeps_newest() {
+        let dir = std::env::temp_dir().join(format!("ns-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_str().unwrap();
+        for n in [10u64, 5, 42, 7, 100, 3] {
+            std::fs::write(dir.join(format!("store-{n}.json")), "{}").unwrap();
+        }
+        prune_numbered(d, "store-", ".json", 3);
+        let mut left: Vec<u64> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter_map(|e| {
+                e.path().file_name()?.to_str()?.strip_prefix("store-")?.strip_suffix(".json")?.parse().ok()
+            })
+            .collect();
+        left.sort();
+        assert_eq!(left, vec![10, 42, 100], "keeps the 3 highest buckets");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
