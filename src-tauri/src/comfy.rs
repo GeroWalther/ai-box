@@ -291,8 +291,20 @@ async fn run_streamed(
     Ok(())
 }
 
+const DOWNLOAD_UA: &str =
+    "AIStudio/0.1 (+https://github.com/GeroWalther/novel-studio)";
+const MAX_DL_ATTEMPTS: u32 = 5;
+
+/// Transient HTTP statuses worth retrying. 403 is included because Hugging Face's
+/// large-file CDN signals rate-limiting with a 403 that clears on its own.
+fn is_transient_status(code: u16) -> bool {
+    matches!(code, 403 | 408 | 425 | 429 | 500..=599)
+}
+
 /// Download a URL to `dest` with a `.part` staging file (so an interrupted
-/// download never looks complete), emitting percentage progress.
+/// download never looks complete). Sends a User-Agent, retries transient failures
+/// with backoff, and RESUMES from the partial file via a Range request rather than
+/// restarting a multi-GB download from zero.
 async fn download_with_progress(
     url: &str,
     dest: &str,
@@ -307,44 +319,110 @@ async fn download_with_progress(
     }
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
+        .user_agent(DOWNLOAD_UA)
         .build()
         .map_err(|e| e.to_string())?;
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("download failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("download failed: HTTP {}", resp.status()));
-    }
-    let total = resp.content_length().unwrap_or(0);
     let part = format!("{dest}.part");
-    let mut file = std::fs::File::create(&part).map_err(|e| format!("create {part}: {e}"))?;
-    let mut stream = resp.bytes_stream();
-    let mut done: u64 = 0;
-    let mut last_pct: u64 = u64::MAX;
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|e| e.to_string())?;
-        file.write_all(&bytes).map_err(|e| e.to_string())?;
-        done += bytes.len() as u64;
-        if total > 0 {
-            let pct = done * 100 / total;
-            if pct != last_pct {
-                last_pct = pct;
-                emit(
-                    sink,
-                    stage,
-                    format!("{pct}%  ({} / {} MB)", done / 1_000_000, total / 1_000_000),
-                    Some(pct),
-                );
-            }
-        } else if done % (8 * 1_000_000) < bytes.len() as u64 {
-            emit(sink, stage, format!("{} MB", done / 1_000_000), None);
+
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        // Resume: if a partial file exists, ask only for the remaining bytes.
+        let have: u64 = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+        let mut req = client.get(url);
+        if have > 0 {
+            req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
         }
+
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                if attempt < MAX_DL_ATTEMPTS {
+                    emit(sink, stage, format!("connection issue — retrying ({attempt})…"), None);
+                    tokio::time::sleep(Duration::from_secs(2u64.pow(attempt))).await;
+                    continue;
+                }
+                return Err(format!("download failed: {e}"));
+            }
+        };
+
+        let status = resp.status();
+        // Decide how to open the part file based on the server's response.
+        let (mut file, mut done, total) = if have > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT
+        {
+            let f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&part)
+                .map_err(|e| format!("open {part}: {e}"))?;
+            let remaining = resp.content_length().unwrap_or(0);
+            (f, have, have + remaining)
+        } else if status.is_success() {
+            // Server ignored the range (or fresh start) — write from scratch.
+            let f = std::fs::File::create(&part).map_err(|e| format!("create {part}: {e}"))?;
+            (f, 0u64, resp.content_length().unwrap_or(0))
+        } else if is_transient_status(status.as_u16()) && attempt < MAX_DL_ATTEMPTS {
+            let hint = if status.as_u16() == 403 {
+                " (host is rate-limiting; waiting)"
+            } else {
+                ""
+            };
+            emit(sink, stage, format!("HTTP {}{hint} — retrying ({attempt})…", status.as_u16()), None);
+            tokio::time::sleep(Duration::from_secs(2u64.pow(attempt))).await;
+            continue;
+        } else {
+            let _ = std::fs::remove_file(&part);
+            if status.as_u16() == 403 {
+                return Err("download blocked (HTTP 403) — the model host is rate-limiting this network. Wait a few minutes and try again.".into());
+            }
+            return Err(format!("download failed: HTTP {}", status.as_u16()));
+        };
+
+        // Stream the body; on a mid-stream error, keep the .part and retry (resume).
+        let mut stream = resp.bytes_stream();
+        let mut last_pct: u64 = u64::MAX;
+        let mut stream_err = false;
+        while let Some(chunk) = stream.next().await {
+            let bytes = match chunk {
+                Ok(b) => b,
+                Err(_) => {
+                    stream_err = true;
+                    break;
+                }
+            };
+            if file.write_all(&bytes).is_err() {
+                stream_err = true;
+                break;
+            }
+            done += bytes.len() as u64;
+            if total > 0 {
+                let pct = done * 100 / total;
+                if pct != last_pct {
+                    last_pct = pct;
+                    emit(
+                        sink,
+                        stage,
+                        format!("{pct}%  ({} / {} MB)", done / 1_000_000, total / 1_000_000),
+                        Some(pct),
+                    );
+                }
+            } else if done % (8 * 1_000_000) < bytes.len() as u64 {
+                emit(sink, stage, format!("{} MB", done / 1_000_000), None);
+            }
+        }
+        drop(file);
+
+        if stream_err {
+            if attempt < MAX_DL_ATTEMPTS {
+                emit(sink, stage, format!("connection dropped — resuming ({attempt})…"), None);
+                tokio::time::sleep(Duration::from_secs(2u64.pow(attempt))).await;
+                continue;
+            }
+            return Err("download failed: connection dropped repeatedly".into());
+        }
+
+        std::fs::rename(&part, dest).map_err(|e| format!("finalize {dest}: {e}"))?;
+        return Ok(());
     }
-    drop(file);
-    std::fs::rename(&part, dest).map_err(|e| format!("finalize {dest}: {e}"))?;
-    Ok(())
 }
 
 // ---- Managed process -----------------------------------------------------
