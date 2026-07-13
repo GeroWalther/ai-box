@@ -28,12 +28,15 @@ export default function ModelSelect({
   const value =
     settings.provider === "ollama"
       ? `ollama|${settings.ollamaModel}`
-      : `openrouter|${settings.openrouterModel}`;
+      : settings.provider === "custom"
+        ? `custom|${settings.customModel}`
+        : `openrouter|${settings.openrouterModel}`;
 
   function select(v: string) {
     const kind = v.slice(0, v.indexOf("|"));
     const id = v.slice(v.indexOf("|") + 1);
     if (kind === "ollama") onChange({ provider: "ollama", ollamaModel: id });
+    else if (kind === "custom") onChange({ provider: "custom", customModel: id });
     else onChange({ provider: "openrouter", openrouterModel: id });
   }
 
@@ -59,6 +62,15 @@ export default function ModelSelect({
             </option>
           ))}
         </optgroup>
+        {(settings.customUrl || settings.customModel) && (
+          <optgroup label="Custom (OpenAI-compatible)">
+            <option value={`custom|${settings.customModel}`} title={settings.customUrl}>
+              {settings.customModel
+                ? `Custom · ${settings.customModel}`
+                : "— set a model in Settings —"}
+            </option>
+          </optgroup>
+        )}
         <optgroup label="OpenRouter · Featured">
           {FEATURED_MODELS.map((m) => (
             <option key={m.id} value={`openrouter|${m.id}`} title={m.note}>

@@ -108,17 +108,23 @@ Everything else (signing, sync, packaging) makes it *shippable*; these three mak
    - **Prune the image gallery**: `~/.ai-studio/images` grows unbounded — add a
      size cap / LRU prune.
    - **Export formats**: Markdown / EPUB / DOCX for finished manuscripts.
-6. ⬜ **Error UX + retries** — map 401/404/429/5xx to actionable messages (bad key,
-   model not found, rate-limited), show empty-response and network-drop states
-   explicitly instead of inline `[error]` text; add backoff retry on 429/5xx.
+6. ✅ **Error UX + retries** — `friendly_http_error` (lib.rs) maps 401/403/404/402/
+   429/5xx to actionable messages (bad key, model not found, out of credit,
+   rate-limited, provider error); `chat_completion` and the streaming connect retry
+   transient failures (429/5xx/network) with backoff (`is_transient`/`backoff`/
+   `MAX_ATTEMPTS`), bailing early if cancelled. Verified `cargo test --lib` (10/10).
 7. ⬜ **Auto-updater + release identity** — add `tauri-plugin-updater` with signed
    artifacts; unify product name; automate the version bump across the 3 manifests.
-8. ⬜ **Finish provider coverage** — wire the `custom` OpenAI-compatible provider
-   into `ModelSelect`; use the fetched `contextLength` to budget prompt size and set
-   sane per-model `max_tokens` (agent steps currently send none).
-9. ⬜ **Content-Security-Policy** — replace `csp: null` with a real policy for the
-   desktop webview and a CSP header on the served phone bundle (careful: BYOK needs
-   a broad `connect-src`).
+8. ✅ **Finish provider coverage** — the `custom` OpenAI-compatible provider (LM
+   Studio / proxy) is now selectable directly in `ModelSelect` (a "Custom
+   (OpenAI-compatible)" group), not just Settings. ⬜ Still todo: use fetched
+   `contextLength` to budget prompt size / per-model `max_tokens`.
+9. ✅ **Content-Security-Policy** — replaced `csp: null` with a real policy in
+   `tauri.conf.json` (`script-src 'self'`, `img-src 'self' data: blob: asset:`,
+   `style-src 'self' 'unsafe-inline'`, `connect-src 'self' ipc:` + Tauri's asset/
+   IPC protocols; `object-src 'none'`, `frame-ancestors 'none'`). Desktop provider
+   traffic goes through Rust IPC, so no broad `connect-src` is needed. Verified the
+   built bundle mounts with zero CSP refusals in headless Chrome.
 
 ---
 
