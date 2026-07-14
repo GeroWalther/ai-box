@@ -281,8 +281,8 @@ body {
   flex: 1;
   overflow-y: auto;
   display: flex;
-  justify-content: center;
-  padding: 44px 40px 120px;
+  justify-content: flex-start;
+  padding: 44px 40px 120px 56px;
 }
 
 /* The prose editor — a comfortable reading column, centered on the canvas. */
@@ -1704,19 +1704,8 @@ input[type="range"]:focus {
 .bubble-row { display: flex; align-items: center; gap: 6px; }
 
 /* Story Bible panel */
-.bible-tab {
-  align-self: flex-start;
-  margin: 10px 0 0 -1px;
-  width: 34px;
-  height: 40px;
-  border: 1px solid var(--border);
-  border-left: none;
-  border-radius: 0 9px 9px 0;
-  background: var(--bg-2);
-  cursor: pointer;
-  font-size: 17px;
-}
-.bible-tab:hover { background: var(--panel-2); }
+/* The Story Bible is opened from a toolbar button now (not an edge tab). */
+.bible-tab { display: none; }
 .bible-panel {
   width: 300px;
   flex: none;
@@ -2140,8 +2129,15 @@ input[type="range"]:focus {
     padding: 10px 12px;
     border-radius: 14px;
   }
+  /* iOS Safari force-zooms any focused field whose font is < 16px, so every
+     text control stays at 16px on mobile — the min that keeps typing zoom-free. */
+  .promptbar-input,
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
   .promptbar-input {
-    font-size: 13.5px;
     line-height: 1.5;
     min-height: 84px;
     max-height: 42vh;

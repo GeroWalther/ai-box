@@ -469,6 +469,7 @@ export default function ImagePanel({
                   <select
                     value={settings.comfyCheckpoint}
                     onChange={(e) => onChange({ comfyCheckpoint: e.target.value })}
+                    onMouseDown={() => detect()}
                   >
                     {checkpoints.length === 0 && <option value="">— none detected —</option>}
                     {checkpoints.map((c) => (
@@ -477,9 +478,6 @@ export default function ImagePanel({
                       </option>
                     ))}
                   </select>
-                  <button className="btn" onClick={detect} title="Detect installed models">
-                    Refresh
-                  </button>
                   <button
                     className="btn"
                     onClick={() => setShowModels(true)}

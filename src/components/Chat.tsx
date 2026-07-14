@@ -160,7 +160,6 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   const {
     models: orModels,
     refresh: refreshOR,
-    loading: orLoading,
   } = useOpenrouterModels(settings.openrouterKey);
   const active = sessions.find((s) => s.id === activeId) || sessions[0];
   const messages = active?.messages ?? [];
@@ -595,8 +594,10 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
             ollamaModels={ollamaModels}
             orModels={orModels}
             onChange={onChange}
-            onRefresh={refreshOR}
-            loading={orLoading}
+            onRefresh={() => {
+              refreshOR();
+              refreshOllama();
+            }}
             onManageModels={() => setShowModels(true)}
           />
           <label className="agent-toggle" title="Let the AI read/write files and run commands">

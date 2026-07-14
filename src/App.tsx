@@ -404,7 +404,6 @@ export default function App() {
   const {
     models: orModels,
     refresh: refreshOR,
-    loading: orLoading,
   } = useOpenrouterModels(settings.openrouterKey);
 
   const canGenerate = useMemo(() => {
@@ -763,21 +762,16 @@ export default function App() {
             >
               ⚙ Model &amp; options {writeToolsOpen ? "▲" : "▾"}
             </button>
-            <button
-              className="bible-open-btn"
-              title="Story Bible"
-              onClick={() => setBibleOpen(true)}
-            >
-              📖
-            </button>
             <div className={writeToolsOpen ? "write-tools open" : "write-tools"}>
               <ModelSelect
                 settings={settings}
                 ollamaModels={ollamaModels}
                 orModels={orModels}
                 onChange={updateSettings}
-                onRefresh={refreshOR}
-                loading={orLoading}
+                onRefresh={() => {
+                  refreshOR();
+                  refreshOllama();
+                }}
                 onManageModels={() => setShowModels(true)}
               />
               <WritingPresets settings={settings} onChange={updateSettings} />
@@ -789,16 +783,23 @@ export default function App() {
               >
                 {LANGUAGES.map((l) => (
                   <option key={l} value={l}>
-                    {l === "auto" ? "🌐 Auto" : l}
+                    {l === "auto" ? "Auto" : l}
                   </option>
                 ))}
               </select>
               <div className="topbar-spacer" />
               {lastGen && !generating && (
                 <button className="btn ghost" title="Regenerate the last AI passage" onClick={handleRegenerate}>
-                  ↻ Regenerate
+                  Regenerate
                 </button>
               )}
+              <button
+                className={bibleOpen ? "btn ghost active" : "btn ghost"}
+                title="Story Bible — characters, world & canon for this document"
+                onClick={() => setBibleOpen((v) => !v)}
+              >
+                Story Bible
+              </button>
               <WritingSettings settings={settings} onChange={updateSettings} />
               <ExportMenu
                 title={activeDoc?.title || "manuscript"}

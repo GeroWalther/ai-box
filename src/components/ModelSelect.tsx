@@ -10,7 +10,6 @@ interface Props {
   orModels: OpenrouterModel[];
   onChange: (patch: Partial<Settings>) => void;
   onRefresh: () => void;
-  loading: boolean;
   /** Opens the local (Ollama) model installer. Shown as a "Local models" button. */
   onManageModels?: () => void;
 }
@@ -21,7 +20,6 @@ export default function ModelSelect({
   orModels,
   onChange,
   onRefresh,
-  loading,
   onManageModels,
 }: Props) {
   const value =
@@ -49,7 +47,12 @@ export default function ModelSelect({
 
   return (
     <div className="model-select">
-      <select className="chat-model" value={value} onChange={(e) => select(e.target.value)}>
+      <select
+        className="chat-model"
+        value={value}
+        onChange={(e) => select(e.target.value)}
+        onMouseDown={() => onRefresh()}
+      >
         <optgroup label="Local (Ollama)">
           {ollamaModels.length === 0 && <option value="ollama|">— none installed —</option>}
           {ollamaModels.map((m) => (
@@ -80,14 +83,6 @@ export default function ModelSelect({
           </optgroup>
         )}
       </select>
-      <button
-        className="btn ghost"
-        title="Refresh OpenRouter model list"
-        onClick={onRefresh}
-        disabled={loading}
-      >
-        {loading ? "…" : "Refresh"}
-      </button>
       {onManageModels && (
         <button className="btn ghost" title="Install / manage local (Ollama) models" onClick={onManageModels}>
           Local models
