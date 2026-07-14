@@ -152,6 +152,7 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [rewriteHow, setRewriteHow] = useState("");
   const [bibleOpen, setBibleOpen] = useState(false);
+  const [writeToolsOpen, setWriteToolsOpen] = useState(false); // mobile: collapse the model/preset toolbar
   const [lastGen, setLastGen] = useState<
     { from: number; to: number; instruction: string } | null
   >(null);
@@ -754,40 +755,58 @@ export default function App() {
           </SidebarSlot>
           <div className="write-view">
           <div className="write-topbar">
-            <ModelSelect
-              settings={settings}
-              ollamaModels={ollamaModels}
-              orModels={orModels}
-              onChange={updateSettings}
-              onRefresh={refreshOR}
-              loading={orLoading}
-              onManageModels={() => setShowModels(true)}
-            />
-            <WritingPresets settings={settings} onChange={updateSettings} />
-            <select
-              className="lang-select"
-              title="Output language"
-              value={settings.language}
-              onChange={(e) => updateSettings({ language: e.target.value })}
+            {/* Mobile-only: collapse the controls behind a single toggle so the
+                canvas isn't crowded. Hidden on desktop (CSS). */}
+            <button
+              className="write-tools-toggle"
+              onClick={() => setWriteToolsOpen((v) => !v)}
+              aria-expanded={writeToolsOpen}
             >
-              {LANGUAGES.map((l) => (
-                <option key={l} value={l}>
-                  {l === "auto" ? "🌐 Auto" : l}
-                </option>
-              ))}
-            </select>
-            <div className="topbar-spacer" />
-            {lastGen && !generating && (
-              <button className="btn ghost" title="Regenerate the last AI passage" onClick={handleRegenerate}>
-                ↻ Regenerate
-              </button>
-            )}
-            <WritingSettings settings={settings} onChange={updateSettings} />
-            <ExportMenu
-              title={activeDoc?.title || "manuscript"}
-              getText={() => editor?.getText() ?? ""}
-              getHTML={() => editor?.getHTML() ?? ""}
-            />
+              ⚙ Model &amp; options {writeToolsOpen ? "▲" : "▾"}
+            </button>
+            <button
+              className="bible-open-btn"
+              title="Story Bible"
+              onClick={() => setBibleOpen(true)}
+            >
+              📖
+            </button>
+            <div className={writeToolsOpen ? "write-tools open" : "write-tools"}>
+              <ModelSelect
+                settings={settings}
+                ollamaModels={ollamaModels}
+                orModels={orModels}
+                onChange={updateSettings}
+                onRefresh={refreshOR}
+                loading={orLoading}
+                onManageModels={() => setShowModels(true)}
+              />
+              <WritingPresets settings={settings} onChange={updateSettings} />
+              <select
+                className="lang-select"
+                title="Output language"
+                value={settings.language}
+                onChange={(e) => updateSettings({ language: e.target.value })}
+              >
+                {LANGUAGES.map((l) => (
+                  <option key={l} value={l}>
+                    {l === "auto" ? "🌐 Auto" : l}
+                  </option>
+                ))}
+              </select>
+              <div className="topbar-spacer" />
+              {lastGen && !generating && (
+                <button className="btn ghost" title="Regenerate the last AI passage" onClick={handleRegenerate}>
+                  ↻ Regenerate
+                </button>
+              )}
+              <WritingSettings settings={settings} onChange={updateSettings} />
+              <ExportMenu
+                title={activeDoc?.title || "manuscript"}
+                getText={() => editor?.getText() ?? ""}
+                getHTML={() => editor?.getHTML() ?? ""}
+              />
+            </div>
           </div>
           <div className="editor-scroll">
             <EditorContent editor={editor} className="prose" />

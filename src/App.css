@@ -1044,6 +1044,11 @@ input[type="range"]:focus {
   background: var(--bg-2);
 }
 .topbar-spacer { flex: 1 1 20px; }
+/* Desktop: the controls lay out directly in the topbar flow; the mobile toggle
+   + bible button are hidden. On mobile these flip (see media query). */
+.write-tools { display: contents; }
+.write-tools-toggle,
+.bible-open-btn { display: none; }
 .lang-select { max-width: 130px; }
 .preset-select { max-width: 200px; }
 .write-topbar .chat-model {
@@ -2035,7 +2040,9 @@ input[type="range"]:focus {
   }
   /* Collapsed rail stays as a slim strip with the » open button. */
 
-  /* Story Bible panel floats in from the right. */
+  /* Story Bible panel floats in from the right. Its persistent side "tab" (the
+     book) is hidden on mobile — it only created a dead gap; open it via the 📖
+     button in the write toolbar instead. */
   .bible-panel {
     position: absolute;
     top: 0;
@@ -2045,6 +2052,7 @@ input[type="range"]:focus {
     z-index: 40;
     box-shadow: -2px 0 22px rgba(0, 0, 0, 0.28);
   }
+  .bible-tab { display: none; }
 
   /* Roomier tap targets + less padding for the writing canvas. */
   .editor-scroll,
@@ -2055,10 +2063,59 @@ input[type="range"]:focus {
     font-size: 17.5px;
     line-height: 1.7;
   }
+  /* Collapse the writing controls behind a single toggle so the canvas is the
+     focus. One slim row: [⚙ Model & options]  …  [📖]. Tapping the toggle drops
+     the full controls as a stacked panel. */
   .write-topbar {
     padding: 8px 12px;
-    gap: 6px 8px;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
   }
+  .write-tools-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .bible-open-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    flex: none;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    font-size: 18px;
+  }
+  /* Hidden until the toggle expands it; then a full-width stacked panel. */
+  .write-tools {
+    display: none;
+  }
+  .write-tools.open {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    flex: 1 1 100%;
+    order: 3;
+    width: 100%;
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .write-tools.open .topbar-spacer { display: none; }
+  .write-tools.open .lang-select,
+  .write-tools.open .preset-select { max-width: none; }
   /* Let the whole flex chain shrink below its content so nothing overflows. */
   .chat-view,
   .write-view,
