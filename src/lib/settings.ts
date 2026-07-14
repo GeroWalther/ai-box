@@ -65,6 +65,13 @@ export interface Settings {
   remotePort: number;
   remoteToken: string;
   remoteWakeLock: boolean;
+
+  // Agentic Chat: start new chats in Agent mode (can run tools) by default.
+  agentMode: boolean;
+  // Auto-approve the agent's file writes / commands without prompting. Off by
+  // default — a deliberate away-mode escape hatch (skips the "approve on the Mac"
+  // safety gate for both the desktop agent and remote/phone requests).
+  autoApproveTools: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -116,6 +123,9 @@ export const DEFAULT_SETTINGS: Settings = {
   remotePort: 8787,
   remoteToken: "",
   remoteWakeLock: true,
+
+  agentMode: true,
+  autoApproveTools: false,
 };
 
 const STORAGE_KEY = "novel-studio.settings";

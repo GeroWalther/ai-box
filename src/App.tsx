@@ -899,7 +899,7 @@ export default function App() {
         />
       )}
 
-      <RemoteApprovalListener />
+      <RemoteApprovalListener autoApprove={settings.autoApproveTools} />
     </div>
   );
 }

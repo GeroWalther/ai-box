@@ -2313,3 +2313,14 @@ input[type="range"]:focus {
 .civitai-recs {
   margin-top: 16px;
 }
+
+/* Away-mode auto-approve warning text */
+.remote-danger {
+  color: #c2410c;
+  font-size: 12px;
+}
+@media (prefers-color-scheme: dark) {
+  .remote-danger { color: #fb923c; }
+}
+:root[data-theme="dark"] .remote-danger { color: #fb923c; }
+:root[data-theme="light"] .remote-danger { color: #c2410c; }

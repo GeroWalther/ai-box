@@ -100,7 +100,8 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   const [activeId, setActiveId] = useState<string>(() => "");
   const [input, setInput] = useState("");
   const [generating, setGenerating] = useState(false);
-  const [agentMode, setAgentMode] = useState(false);
+  // Start in Agent mode by default (persisted in settings) so it can run tools.
+  const [agentMode, setAgentMode] = useState(settings.agentMode !== false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
@@ -562,6 +563,8 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     // Over the network (phone), approval happens ON THE MAC via the server bridge,
     // so we don't prompt again here — the desktop enforces it once.
     if (!isTauri()) return Promise.resolve(true);
+    // Away-mode escape hatch: skip the prompt entirely when the user has opted in.
+    if (settings.autoApproveTools) return Promise.resolve(true);
     if (allowAllRef.current) return Promise.resolve(true);
     return new Promise((resolve) => setPending({ title, body, resolve }));
   }
@@ -600,7 +603,10 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
             <input
               type="checkbox"
               checked={agentMode}
-              onChange={(e) => setAgentMode(e.target.checked)}
+              onChange={(e) => {
+                setAgentMode(e.target.checked);
+                onChange({ agentMode: e.target.checked });
+              }}
             />
             Agent
           </label>

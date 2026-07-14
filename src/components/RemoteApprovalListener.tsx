@@ -2,7 +2,7 @@
 // command or change files, the request is emitted here as a `remote-approval`
 // event and the human at the Mac approves or denies it. This is the "approve on
 // the Mac" security guarantee — remote devices can request, the Mac decides.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isTauri } from "../lib/transport";
 
@@ -13,18 +13,29 @@ interface Req {
   diff?: string | null;
 }
 
-export default function RemoteApprovalListener() {
+export default function RemoteApprovalListener({ autoApprove = false }: { autoApprove?: boolean }) {
   // A queue, not a single slot: concurrent requests are shown one at a time so a
   // second request can't silently overwrite (and time out) the first.
   const [queue, setQueue] = useState<Req[]>([]);
   const req = queue[0] || null;
+  // Keep the latest value for the event handler without re-subscribing.
+  const autoRef = useRef(autoApprove);
+  autoRef.current = autoApprove;
 
   useEffect(() => {
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<Req>("remote-approval", (e) => setQueue((q) => [...q, e.payload])).then((fn) => {
+      listen<Req>("remote-approval", (e) => {
+        // Away mode: auto-approve remote requests instead of waiting for a human
+        // at the Mac. This is the opt-in "I'm away" escape hatch.
+        if (autoRef.current) {
+          invoke("resolve_remote_approval", { id: e.payload.id, approved: true }).catch(() => {});
+          return;
+        }
+        setQueue((q) => [...q, e.payload]);
+      }).then((fn) => {
         if (cancelled) fn();
         else unlisten = fn;
       });
