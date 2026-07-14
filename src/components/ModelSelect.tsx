@@ -58,15 +58,6 @@ export default function ModelSelect({
             </option>
           ))}
         </optgroup>
-        {(settings.customUrl || settings.customModel) && (
-          <optgroup label="Custom (OpenAI-compatible)">
-            <option value={`custom|${settings.customModel}`} title={settings.customUrl}>
-              {settings.customModel
-                ? `Custom · ${settings.customModel}`
-                : "— set a model in Settings —"}
-            </option>
-          </optgroup>
-        )}
         <optgroup label="OpenRouter · Featured">
           {FEATURED_MODELS.map((m) => (
             <option key={m.id} value={`openrouter|${m.id}`} title={m.note}>
