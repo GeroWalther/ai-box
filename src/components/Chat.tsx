@@ -102,6 +102,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   const [generating, setGenerating] = useState(false);
   // Start in Agent mode by default (persisted in settings) so it can run tools.
   const [agentMode, setAgentMode] = useState(settings.agentMode !== false);
+  const [toolsOpen, setToolsOpen] = useState(false); // collapse the model/agent bar for a clean canvas
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
@@ -588,31 +589,6 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
       </SidebarSlot>
 
       <div className="chat-view">
-        <div className="chat-bar">
-          <ModelSelect
-            settings={settings}
-            ollamaModels={ollamaModels}
-            orModels={orModels}
-            onChange={onChange}
-            onRefresh={() => {
-              refreshOR();
-              refreshOllama();
-            }}
-            onManageModels={() => setShowModels(true)}
-          />
-          <label className="agent-toggle" title="Let the AI read/write files and run commands">
-            <input
-              type="checkbox"
-              checked={agentMode}
-              onChange={(e) => {
-                setAgentMode(e.target.checked);
-                onChange({ agentMode: e.target.checked });
-              }}
-            />
-            Agent
-          </label>
-        </div>
-
         <div className="chat-scroll" ref={scrollRef}>
           {messages.length === 0 && (
             <div className="chat-empty">
@@ -722,6 +698,42 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
         </div>
 
         <div className="promptbar-wrap">
+          <div className="prompt-toolbar">
+            <button
+              className="write-tools-toggle prompt-tools-toggle"
+              onClick={() => setToolsOpen((v) => !v)}
+              aria-expanded={toolsOpen}
+              title="Model & agent options"
+            >
+              Model &amp; options {toolsOpen ? "▲" : "▾"}
+            </button>
+            {toolsOpen && (
+              <div className="prompt-tools">
+                <ModelSelect
+                  settings={settings}
+                  ollamaModels={ollamaModels}
+                  orModels={orModels}
+                  onChange={onChange}
+                  onRefresh={() => {
+                    refreshOR();
+                    refreshOllama();
+                  }}
+                  onManageModels={() => setShowModels(true)}
+                />
+                <label className="agent-toggle" title="Let the AI read/write files and run commands">
+                  <input
+                    type="checkbox"
+                    checked={agentMode}
+                    onChange={(e) => {
+                      setAgentMode(e.target.checked);
+                      onChange({ agentMode: e.target.checked });
+                    }}
+                  />
+                  Agent
+                </label>
+              </div>
+            )}
+          </div>
           <div className="promptbar">
             <input
               type="file"

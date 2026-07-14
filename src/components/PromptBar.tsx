@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 interface Props {
   value: string;
   onChange: (s: string) => void;
@@ -5,6 +7,11 @@ interface Props {
   onStop: () => void;
   generating: boolean;
   status: string;
+  /** Optional controls (model, preset, language, actions) revealed above the
+      input by the "Model & options" toggle — keeps the canvas clean. */
+  tools?: ReactNode;
+  toolsOpen?: boolean;
+  onToggleTools?: () => void;
 }
 
 export default function PromptBar({
@@ -14,10 +21,26 @@ export default function PromptBar({
   onStop,
   generating,
   status,
+  tools,
+  toolsOpen,
+  onToggleTools,
 }: Props) {
   return (
     <div className="promptbar-wrap">
       {status && <div className="promptbar-status">{status}</div>}
+      {tools && (
+        <div className="prompt-toolbar">
+          <button
+            className="write-tools-toggle prompt-tools-toggle"
+            onClick={onToggleTools}
+            aria-expanded={toolsOpen}
+            title="Model, preset, language & document tools"
+          >
+            Model &amp; options {toolsOpen ? "▲" : "▾"}
+          </button>
+          {toolsOpen && <div className="prompt-tools">{tools}</div>}
+        </div>
+      )}
       <div className="promptbar">
         <textarea
           className="promptbar-input"

@@ -1157,6 +1157,33 @@ input[type="range"]:focus {
   background: var(--bg-2);
   padding: 12px 16px;
 }
+/* "Model & options" toggle + its revealed panel, tucked just above the input so
+   the canvas above stays clean. Toggle on top, panel drops below it. */
+.prompt-toolbar {
+  max-width: 820px;
+  margin: 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.prompt-tools-toggle {
+  align-self: flex-start;
+}
+.prompt-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.prompt-tools .chat-model { max-width: 340px; }
+.prompt-tools .lang-select { max-width: 140px; }
+.prompt-tools .preset-select { max-width: 200px; }
 .promptbar-status {
   color: var(--accent-2);
   font-size: 12px;
@@ -1167,8 +1194,8 @@ input[type="range"]:focus {
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  max-width: 760px;
-  margin: 0 auto;
+  max-width: 820px;
+  margin: 0;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 12px;

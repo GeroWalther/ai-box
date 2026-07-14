@@ -752,63 +752,6 @@ export default function App() {
             />
           </SidebarSlot>
           <div className="write-view">
-          <div className="write-topbar">
-            {/* Mobile-only: collapse the controls behind a single toggle so the
-                canvas isn't crowded. Hidden on desktop (CSS). */}
-            <button
-              className="write-tools-toggle"
-              onClick={() => setWriteToolsOpen((v) => !v)}
-              aria-expanded={writeToolsOpen}
-              title="Model, preset, language & export"
-            >
-              Model &amp; options {writeToolsOpen ? "▲" : "▾"}
-            </button>
-            <div className={writeToolsOpen ? "write-tools open" : "write-tools"}>
-              <ModelSelect
-                settings={settings}
-                ollamaModels={ollamaModels}
-                orModels={orModels}
-                onChange={updateSettings}
-                onRefresh={() => {
-                  refreshOR();
-                  refreshOllama();
-                }}
-                onManageModels={() => setShowModels(true)}
-              />
-              <WritingPresets settings={settings} onChange={updateSettings} />
-              <select
-                className="lang-select"
-                title="Output language"
-                value={settings.language}
-                onChange={(e) => updateSettings({ language: e.target.value })}
-              >
-                {LANGUAGES.map((l) => (
-                  <option key={l} value={l}>
-                    {l === "auto" ? "Auto" : l}
-                  </option>
-                ))}
-              </select>
-              <div className="topbar-spacer" />
-              {lastGen && !generating && (
-                <button className="btn ghost" title="Regenerate the last AI passage" onClick={handleRegenerate}>
-                  Regenerate
-                </button>
-              )}
-              <button
-                className={bibleOpen ? "btn ghost active" : "btn ghost"}
-                title="Story Bible — characters, world & canon for this document"
-                onClick={() => setBibleOpen((v) => !v)}
-              >
-                Story Bible
-              </button>
-              <WritingSettings settings={settings} onChange={updateSettings} />
-              <ExportMenu
-                title={activeDoc?.title || "manuscript"}
-                getText={() => editor?.getText() ?? ""}
-                getHTML={() => editor?.getHTML() ?? ""}
-              />
-            </div>
-          </div>
           <div className="editor-scroll">
             <EditorContent editor={editor} className="prose" />
             {editor && (
@@ -866,6 +809,54 @@ export default function App() {
             onStop={handleStop}
             generating={generating}
             status={status}
+            toolsOpen={writeToolsOpen}
+            onToggleTools={() => setWriteToolsOpen((v) => !v)}
+            tools={
+              <>
+                <ModelSelect
+                  settings={settings}
+                  ollamaModels={ollamaModels}
+                  orModels={orModels}
+                  onChange={updateSettings}
+                  onRefresh={() => {
+                    refreshOR();
+                    refreshOllama();
+                  }}
+                  onManageModels={() => setShowModels(true)}
+                />
+                <WritingPresets settings={settings} onChange={updateSettings} />
+                <select
+                  className="lang-select"
+                  title="Output language"
+                  value={settings.language}
+                  onChange={(e) => updateSettings({ language: e.target.value })}
+                >
+                  {LANGUAGES.map((l) => (
+                    <option key={l} value={l}>
+                      {l === "auto" ? "Auto" : l}
+                    </option>
+                  ))}
+                </select>
+                {lastGen && !generating && (
+                  <button className="btn ghost" title="Regenerate the last AI passage" onClick={handleRegenerate}>
+                    Regenerate
+                  </button>
+                )}
+                <button
+                  className={bibleOpen ? "btn ghost active" : "btn ghost"}
+                  title="Story Bible — characters, world & canon for this document"
+                  onClick={() => setBibleOpen((v) => !v)}
+                >
+                  Story Bible
+                </button>
+                <WritingSettings settings={settings} onChange={updateSettings} />
+                <ExportMenu
+                  title={activeDoc?.title || "manuscript"}
+                  getText={() => editor?.getText() ?? ""}
+                  getHTML={() => editor?.getHTML() ?? ""}
+                />
+              </>
+            }
           />
           </div>
           <StoryBible
