@@ -267,7 +267,6 @@ export const CURATED_MODELS: CuratedModel[] = [
 export interface WritingPreset {
   id: string;
   label: string;
-  icon: string; // emoji, no icon dependency
   guidance: string; // injected into the system prompt
   /** Grouping in the picker; defaults to "format". */
   group?: "format" | "genre";
@@ -276,52 +275,41 @@ export interface WritingPreset {
   wordTarget?: number;
 }
 export const WRITING_PRESETS: WritingPreset[] = [
-  { id: "novel", label: "Novel", icon: "📖", temperature: 0.9, wordTarget: 260,
+  // Formats — what you're writing.
+  { id: "novel", label: "Novel", temperature: 0.9, wordTarget: 260,
     guidance: "Write immersive long-form literary fiction: a strong, consistent narrative voice, vivid scene-setting, character interiority, and forward momentum. Favor showing over telling." },
-  { id: "fiction", label: "Fiction", icon: "🐉", temperature: 0.95, wordTarget: 240,
-    guidance: "Write vivid imaginative fiction with distinct characters, sensory detail, subtext, and narrative tension." },
-  { id: "nonfiction", label: "Non-Fiction", icon: "🔍", temperature: 0.6, wordTarget: 240,
-    guidance: "Write clear, credible non-fiction: accurate, well-structured, and engaging. Prefer concrete examples over abstraction; avoid fabricating facts." },
-  { id: "poetry", label: "Poetry", icon: "🖋️", temperature: 1.05, wordTarget: 120,
-    guidance: "Write poetry: attend to rhythm, line breaks, imagery, and sound. Compression and metaphor over exposition." },
-  { id: "short", label: "Short Story", icon: "📄", temperature: 0.9, wordTarget: 300,
+  { id: "short", label: "Short Story", temperature: 0.9, wordTarget: 300,
     guidance: "Write a tightly-focused short story: a single arc, economy of detail, and a resonant ending." },
-  { id: "screenplay", label: "Screenplay", icon: "🎭", temperature: 0.8, wordTarget: 240,
+  { id: "screenplay", label: "Screenplay", temperature: 0.8, wordTarget: 240,
     guidance: "Write in screenplay format: scene headings (INT./EXT.), action lines in present tense, and character-cued dialogue. Convey story through action and speech, not prose narration." },
-  { id: "article", label: "Article", icon: "📰", temperature: 0.6, wordTarget: 260,
+  { id: "poetry", label: "Poetry", temperature: 1.05, wordTarget: 120,
+    guidance: "Write poetry: attend to rhythm, line breaks, imagery, and sound. Compression and metaphor over exposition." },
+  { id: "nonfiction", label: "Non-Fiction", temperature: 0.6, wordTarget: 240,
+    guidance: "Write clear, credible non-fiction: accurate, well-structured, and engaging. Prefer concrete examples over abstraction; avoid fabricating facts." },
+  { id: "article", label: "Article", temperature: 0.6, wordTarget: 260,
     guidance: "Write a well-structured article: a clear hook, logical flow, informative body, and a purposeful close. Journalistic clarity." },
-  { id: "newsletter", label: "Newsletter", icon: "✉️", temperature: 0.7, wordTarget: 220,
-    guidance: "Write a warm, direct newsletter in a personal voice: a strong opener, skimmable structure, and a clear takeaway or call to action." },
-  { id: "adcopy", label: "Ad Copy", icon: "📣", temperature: 0.85, wordTarget: 90,
+  { id: "email", label: "Email", temperature: 0.7, wordTarget: 180,
+    guidance: "Write a clear, personable email: a purposeful subject-worthy opener, skimmable body, a specific ask or takeaway, and a natural sign-off. Match the requested tone." },
+  { id: "ads", label: "Ads", temperature: 0.85, wordTarget: 90,
     guidance: "Write punchy, persuasive ad copy: benefit-led, concrete, and concise, with a compelling hook and a clear call to action." },
-  { id: "tiktok", label: "TikTok", icon: "🎵", temperature: 0.95, wordTarget: 120,
-    guidance: "Write a short-form video script for TikTok: a scroll-stopping first line, snappy spoken-word pacing, and an on-trend, casual voice." },
-  { id: "instagram", label: "Instagram", icon: "📸", temperature: 0.85, wordTarget: 90,
-    guidance: "Write an Instagram caption: an engaging first line, a warm on-brand voice, tasteful emoji, and a few relevant hashtags." },
-  { id: "fanfic", label: "Fanfic", icon: "💫", temperature: 0.95, wordTarget: 260,
-    guidance: "Write fanfiction that honors established characterization and canon voice while exploring the requested scenario with genre-savvy flair." },
-  { id: "academic", label: "Academic", icon: "🎓", temperature: 0.5, wordTarget: 260,
+  { id: "social", label: "Social Post", temperature: 0.9, wordTarget: 110,
+    guidance: "Write a short-form social post: a scroll-stopping first line, a warm on-brand voice, tight pacing, and a clear hook or call to action for the chosen platform." },
+  { id: "academic", label: "Academic", temperature: 0.5, wordTarget: 260,
     guidance: "Write in a formal academic register: precise, evidence-based, and logically structured, with measured claims. Do not invent citations." },
-  { id: "gamedesign", label: "Game Design", icon: "🎲", temperature: 0.85, wordTarget: 240,
-    guidance: "Write game-design content: lore, quests, mechanics, or item/character descriptions with an evocative, world-consistent voice." },
-  { id: "classroom", label: "Classroom", icon: "🧑‍🏫", temperature: 0.6, wordTarget: 240,
-    guidance: "Write for the classroom: clear, age-appropriate explanations, worked examples, and an encouraging, instructive tone." },
 
   // Genre & tone — steer voice/mood on top of whatever format you're writing.
-  { id: "horror", label: "Horror", icon: "👻", group: "genre", temperature: 0.9, wordTarget: 240,
-    guidance: "Write horror: build dread and unease, use restraint and implication, escalate tension, and let atmosphere do the work." },
-  { id: "romance", label: "Romance", icon: "💕", group: "genre", temperature: 0.95, wordTarget: 240,
-    guidance: "Write romance: emotional interiority, chemistry and yearning, meaningful gestures, and rising tension between the leads." },
-  { id: "thriller", label: "Thriller", icon: "🔪", group: "genre", temperature: 0.85, wordTarget: 240,
-    guidance: "Write a thriller: propulsive pacing, high stakes, short punchy beats, and cliff-edge tension that pulls the reader forward." },
-  { id: "fantasy", label: "Fantasy", icon: "🐲", group: "genre", temperature: 0.9, wordTarget: 260,
+  { id: "romance", label: "Romance", group: "genre", temperature: 0.98, wordTarget: 250,
+    guidance: "Write romance: emotional interiority, chemistry and yearning, meaningful gestures, and rising tension between the leads. When a scene turns intimate, render physical closeness and desire candidly and sensuously — sensation, breath, and touch — without euphemistic evasion, always between consenting adults, keeping the established literary voice and tense." },
+  { id: "fantasy", label: "Fantasy", group: "genre", temperature: 0.9, wordTarget: 260,
     guidance: "Write fantasy: immersive worldbuilding, a sense of wonder, internally consistent magic/lore, and evocative naming." },
-  { id: "scifi", label: "Sci-Fi", icon: "🚀", group: "genre", temperature: 0.85, wordTarget: 260,
+  { id: "scifi", label: "Sci-Fi", group: "genre", temperature: 0.85, wordTarget: 260,
     guidance: "Write science fiction: a grounded speculative premise, plausible extrapolation, and ideas that drive the drama." },
-  { id: "mystery", label: "Mystery", icon: "🕵️", group: "genre", temperature: 0.8, wordTarget: 260,
+  { id: "thriller", label: "Thriller", group: "genre", temperature: 0.85, wordTarget: 240,
+    guidance: "Write a thriller: propulsive pacing, high stakes, short punchy beats, and cliff-edge tension that pulls the reader forward." },
+  { id: "horror", label: "Horror", group: "genre", temperature: 0.9, wordTarget: 240,
+    guidance: "Write horror: build dread and unease, use restraint and implication, escalate tension, and let atmosphere do the work." },
+  { id: "mystery", label: "Mystery", group: "genre", temperature: 0.8, wordTarget: 260,
     guidance: "Write mystery: plant fair clues and red herrings, sustain curiosity, and move toward a satisfying reveal." },
-  { id: "spicy", label: "Spicy 🌶️", icon: "🌶️", group: "genre", temperature: 1.0, wordTarget: 260,
-    guidance: "This is an adult scene between consenting adult characters. Write with candid, embodied sensuality — physical sensation, breath, touch, and desire rendered vividly and without euphemistic evasion — while keeping the established literary voice and tense. (Best with a permissive/uncensored model.)" },
 ];
 
 /** Look up the active writing preset's style guidance, or "" if none/freeform. */

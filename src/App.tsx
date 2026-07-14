@@ -537,8 +537,7 @@ export default function App() {
     { label: "To dialogue", how: "Rework this passage to foreground natural, character-revealing dialogue with light beats." },
   ];
 
-  // Shared streaming runner. Pass the resolved provider to route the request to
-  // the main model or the secondary "spicy" model.
+  // Shared streaming runner. Pass the resolved provider to route the request.
   async function stream(
     messages: ReturnType<typeof buildContinuationMessages>,
     maxTokens: number,

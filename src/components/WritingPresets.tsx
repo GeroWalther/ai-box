@@ -32,18 +32,18 @@ export default function WritingPresets({ settings, onChange }: Props) {
       value={settings.writingPreset}
       onChange={(e) => pick(e.target.value)}
     >
-      <option value="">✍️ Freeform</option>
+      <option value="">Freeform</option>
       <optgroup label="Format">
         {formats.map((p) => (
           <option key={p.id} value={p.id}>
-            {p.icon} {p.label}
+            {p.label}
           </option>
         ))}
       </optgroup>
-      <optgroup label="Genre & tone">
+      <optgroup label="Genre &amp; tone">
         {genres.map((p) => (
           <option key={p.id} value={p.id}>
-            {p.icon} {p.label}
+            {p.label}
           </option>
         ))}
       </optgroup>

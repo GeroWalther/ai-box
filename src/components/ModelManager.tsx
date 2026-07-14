@@ -13,6 +13,7 @@ interface Props {
 export default function ModelManager({ settings, installed, onClose, onChanged }: Props) {
   const [pulling, setPulling] = useState<string | null>(null);
   const [progress, setProgress] = useState("");
+  const [error, setError] = useState("");
   const [custom, setCustom] = useState("");
   const [sys, setSys] = useState<SystemInfo | null>(null);
 
@@ -24,13 +25,21 @@ export default function ModelManager({ settings, installed, onClose, onChanged }
   async function pull(id: string) {
     if (pulling) return;
     setPulling(id);
-    setProgress("starting…");
+    setError("");
+    setProgress(`Pulling ${id}: starting…`);
     try {
-      await pullOllamaModel(settings.ollamaUrl, id, (line) => setProgress(line));
-      setProgress("done");
+      await pullOllamaModel(settings.ollamaUrl, id, (line) => setProgress(`Pulling ${id}: ${line}`));
+      setProgress(`${id} — done ✓`);
       onChanged();
     } catch (e) {
-      setProgress(`Error: ${String(e)}`);
+      const msg = String(e);
+      // A connection failure means the Ollama server isn't up. Say so plainly.
+      setError(
+        /refused|sending request|connect|error trying|dns|failed to fetch/i.test(msg)
+          ? "Ollama isn't running. Open the Ollama app (or run “ollama serve” in Terminal), then try again."
+          : msg
+      );
+      setProgress("");
     } finally {
       setPulling(null);
     }
@@ -100,11 +109,8 @@ export default function ModelManager({ settings, installed, onClose, onChanged }
             })}
           </div>
 
-          {pulling && (
-            <p className="hint">
-              Pulling <code>{pulling}</code>: {progress}
-            </p>
-          )}
+          {progress && <p className="hint">{progress}</p>}
+          {error && <p className="hint error">{error}</p>}
 
           <section>
             <h3>Add any Ollama model</h3>

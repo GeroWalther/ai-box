@@ -1,9 +1,8 @@
-// Model picker: local Ollama models + a small Featured pin list + an Uncensored
-// group and full catalog derived LIVE from OpenRouter (so new models appear on
-// their own). ✦ discreetly marks uncensored / adult-friendly models.
+// Model picker: local Ollama models + a small Featured pin list + the full
+// catalog derived LIVE from OpenRouter (so new models appear on their own).
 import type { OpenrouterModel } from "../lib/api";
 import type { Settings } from "../lib/settings";
-import { FEATURED_MODELS, isUncensoredModel } from "../lib/presets";
+import { FEATURED_MODELS } from "../lib/presets";
 
 interface Props {
   settings: Settings;
@@ -41,13 +40,10 @@ export default function ModelSelect({
   }
 
   const featuredIds = new Set(FEATURED_MODELS.map((m) => m.id));
-  // Text models only (drop pure image generators); groups derived from the live catalog.
+  // Text models only (drop pure image generators). All non-featured models live
+  // in one plain list — no special spotlighting of any category.
   const textModels = orModels.filter((m) => m.outputText);
-  const uncensored = textModels.filter(
-    (m) => !featuredIds.has(m.id) && isUncensoredModel(`${m.id} ${m.name}`)
-  );
-  const uncensoredIds = new Set(uncensored.map((m) => m.id));
-  const rest = textModels.filter((m) => !featuredIds.has(m.id) && !uncensoredIds.has(m.id));
+  const rest = textModels.filter((m) => !featuredIds.has(m.id));
   const known = new Set([...featuredIds, ...orModels.map((m) => m.id)]);
   const selectedOR = settings.openrouterModel;
 
@@ -78,15 +74,6 @@ export default function ModelSelect({
             </option>
           ))}
         </optgroup>
-        {uncensored.length > 0 && (
-          <optgroup label={`OpenRouter · Uncensored (${uncensored.length})`}>
-            {uncensored.map((m) => (
-              <option key={m.id} value={`openrouter|${m.id}`} title={m.id}>
-                ✦ {m.name || m.id}
-              </option>
-            ))}
-          </optgroup>
-        )}
         {rest.length > 0 && (
           <optgroup label={`OpenRouter · All ${rest.length} (newest first)`}>
             {rest.map((m) => (

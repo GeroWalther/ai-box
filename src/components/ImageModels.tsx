@@ -6,7 +6,6 @@ import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   CURATED_MODELS,
-  IMAGE_MODEL_RECS,
   recommendForRam,
   type CuratedModel,
 } from "../lib/presets";
@@ -237,35 +236,19 @@ export default function ImageModels({ onClose, onChange, onChanged }: Props) {
             >
               {busyId === "__custom__" ? "Downloading…" : "Download"}
             </button>
-
-            <div className="civitai-recs">
-              <p className="hint">
-                Popular uncensored / anime checkpoints (open, copy the download link,
-                paste above):
-              </p>
-              {IMAGE_MODEL_RECS.map((m) => (
-                <div key={m.name} className="model-row">
-                  <div className="model-meta">
-                    <div className="model-name">
-                      {m.name} {m.nsfw && <span className="nsfw-tag">NSFW</span>}
-                    </div>
-                    <div className="model-sub">
-                      {m.style} · {m.base} — {m.note}
-                    </div>
-                  </div>
-                  <button
-                    className="btn"
-                    onClick={() =>
-                      openUrl(
-                        `https://civitai.com/search/models?query=${encodeURIComponent(m.search)}`
-                      )
-                    }
-                  >
-                    Find on Civitai ↗
-                  </button>
-                </div>
-              ))}
-            </div>
+            <p className="hint">
+              Any SDXL/SD1.5 checkpoint works — browse community models at{" "}
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  openUrl("https://civitai.com/models?types=Checkpoint");
+                }}
+              >
+                civitai.com
+              </a>{" "}
+              and paste the download link above.
+            </p>
           </details>
         </div>
 

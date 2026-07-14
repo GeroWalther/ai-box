@@ -445,8 +445,8 @@ export default function ImagePanel({
               </div>
             </div>
             <p className="hint">
-              Uses your OpenRouter key. Cloud models are high quality but most
-              filter explicit content — use Local (ComfyUI) for NSFW.
+              Uses your OpenRouter key. Cloud models are high quality but may
+              filter some content; local models have no restrictions.
             </p>
           </>
         ) : (
