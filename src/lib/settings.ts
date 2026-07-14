@@ -35,7 +35,8 @@ export interface Settings {
   systemPrompt: string;
   authorsNote: string;
   language: string; // "auto" | "Japanese" | "English" | ...
-  writingPreset: string; // WRITING_PRESETS id, or "" for freeform
+  writingPreset: string; // format preset id (Novel, Short Story, …), or "" for freeform
+  writingGenre: string; // genre/tone preset id (Romance, Horror, …), or "" — combines with the format
 
   // Image generation
   imageBackend: "comfyui" | "openrouter" | "a1111";
@@ -99,6 +100,7 @@ export const DEFAULT_SETTINGS: Settings = {
   authorsNote: "",
   language: "auto",
   writingPreset: "",
+  writingGenre: "",
 
   imageBackend: "comfyui",
   imageNegative:

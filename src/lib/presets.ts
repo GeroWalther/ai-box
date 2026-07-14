@@ -312,10 +312,12 @@ export const WRITING_PRESETS: WritingPreset[] = [
     guidance: "Write mystery: plant fair clues and red herrings, sustain curiosity, and move toward a satisfying reveal." },
 ];
 
-/** Look up the active writing preset's style guidance, or "" if none/freeform. */
+/** Combined style guidance for the chosen format + genre (either may be empty).
+ *  Format sets *what* you're writing; genre steers voice/mood on top of it. */
 export function presetGuidance(s: Settings): string {
-  const p = WRITING_PRESETS.find((x) => x.id === s.writingPreset);
-  return p ? p.guidance : "";
+  const format = WRITING_PRESETS.find((x) => x.id === s.writingPreset && (x.group ?? "format") === "format");
+  const genre = WRITING_PRESETS.find((x) => x.id === s.writingGenre && x.group === "genre");
+  return [format?.guidance, genre?.guidance].filter(Boolean).join("\n\n");
 }
 
 // Per-document Story Bible: persistent facts and voice the AI should honor for
