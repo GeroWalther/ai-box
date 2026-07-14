@@ -759,8 +759,9 @@ export default function App() {
               className="write-tools-toggle"
               onClick={() => setWriteToolsOpen((v) => !v)}
               aria-expanded={writeToolsOpen}
+              title="Model, preset, language & export"
             >
-              ⚙ Model &amp; options {writeToolsOpen ? "▲" : "▾"}
+              Model &amp; options {writeToolsOpen ? "▲" : "▾"}
             </button>
             <div className={writeToolsOpen ? "write-tools open" : "write-tools"}>
               <ModelSelect

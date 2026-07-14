@@ -1045,10 +1045,36 @@ input[type="range"]:focus {
   background: var(--bg-2);
 }
 .topbar-spacer { flex: 1 1 20px; }
-/* Desktop: the controls lay out directly in the topbar flow; the mobile toggle
-   + bible button are hidden. On mobile these flip (see media query). */
-.write-tools { display: contents; }
-.write-tools-toggle,
+/* The model / preset / settings controls are tucked behind a single toggle so
+   the writing canvas stays clean and timeless. Clicking the toggle reveals them
+   as an inline toolbar row that drops below it. (Mobile refines this further.) */
+.write-tools-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.write-tools-toggle:hover { border-color: var(--accent); }
+.write-tools { display: none; }
+.write-tools.open {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  flex: 1 1 100%;
+  order: 3;
+  width: 100%;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
 .bible-open-btn { display: none; }
 .lang-select { max-width: 130px; }
 .preset-select { max-width: 200px; }
