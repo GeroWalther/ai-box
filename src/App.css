@@ -2133,6 +2133,20 @@ input[type="range"]:focus {
     overflow-x: hidden;
     padding: 16px 12px;
   }
+  /* Bigger, taller prompt box with a smaller font on mobile — easier to type
+     several lines without it feeling cramped. */
+  .promptbar {
+    align-items: flex-end;
+    padding: 10px 12px;
+    border-radius: 14px;
+  }
+  .promptbar-input {
+    font-size: 13.5px;
+    line-height: 1.5;
+    min-height: 84px;
+    max-height: 42vh;
+    padding: 6px 0;
+  }
   /* Long words / code must wrap or scroll inside the bubble, not widen it. */
   .msg-body {
     overflow-wrap: anywhere;
