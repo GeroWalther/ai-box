@@ -171,9 +171,8 @@ export default function RemoteAccess({ settings, onChange }: Props) {
         <span>
           Auto-approve agent actions (no prompt)
           <span className="remote-danger">
-            {" "}— for when you're truly away. The agent can run commands and
-            change files on this Mac <b>without asking</b>. Only enable on a
-            trusted network / device.
+            {" "}— the agent can run commands and change files on this Mac
+            <b> without asking</b>. Only enable on a trusted device.
           </span>
         </span>
       </label>

@@ -139,7 +139,11 @@ export function loadSettings(): Settings {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
     // Merge so new fields added in updates get their defaults.
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    const s = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    // Safety net: never leave the app on the custom provider without a model,
+    // which would make every send fail the "pick a model" guard.
+    if (s.provider === "custom" && !s.customModel) s.provider = "openrouter";
+    return s;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
