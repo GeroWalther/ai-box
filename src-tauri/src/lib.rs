@@ -933,6 +933,36 @@ fn fs_write(path: String, content: String) -> Result<String, String> {
     Ok(format!("Wrote {path}"))
 }
 
+/// Save a base64-encoded PNG to the desktop machine's Downloads folder, returning
+/// the final path. This is how a phone browsing the app over the LAN gets a
+/// generated image onto the Mac/PC — the browser can't write to the host's disk,
+/// but this command (invoked over the companion server) can. Names collisions are
+/// avoided by appending " (2)", " (3)", … to the base name.
+#[tauri::command]
+fn save_png(base64: String, name: Option<String>) -> Result<String, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64.trim())
+        .map_err(|e| format!("decode png: {e}"))?;
+    let dir = expand_path("~/Downloads");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {dir}: {e}"))?;
+    // Sanitize the requested name; fall back to a stable default.
+    let raw = name.unwrap_or_default();
+    let stem = raw.trim().trim_end_matches(".png");
+    let stem: String = stem
+        .chars()
+        .map(|c| if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_') { c } else { '-' })
+        .collect();
+    let stem = if stem.trim().is_empty() { "ai-studio-image".to_string() } else { stem.trim().to_string() };
+    let mut path = std::path::Path::new(&dir).join(format!("{stem}.png"));
+    let mut n = 2;
+    while path.exists() {
+        path = std::path::Path::new(&dir).join(format!("{stem} ({n}).png"));
+        n += 1;
+    }
+    std::fs::write(&path, &bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 /// List a directory's entries (auto — no approval).
 #[tauri::command]
 fn fs_list(path: String) -> Result<Vec<String>, String> {
@@ -1882,6 +1912,7 @@ pub fn run() {
             chat_completion,
             fs_read,
             fs_write,
+            save_png,
             fs_list,
             fs_search,
             fs_edit,

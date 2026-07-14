@@ -17,8 +17,10 @@ import {
   listComfyCheckpoints,
   comfyStatus,
   comfyStart,
+  savePng,
   type OpenrouterModel,
 } from "../lib/api";
+import { isTauri } from "../lib/transport";
 import ImageModels from "./ImageModels";
 import {
   addImage,
@@ -261,12 +263,32 @@ export default function ImagePanel({
     await deleteImage(id).catch(() => {});
   }
 
+  // A friendly file name from the first few words of the prompt.
+  function fileName() {
+    const slug = prompt.trim().split(/\s+/).slice(0, 6).join(" ").replace(/[^\w \-]/g, "").trim();
+    return slug ? slug : "ai-studio-image";
+  }
+
+  // Save to the current device (the desktop webview, or the phone's own storage).
   function save() {
     if (!image) return;
     const a = document.createElement("a");
     a.href = image;
-    a.download = "ai-studio-image.png";
+    a.download = `${fileName()}.png`;
     a.click();
+  }
+
+  // Save onto the Mac/PC running the app. On the phone the browser can't write to
+  // the host's disk, so this hands the PNG to the companion server to drop into
+  // the desktop's Downloads folder.
+  async function saveToMac() {
+    if (!image) return;
+    try {
+      const path = await savePng(image.split(",")[1], fileName());
+      toastOk(`Saved to ${path}`);
+    } catch (e) {
+      toastError(`Couldn't save to the Mac: ${String(e)}`);
+    }
   }
 
   async function copyImage() {
@@ -702,6 +724,11 @@ export default function ImagePanel({
               <button className="btn" onClick={save}>
                 Save PNG
               </button>
+              {!isTauri() && (
+                <button className="btn" onClick={saveToMac} title="Save this image into the Downloads folder on the Mac/PC running AI Studio">
+                  Save to Mac
+                </button>
+              )}
               <button className="btn" onClick={copyImage}>
                 Copy
               </button>

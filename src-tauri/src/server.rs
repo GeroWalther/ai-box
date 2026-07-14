@@ -586,6 +586,12 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             require_approval(ctx, "Run this command?", &s("command")).await?;
             crate::run_command(s("command")).await
         }
+        // Save a generated PNG onto the desktop machine's Downloads folder. Scoped
+        // to ~/Downloads by the command itself, so no approval prompt is needed.
+        "save_png" => {
+            let name = args.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+            Ok(Value::String(crate::save_png(s("base64"), name)?))
+        }
         other => Err(format!("unknown or non-RPC command: {other}")),
     }
 }

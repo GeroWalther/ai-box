@@ -92,6 +92,13 @@ export async function downloadFile(
   await streamCmd<void>("download_file", { url, dest }, (line: string) => onProgress(line));
 }
 
+/** Save a base64 PNG to the desktop machine's Downloads folder; returns the path.
+ *  Used when browsing over the LAN from a phone (the browser can't write to the
+ *  host disk, but the companion server can). */
+export async function savePng(base64: string, name?: string): Promise<string> {
+  return invokeCmd<string>("save_png", { base64, name: name ?? null });
+}
+
 /** Pull an Ollama model, streaming progress lines. Resolves when finished. */
 export async function pullOllamaModel(
   baseUrl: string,
