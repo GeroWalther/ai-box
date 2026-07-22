@@ -1191,6 +1191,12 @@ input[type="range"]:focus {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* Must be able to shrink below the xterm canvas width, or the grid renders
+     wider than the screen and clips on the right (esp. on phones). */
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   background: #0e0e13;
 }
 .xterm-topbar {
@@ -1226,13 +1232,19 @@ input[type="range"]:focus {
 .xterm-host {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   padding: 8px 10px;
   overflow: hidden;
 }
-/* xterm sizes itself to the host; make its own viewport fill the space. */
+/* xterm sizes itself to the host; make its own viewport fill the space and never
+   exceed the host width (which would clip on the right). */
 .xterm-host .xterm,
 .xterm-host .xterm-viewport {
   height: 100% !important;
+  width: 100% !important;
+  max-width: 100% !important;
 }
 .xterm-host .xterm-viewport { overflow-y: auto; }
 
