@@ -160,13 +160,19 @@ export default function App() {
   const [view, setView] = useState<ViewKey>("chat");
   const [imagePrefill, setImagePrefill] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
+  const generatingRef = useRef(false);
+  useEffect(() => {
+    generatingRef.current = generating;
+  }, [generating]);
   const [status, setStatus] = useState("");
   const [prompt, setPrompt] = useState("");
   const [rewriteHow, setRewriteHow] = useState("");
   const [bibleOpen, setBibleOpen] = useState(false);
   const [writeToolsOpen, setWriteToolsOpen] = useState(false); // mobile: collapse the model/preset toolbar
+  // The most recent AI edit, so it can be undone/regenerated cleanly. `original`
+  // is the text to restore on undo ("" for a fresh continuation).
   const [lastGen, setLastGen] = useState<
-    { from: number; to: number; instruction: string } | null
+    { from: number; to: number; instruction: string; original: string; kind: "continue" | "rewrite" } | null
   >(null);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [documents, setDocuments] = useState<Doc[]>(loadDocs);
@@ -204,6 +210,9 @@ export default function App() {
           d.id === activeDocIdRef.current ? { ...d, html, title, updatedAt: Date.now() } : d
         )
       );
+      // Manual typing dismisses the AI accept/undo bar (AI's own edits happen
+      // while generating, so they don't clear it).
+      if (!generatingRef.current) setLastGen(null);
     },
   });
 
@@ -507,7 +516,8 @@ export default function App() {
     const startPos = editor.state.selection.to;
     await stream(messages, settings.maxTokens, nlRef, provider);
     const endPos = editor.state.selection.to;
-    if (endPos > startPos) setLastGen({ from: startPos, to: endPos, instruction });
+    if (endPos > startPos)
+      setLastGen({ from: startPos, to: endPos, instruction, original: "", kind: "continue" });
   }
 
   // Prompt bar: write a passage from the instruction (empty = continue).
@@ -517,13 +527,41 @@ export default function App() {
     setPrompt("");
   }
 
-  // Delete the last AI passage and write a fresh one from the same instruction.
+  // Regenerate the last AI edit: undo it, then run the same action again.
   async function handleRegenerate() {
     if (!editor || generating || !lastGen || !ensureModel()) return;
+    const edit = lastGen;
+    const size = editor.state.doc.content.size;
+    const to = Math.min(edit.to, size);
+    if (edit.kind === "rewrite") {
+      // Restore the original passage, reselect it, and rewrite again.
+      editor
+        .chain()
+        .focus()
+        .setTextSelection({ from: edit.from, to })
+        .insertContent(edit.original)
+        .setTextSelection({ from: edit.from, to: edit.from + edit.original.length })
+        .run();
+      await handleRewrite(edit.instruction);
+    } else {
+      editor.chain().focus().setTextSelection({ from: edit.from, to }).deleteSelection().run();
+      await generateContinuation(edit.instruction);
+    }
+  }
+
+  // Undo the last AI edit cleanly (streaming makes ProseMirror's own undo messy).
+  function undoLastEdit() {
+    if (!editor || !lastGen) return;
     const size = editor.state.doc.content.size;
     const to = Math.min(lastGen.to, size);
-    editor.chain().focus().setTextSelection({ from: lastGen.from, to }).deleteSelection().run();
-    await generateContinuation(lastGen.instruction);
+    editor
+      .chain()
+      .focus()
+      .setTextSelection({ from: lastGen.from, to })
+      .deleteSelection()
+      .insertContent(lastGen.original)
+      .run();
+    setLastGen(null);
   }
 
   // Bubble menu: rewrite the current selection in place. howOverride lets
@@ -542,8 +580,12 @@ export default function App() {
     setGenerating(true);
     setStatus("Rewriting…");
     editor.chain().focus().deleteSelection().run();
+    const start = editor.state.selection.from;
     const nlRef = { current: false };
     await stream(messages, Math.max(settings.maxTokens, 600), nlRef, provider);
+    const end = editor.state.selection.to;
+    if (end > start)
+      setLastGen({ from: start, to: end, instruction: how, original: passage, kind: "rewrite" });
     setRewriteHow("");
   }
 
@@ -552,8 +594,11 @@ export default function App() {
     { label: "Expand", how: "Expand this passage with more detail, sensory texture, and beats, staying in the same voice — roughly double the length." },
     { label: "Shorten", how: "Tighten this passage — cut redundancy and keep only the strongest lines, preserving meaning and voice." },
     { label: "Rephrase", how: "Rephrase this passage in fresh words while keeping the same meaning, length, and voice." },
-    { label: "Describe", how: "Make this passage more vivid — heighten imagery, sensory detail, and atmosphere without changing events." },
-    { label: "To dialogue", how: "Rework this passage to foreground natural, character-revealing dialogue with light beats." },
+    { label: "Sensory", how: "Make this passage more vivid — heighten imagery and sensory detail (sight, sound, smell, touch) and atmosphere, without changing events." },
+    { label: "Dialogue", how: "Rework this passage to foreground natural, character-revealing dialogue with light action beats." },
+    { label: "Show, don't tell", how: "Rewrite to show rather than tell — convey emotion and information through action, sensation, subtext and dialogue instead of stating it directly." },
+    { label: "Tension", how: "Heighten the tension and stakes in this passage — tighter sentences, rising unease, sharper conflict — without changing what happens." },
+    { label: "Proofread", how: "Fix only grammar, spelling, and punctuation. Do not change wording, voice, or content otherwise." },
   ];
 
   // Shared streaming runner. Pass the resolved provider to route the request.
@@ -822,6 +867,23 @@ export default function App() {
               </BubbleMenu>
             )}
           </div>
+
+          {lastGen && !generating && (
+            <div className="ai-edit-bar">
+              <span className="ai-edit-label">
+                {lastGen.kind === "rewrite" ? "AI rewrote your selection" : "AI wrote this passage"}
+              </span>
+              <button className="btn ghost" onClick={undoLastEdit} title="Revert this AI change">
+                Undo
+              </button>
+              <button className="btn ghost" onClick={handleRegenerate} title="Discard and try again">
+                Regenerate
+              </button>
+              <button className="btn" onClick={() => setLastGen(null)} title="Keep it">
+                Keep
+              </button>
+            </div>
+          )}
 
           <PromptBar
             value={prompt}
