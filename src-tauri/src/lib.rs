@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
 mod comfy;
+mod pty;
 mod server;
 
 /// A sink for streamed events, abstracting over the Tauri IPC Channel (desktop
@@ -1117,6 +1118,34 @@ pub(crate) async fn run_command_stream_core(
     }
 }
 
+// ---- Interactive terminal (PTY) — desktop command wrappers ----------------
+
+#[tauri::command]
+async fn pty_open(
+    id: String,
+    rows: u16,
+    cols: u16,
+    reg: tauri::State<'_, pty::PtyRegistry>,
+    on_event: Channel<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    pty::pty_open_core(id, rows, cols, &reg, &ChannelSink(on_event), None).await
+}
+
+#[tauri::command]
+fn pty_write(id: String, data: String, reg: tauri::State<'_, pty::PtyRegistry>) -> Result<(), String> {
+    pty::pty_write_core(&id, &data, &reg)
+}
+
+#[tauri::command]
+fn pty_resize(id: String, rows: u16, cols: u16, reg: tauri::State<'_, pty::PtyRegistry>) -> Result<(), String> {
+    pty::pty_resize_core(&id, rows, cols, &reg)
+}
+
+#[tauri::command]
+fn pty_kill(id: String, reg: tauri::State<'_, pty::PtyRegistry>) {
+    pty::pty_kill_core(&id, &reg);
+}
+
 /// Recursively search a directory by filename and/or file content. Bounded to
 /// keep results and time in check; skips heavy/hidden dirs. Auto (read-only).
 #[tauri::command]
@@ -1933,6 +1962,7 @@ pub fn run() {
         .manage(server::RemoteSettings::default())
         .manage(server::CancelRegistry::default())
         .manage(comfy::ManagedComfy::default())
+        .manage(pty::PtyRegistry::default())
         .invoke_handler(tauri::generate_handler![
             generate_text,
             list_openrouter_models,
@@ -1956,6 +1986,10 @@ pub fn run() {
             web_fetch,
             run_command,
             run_command_stream,
+            pty_open,
+            pty_write,
+            pty_resize,
+            pty_kill,
             system_info,
             download_file,
             start_remote_server,

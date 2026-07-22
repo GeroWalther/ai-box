@@ -34,4 +34,6 @@ local-ip-address = "0.6"
 url = "2"
 # macOS Keychain storage for API keys (at rest), instead of plaintext localStorage.
 keyring = { version = "3", features = ["apple-native"] }
+# Pseudo-terminal for the interactive Terminal tab (real shell: claude, vim, top…).
+portable-pty = "0.8"
 

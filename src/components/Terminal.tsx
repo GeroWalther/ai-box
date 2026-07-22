@@ -1,175 +1,118 @@
-// A direct terminal for the Mac, usable from the desktop app or a paired phone.
-// Each command runs via run_command_stream (a fresh `sh -c` — not a persistent
-// shell), streaming stdout/stderr live. Over the LAN the desktop must approve
-// unless the auto-approve toggle is on; on the desktop it runs immediately.
+// Interactive terminal: a real shell on the Mac rendered with xterm.js, wired to
+// a PTY on the backend (see src-tauri/src/pty.rs). Works in the desktop app and
+// from a paired phone — keystrokes stream up, output streams down, so claude,
+// vim, top, a REPL, etc. all work. Each mount is one persistent shell session.
 import { useEffect, useRef, useState } from "react";
-import { runCommandStream } from "../lib/api";
+import { Terminal as XTerm } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
+import { ptyOpen, ptyWrite, ptyResize, ptyKill } from "../lib/api";
 import { isTauri } from "../lib/transport";
 
-interface Block {
-  command: string;
-  dir: string; // directory (shortened) the command ran in
-  lines: string[];
-  code?: number;
-  error?: string;
-  running: boolean;
+// Base64 <-> bytes (keystrokes go up as base64; output comes down as base64).
+function toB64(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
 }
-
-const HISTORY_KEY = "ai-studio.terminal-history";
-
-/** Shorten a home-relative path for the prompt (e.g. ~/Documents/novel-studio). */
-function shortDir(dir: string): string {
-  if (!dir) return "";
-  const home = dir.match(/^(\/Users\/[^/]+|\/home\/[^/]+)(\/.*)?$/);
-  const rel = home ? "~" + (home[2] ?? "") : dir;
-  const parts = rel.split("/");
-  return parts.length > 4 ? "…/" + parts.slice(-2).join("/") : rel;
+function fromB64(s: string): Uint8Array {
+  const bin = atob(s);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
 }
 
 export default function Terminal() {
-  const [input, setInput] = useState("");
-  const [blocks, setBlocks] = useState<Block[]>([]);
-  const [running, setRunning] = useState(false);
-  const [cwd, setCwd] = useState<string>(""); // persistent working dir (empty = home until first run)
-  const [history, setHistory] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
-    } catch {
-      return [];
-    }
-  });
-  const [histIdx, setHistIdx] = useState(-1); // -1 = current (editing) line
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  // Keep the newest output in view as lines stream in.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [blocks]);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [restartN, setRestartN] = useState(0);
+  const [exited, setExited] = useState(false);
 
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+    const host = hostRef.current;
+    if (!host) return;
+    setExited(false);
 
-  async function run() {
-    const command = input.trim();
-    if (!command || running) return;
-    setInput("");
-    setHistIdx(-1);
-    const next = [...history.filter((h) => h !== command), command].slice(-100);
-    setHistory(next);
-    try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-    } catch {
-      /* ignore quota */
-    }
-    const idx = blocks.length;
-    setBlocks((b) => [...b, { command, dir: shortDir(cwd) || "~", lines: [], running: true }]);
-    setRunning(true);
-    const patch = (fn: (bl: Block) => Block) =>
-      setBlocks((b) => b.map((bl, i) => (i === idx ? fn(bl) : bl)));
-    try {
-      await runCommandStream(
-        command,
-        (ev) => {
-          if (ev.type === "line") patch((bl) => ({ ...bl, lines: [...bl.lines, ev.text] }));
-          else if (ev.type === "done") {
-            patch((bl) => ({ ...bl, code: ev.code, running: false }));
-            if (ev.cwd) setCwd(ev.cwd); // remember the dir so `cd` sticks
-          } else if (ev.type === "error")
-            patch((bl) => ({ ...bl, error: ev.message, running: false }));
-        },
-        { cwd: cwd || undefined }
-      );
-    } catch (e) {
-      patch((bl) => ({ ...bl, error: String(e), running: false }));
-    } finally {
-      patch((bl) => ({ ...bl, running: false }));
-      setRunning(false);
-      inputRef.current?.focus();
-    }
-  }
+    const term = new XTerm({
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, "DejaVu Sans Mono", monospace',
+      fontSize: 13,
+      cursorBlink: true,
+      scrollback: 5000,
+      theme: {
+        background: "#0e0e13",
+        foreground: "#e6e6ea",
+        cursor: "#8b7cf6",
+        selectionBackground: "#33335a",
+      },
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(host);
+    fit.fit();
+    term.focus();
 
-  // Up/Down walk shell history; Enter runs (Shift+Enter = newline).
-  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      run();
-      return;
-    }
-    if (e.key === "ArrowUp" && !input.includes("\n")) {
-      e.preventDefault();
-      const ni = histIdx < 0 ? history.length - 1 : Math.max(0, histIdx - 1);
-      if (history[ni] != null) {
-        setHistIdx(ni);
-        setInput(history[ni]);
+    const id =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : String(Date.now()) + Math.random().toString(16).slice(2);
+    let alive = true;
+
+    // Send typed input up to the shell.
+    const dataSub = term.onData((d) => {
+      if (alive) ptyWrite(id, toB64(d)).catch(() => {});
+    });
+
+    // Keep the PTY's size in sync with the rendered viewport.
+    const pushResize = () => {
+      try {
+        fit.fit();
+      } catch {
+        /* not attached yet */
       }
-    } else if (e.key === "ArrowDown" && histIdx >= 0) {
-      e.preventDefault();
-      const ni = histIdx + 1;
-      if (ni >= history.length) {
-        setHistIdx(-1);
-        setInput("");
-      } else {
-        setHistIdx(ni);
-        setInput(history[ni]);
+      if (alive) ptyResize(id, term.rows, term.cols).catch(() => {});
+    };
+    const ro = new ResizeObserver(() => pushResize());
+    ro.observe(host);
+
+    // Open the shell and stream its output into the terminal.
+    ptyOpen(id, term.rows, term.cols, (ev) => {
+      if (ev.type === "data") term.write(fromB64(ev.data));
+      else if (ev.type === "exit") {
+        alive = false;
+        setExited(true);
+        term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
       }
-    }
-  }
+    })
+      .catch((e) => {
+        term.write(`\r\n\x1b[91m${String(e)}\x1b[0m\r\n`);
+        setExited(true);
+      })
+      .finally(() => {
+        alive = false;
+      });
+
+    return () => {
+      alive = false;
+      ro.disconnect();
+      dataSub.dispose();
+      ptyKill(id).catch(() => {});
+      term.dispose();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restartN]);
 
   return (
-    <div className="terminal-view">
-      <div className="terminal-scroll" ref={scrollRef} onClick={() => inputRef.current?.focus()}>
-        {blocks.length === 0 && (
-          <div className="terminal-empty">
-            Run shell commands on this Mac{isTauri() ? "" : " from your phone"}. Starts in your home
-            folder, and <code>cd</code> persists between commands. Interactive programs (a REPL,
-            <code>vim</code>, <code>top</code>) aren&apos;t supported — there&apos;s no live terminal;
-            use non-interactive flags (e.g. <code>claude -p &quot;…&quot;</code>).
-            {!isTauri() && " Commands may need approval on the Mac."}
-          </div>
-        )}
-        {blocks.map((bl, i) => (
-          <div className="terminal-block" key={i}>
-            <div className="terminal-cmd">
-              <span className="terminal-dir">{bl.dir}</span>
-              <span className="terminal-prompt">$</span> {bl.command}
-            </div>
-            {bl.lines.length > 0 && <pre className="terminal-out">{bl.lines.join("\n")}</pre>}
-            {bl.error && <pre className="terminal-out err">{bl.error}</pre>}
-            {bl.running ? (
-              <div className="terminal-status running">running…</div>
-            ) : (
-              bl.code != null &&
-              bl.code !== 0 && <div className="terminal-status err">exit {bl.code}</div>
-            )}
-          </div>
-        ))}
-      </div>
-      <div className="terminal-bar">
-        <span className="terminal-dir">{shortDir(cwd) || "~"}</span>
-        <span className="terminal-prompt">$</span>
-        <textarea
-          ref={inputRef}
-          className="terminal-input"
-          rows={1}
-          placeholder="Type a command…  (Enter to run, ↑/↓ history)"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={onKeyDown}
-          spellCheck={false}
-          autoCapitalize="off"
-          autoCorrect="off"
-        />
-        <button
-          className={running ? "btn" : "btn primary"}
-          onClick={run}
-          disabled={running || !input.trim()}
-        >
-          {running ? "…" : "Run"}
+    <div className="xterm-view">
+      <div className="xterm-topbar">
+        <span className="xterm-title">
+          Terminal{isTauri() ? "" : " · remote"}
+          {exited && <span className="xterm-ended"> — session ended</span>}
+        </span>
+        <button className="btn ghost" onClick={() => setRestartN((n) => n + 1)}>
+          {exited ? "New session" : "Restart"}
         </button>
       </div>
+      <div className="xterm-host" ref={hostRef} />
     </div>
   );
 }

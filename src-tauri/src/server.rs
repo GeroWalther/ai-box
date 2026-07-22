@@ -592,6 +592,25 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             let name = args.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
             Ok(Value::String(crate::save_png(s("base64"), name)?))
         }
+        // Interactive terminal I/O. The session was gated at open (`pty_open` over
+        // the WS); keystrokes/resize/close then flow freely to that live shell.
+        "pty_write" => {
+            use tauri::Manager;
+            crate::pty::pty_write_core(&s("id"), &s("data"), &ctx.app.state::<crate::pty::PtyRegistry>())?;
+            Ok(Value::Null)
+        }
+        "pty_resize" => {
+            use tauri::Manager;
+            let rows = args.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
+            let cols = args.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
+            crate::pty::pty_resize_core(&s("id"), rows, cols, &ctx.app.state::<crate::pty::PtyRegistry>())?;
+            Ok(Value::Null)
+        }
+        "pty_kill" => {
+            use tauri::Manager;
+            crate::pty::pty_kill_core(&s("id"), &ctx.app.state::<crate::pty::PtyRegistry>());
+            Ok(Value::Null)
+        }
         other => Err(format!("unknown or non-RPC command: {other}")),
     }
 }
@@ -677,16 +696,19 @@ async fn handle_ws(socket: WebSocket, ctx: ServerCtx) {
             continue;
         }
 
-        // For a streaming generation, register a cancel flag under its request id.
-        let cancel = if command == "generate_text" {
-            cmd_args.get("requestId").and_then(|v| v.as_str()).map(|rid| {
-                let f = Arc::new(AtomicBool::new(false));
-                cancels.lock().unwrap().insert(rid.to_string(), f.clone());
-                (rid.to_string(), f)
-            })
-        } else {
-            None
+        // Register a cancel flag for long-lived streams so we can abort them: a
+        // generation by its request id, or an interactive PTY by its session id
+        // (flipped on disconnect below so a phone leaving doesn't orphan a shell).
+        let cancel_key = match command.as_str() {
+            "generate_text" => cmd_args.get("requestId").and_then(|v| v.as_str()),
+            "pty_open" => cmd_args.get("id").and_then(|v| v.as_str()),
+            _ => None,
         };
+        let cancel = cancel_key.map(|rid| {
+            let f = Arc::new(AtomicBool::new(false));
+            cancels.lock().unwrap().insert(rid.to_string(), f.clone());
+            (rid.to_string(), f)
+        });
 
         let ctx2 = ctx.clone();
         let tx2 = tx.clone();
@@ -706,6 +728,11 @@ async fn handle_ws(socket: WebSocket, ctx: ServerCtx) {
         });
     }
 
+    // Connection closed: flip every remaining cancel flag so any live PTY shell
+    // (or generation) tied to this device is torn down rather than orphaned.
+    for (_, f) in cancels.lock().unwrap().iter() {
+        f.store(true, Ordering::Relaxed);
+    }
     drop(tx);
     let _ = writer.await;
 }
@@ -743,6 +770,23 @@ async fn dispatch_ws(
             let timeout = args.get("timeoutSecs").and_then(|v| v.as_u64());
             let cwd = args.get("cwd").and_then(|v| v.as_str()).map(|c| c.to_string());
             crate::run_command_stream_core(s("command"), timeout, cwd, sink).await
+        }
+        // Opening an interactive shell is the gated action; keystrokes afterward
+        // (pty_write) flow without prompts. `cancel` is flipped on disconnect.
+        "pty_open" => {
+            use tauri::Manager;
+            require_approval(ctx, "Open an interactive terminal?", "A live shell on this Mac").await?;
+            let rows = args.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
+            let cols = args.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
+            crate::pty::pty_open_core(
+                s("id"),
+                rows,
+                cols,
+                &ctx.app.state::<crate::pty::PtyRegistry>(),
+                sink,
+                cancel,
+            )
+            .await
         }
         other => Err(format!("unknown streaming command: {other}")),
     }

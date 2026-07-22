@@ -114,6 +114,36 @@ export async function runCommandStream(
   );
 }
 
+/** An event from an interactive PTY session. */
+export type PtyEvent = { type: "data"; data: string } | { type: "exit" };
+
+/** Open an interactive shell in a PTY, streaming raw output (base64) until it
+ *  exits. Over the LAN the desktop approves opening it (auto-approve honored).
+ *  Resolves when the session ends. */
+export async function ptyOpen(
+  id: string,
+  rows: number,
+  cols: number,
+  onEvent: (ev: PtyEvent) => void
+): Promise<void> {
+  await streamCmd("pty_open", { id, rows, cols }, onEvent);
+}
+
+/** Send keystrokes (base64 bytes) to a PTY session. */
+export async function ptyWrite(id: string, data: string): Promise<void> {
+  return invokeCmd("pty_write", { id, data });
+}
+
+/** Resize a PTY session. */
+export async function ptyResize(id: string, rows: number, cols: number): Promise<void> {
+  return invokeCmd("pty_resize", { id, rows, cols });
+}
+
+/** Close a PTY session's shell. */
+export async function ptyKill(id: string): Promise<void> {
+  return invokeCmd("pty_kill", { id });
+}
+
 /** Save a base64 PNG to the desktop machine's Downloads folder; returns the path.
  *  Used when browsing over the LAN from a phone (the browser can't write to the
  *  host disk, but the companion server can). */
