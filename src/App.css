@@ -955,8 +955,17 @@ input[type="range"]:focus {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin: 12px 0;
+  margin: 8px 0 4px;
 }
+.model-group { margin: 14px 0; }
+.model-group-head {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent-2);
+}
+.model-tag.warn { color: #e0a86b; font-weight: 500; }
 .model-row {
   display: flex;
   align-items: center;

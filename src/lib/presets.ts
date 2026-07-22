@@ -16,23 +16,48 @@ export const OPENROUTER_MODEL_SUGGESTIONS = [
   "anthropic/claude-sonnet-4",
 ];
 
-// Curated local models that fit comfortably in 24 GB unified memory (Q4).
+// Curated local models pullable via Ollama. `category` groups them so writers see
+// fiction-strong, unfiltered picks first — those keep prose private AND uncensored.
 export interface LocalModel {
   id: string;
   label: string;
   size: string;
   purpose: string;
+  category: "fiction" | "general" | "code" | "reasoning";
+  /** Rough minimum unified memory (GB) to run comfortably at Q4. */
+  ram?: number;
 }
 export const LOCAL_MODEL_SUGGESTIONS: LocalModel[] = [
-  { id: "qwen2.5:7b", label: "Qwen 2.5 7B", size: "~4.7 GB", purpose: "General + multilingual" },
-  { id: "qwen2.5-coder:7b", label: "Qwen 2.5 Coder 7B", size: "~4.7 GB", purpose: "Code" },
-  { id: "llama3.1:8b", label: "Llama 3.1 8B", size: "~4.9 GB", purpose: "General chat" },
-  { id: "deepseek-r1:8b", label: "DeepSeek-R1 8B", size: "~5.2 GB", purpose: "Reasoning (shows thinking)" },
-  { id: "qwen2.5:14b", label: "Qwen 2.5 14B", size: "~9 GB", purpose: "Stronger general" },
-  { id: "qwen2.5-coder:14b", label: "Qwen 2.5 Coder 14B", size: "~9 GB", purpose: "Stronger code" },
-  { id: "deepseek-r1:14b", label: "DeepSeek-R1 14B", size: "~9 GB", purpose: "Stronger reasoning" },
-  { id: "qwen2.5:32b", label: "Qwen 2.5 32B", size: "~20 GB", purpose: "Best local — tight, no image gen alongside" },
+  // Fiction — prose-strong and permissive, so drafting stays private and unfiltered.
+  { id: "mistral-nemo:12b", label: "Mistral Nemo 12B", size: "~7 GB", purpose: "Great creative prose, very permissive", category: "fiction", ram: 16 },
+  { id: "dolphin-llama3:8b", label: "Dolphin Llama 3 8B", size: "~4.7 GB", purpose: "Uncensored, natural prose", category: "fiction", ram: 12 },
+  { id: "dolphin-mistral:7b", label: "Dolphin Mistral 7B", size: "~4.1 GB", purpose: "Uncensored, light & fast", category: "fiction", ram: 8 },
+  { id: "gemma2:9b", label: "Gemma 2 9B", size: "~5.4 GB", purpose: "Polished prose (more filtered)", category: "fiction", ram: 12 },
+  { id: "dolphin-mixtral:8x7b", label: "Dolphin Mixtral 8x7B", size: "~26 GB", purpose: "Uncensored — strongest local prose", category: "fiction", ram: 32 },
+  // General
+  { id: "qwen2.5:7b", label: "Qwen 2.5 7B", size: "~4.7 GB", purpose: "General + multilingual", category: "general", ram: 8 },
+  { id: "llama3.1:8b", label: "Llama 3.1 8B", size: "~4.9 GB", purpose: "General chat", category: "general", ram: 8 },
+  { id: "qwen2.5:14b", label: "Qwen 2.5 14B", size: "~9 GB", purpose: "Stronger general", category: "general", ram: 16 },
+  { id: "qwen2.5:32b", label: "Qwen 2.5 32B", size: "~20 GB", purpose: "Best general local — tight", category: "general", ram: 32 },
+  // Code
+  { id: "qwen2.5-coder:7b", label: "Qwen 2.5 Coder 7B", size: "~4.7 GB", purpose: "Code", category: "code", ram: 8 },
+  { id: "qwen2.5-coder:14b", label: "Qwen 2.5 Coder 14B", size: "~9 GB", purpose: "Stronger code", category: "code", ram: 16 },
+  // Reasoning
+  { id: "deepseek-r1:8b", label: "DeepSeek-R1 8B", size: "~5.2 GB", purpose: "Reasoning (shows thinking)", category: "reasoning", ram: 8 },
+  { id: "deepseek-r1:14b", label: "DeepSeek-R1 14B", size: "~9 GB", purpose: "Stronger reasoning", category: "reasoning", ram: 16 },
 ];
+
+/** The best fiction model that fits the detected unified memory (for defaults). */
+export function recommendFictionModel(ramGb: number): LocalModel {
+  const fits = LOCAL_MODEL_SUGGESTIONS.filter(
+    (m) => m.category === "fiction" && (m.ram ?? 8) <= ramGb
+  );
+  // Prefer the largest that fits; fall back to the smallest fiction model.
+  return (
+    fits.sort((a, b) => (b.ram ?? 0) - (a.ram ?? 0))[0] ??
+    LOCAL_MODEL_SUGGESTIONS.find((m) => m.id === "dolphin-mistral:7b")!
+  );
+}
 
 // Strong OpenRouter picks for chat / code / reasoning (best performance).
 export const OPENROUTER_CHAT_SUGGESTIONS = [
@@ -50,21 +75,10 @@ export function recommendForRam(ramGb: number): {
   textId: string;
   image: string;
 } {
-  const usable = ramGb - 6; // leave room for macOS + apps
-  let text: string, textId: string;
-  if (usable >= 19) {
-    text = "Qwen 2.5 32B (best local — tight)";
-    textId = "qwen2.5:32b";
-  } else if (usable >= 11) {
-    text = "14B models (Qwen 14B / Coder 14B / R1 14B)";
-    textId = "qwen2.5:14b";
-  } else if (usable >= 6) {
-    text = "7–8B models (Qwen 7B, Llama 3.1 8B)";
-    textId = "qwen2.5:7b";
-  } else {
-    text = "3–4B models";
-    textId = "qwen2.5:3b";
-  }
+  // Recommend a fiction-strong model for the writing wedge (privacy + no filter).
+  const fiction = recommendFictionModel(ramGb);
+  const text = `${fiction.label} — ${fiction.purpose}`;
+  const textId = fiction.id;
   let image: string;
   if (ramGb >= 16) image = "SDXL (Illustrious / Pony) + quantized Flux";
   else if (ramGb >= 12) image = "SDXL checkpoints";

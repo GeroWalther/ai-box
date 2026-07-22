@@ -82,32 +82,48 @@ export default function ModelManager({ settings, installed, onClose, onChanged }
             Models run fully offline via Ollama. Pulling downloads once. Sizes suit your machine.
           </p>
 
-          <div className="model-list">
-            {LOCAL_MODEL_SUGGESTIONS.map((m) => {
-              const here = isInstalled(m.id);
-              return (
-                <div key={m.id} className="model-row">
-                  <div className="model-meta">
-                    <div className="model-name">{m.label}</div>
-                    <div className="model-sub">
-                      {m.purpose} · {m.size} · <code>{m.id}</code>
-                    </div>
-                  </div>
-                  {here ? (
-                    <span className="model-installed">installed</span>
-                  ) : (
-                    <button
-                      className="btn"
-                      disabled={!!pulling}
-                      onClick={() => pull(m.id)}
-                    >
-                      {pulling === m.id ? "…" : "Get"}
-                    </button>
-                  )}
+          {(
+            [
+              ["fiction", "For writing — private & unfiltered"],
+              ["general", "General"],
+              ["reasoning", "Reasoning"],
+              ["code", "Code"],
+            ] as const
+          ).map(([cat, heading]) => {
+            const models = LOCAL_MODEL_SUGGESTIONS.filter((m) => m.category === cat);
+            if (!models.length) return null;
+            return (
+              <div key={cat} className="model-group">
+                <div className="model-group-head">{heading}</div>
+                <div className="model-list">
+                  {models.map((m) => {
+                    const here = isInstalled(m.id);
+                    const tooBig = sys ? (m.ram ?? 8) > sys.ramGb : false;
+                    return (
+                      <div key={m.id} className="model-row">
+                        <div className="model-meta">
+                          <div className="model-name">
+                            {m.label}
+                            {tooBig && <span className="model-tag warn"> · needs {m.ram} GB</span>}
+                          </div>
+                          <div className="model-sub">
+                            {m.purpose} · {m.size} · <code>{m.id}</code>
+                          </div>
+                        </div>
+                        {here ? (
+                          <span className="model-installed">installed</span>
+                        ) : (
+                          <button className="btn" disabled={!!pulling} onClick={() => pull(m.id)}>
+                            {pulling === m.id ? "…" : "Get"}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
+              </div>
+            );
+          })}
 
           {progress && <p className="hint">{progress}</p>}
           {error && <p className="hint error">{error}</p>}
