@@ -303,6 +303,20 @@ body {
 .prose .ProseMirror p {
   margin: 0 0 1.1em;
 }
+/* Chapter (H1) and scene (H2) headings — structure the manuscript. */
+.prose .ProseMirror h1 {
+  font-size: 1.5em;
+  font-weight: 700;
+  margin: 1.8em 0 0.8em;
+  letter-spacing: 0.2px;
+}
+.prose .ProseMirror h1:first-child { margin-top: 0.2em; }
+.prose .ProseMirror h2 {
+  font-size: 1.2em;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 1.4em 0 0.6em;
+}
 .prose .ProseMirror p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   color: var(--muted);
@@ -957,6 +971,64 @@ input[type="range"]:focus {
   gap: 8px;
   margin: 8px 0 4px;
 }
+/* Manuscript outline / binder in the Write sidebar. */
+.outline {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.outline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.outline-add {
+  border: none;
+  background: none;
+  color: var(--accent-2);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+.outline-add:hover { text-decoration: underline; }
+.outline-empty {
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.outline-list { display: flex; flex-direction: column; }
+.outline-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  padding: 5px 6px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.outline-item:hover { background: var(--bg-2); }
+.outline-item.lvl2 { padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+.outline-item.lvl3 { padding-left: 30px; font-size: 12px; color: var(--muted); }
+.outline-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.outline-words { font-size: 11px; color: var(--muted); flex: none; }
+
 .model-group { margin: 14px 0; }
 .model-group-head {
   font-size: 12px;

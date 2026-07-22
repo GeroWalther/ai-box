@@ -29,6 +29,7 @@ import { parseSyncList } from "./lib/syncList";
 import { useToast } from "./lib/toast";
 import PromptBar from "./components/PromptBar";
 import Terminal from "./components/Terminal";
+import Outline from "./components/Outline";
 import SettingsModal from "./components/SettingsModal";
 import RemoteApprovalListener from "./components/RemoteApprovalListener";
 import ImagePanel from "./components/ImagePanel";
@@ -816,6 +817,7 @@ export default function App() {
               newLabel="+ New document"
               onAfterAction={() => setDrawerOpen(false)}
             />
+            <Outline editor={editor} />
           </SidebarSlot>
           <div className="write-view">
           <div className="editor-scroll">
