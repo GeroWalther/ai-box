@@ -39,12 +39,11 @@ export default function Terminal() {
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const idRef = useRef<string>("");
-  const aliveRef = useRef(false);
   const [restartN, setRestartN] = useState(0);
   const [exited, setExited] = useState(false);
   const [fontSize, setFontSize] = useState<number>(defaultFont);
 
-  // Refit the grid to the host box and push the new rows/cols to the PTY.
+  // Refit the current grid to the host box and push the new rows/cols to the PTY.
   const refit = useCallback(() => {
     const term = termRef.current;
     const fit = fitRef.current;
@@ -54,12 +53,15 @@ export default function Terminal() {
     } catch {
       /* host not laid out yet */
     }
-    if (aliveRef.current) ptyResize(idRef.current, term.rows, term.cols).catch(() => {});
+    if (idRef.current) ptyResize(idRef.current, term.rows, term.cols).catch(() => {});
   }, []);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    // `disposed` is LOCAL to this session so a torn-down session (e.g. StrictMode's
+    // throwaway first mount) can never flip the live session's input/exit state.
+    let disposed = false;
     setExited(false);
 
     const term = new XTerm({
@@ -88,51 +90,56 @@ export default function Terminal() {
         ? crypto.randomUUID()
         : String(Date.now()) + Math.random().toString(16).slice(2);
     idRef.current = id;
-    aliveRef.current = true;
 
     // Send typed input up to the shell.
     const dataSub = term.onData((d) => {
-      if (aliveRef.current) ptyWrite(id, toB64(d)).catch(() => {});
+      if (!disposed) ptyWrite(id, toB64(d)).catch(() => {});
     });
 
     // Refit on container resize, window resize, and — crucially on mobile — when
     // the on-screen keyboard opens/closes (visualViewport changes, not the window).
-    const ro = new ResizeObserver(() => refit());
+    const pushResize = () => {
+      try {
+        fit.fit();
+      } catch {
+        /* not attached yet */
+      }
+      if (!disposed) ptyResize(id, term.rows, term.cols).catch(() => {});
+    };
+    const ro = new ResizeObserver(pushResize);
     ro.observe(host);
-    window.addEventListener("resize", refit);
+    window.addEventListener("resize", pushResize);
     const vv = window.visualViewport;
-    vv?.addEventListener("resize", refit);
+    vv?.addEventListener("resize", pushResize);
     // Fonts load async and layout settles a beat after mount; refit a few times.
-    const timers = [60, 250, 600].map((ms) => window.setTimeout(refit, ms));
+    const timers = [60, 250, 600].map((ms) => window.setTimeout(pushResize, ms));
 
     // Open the shell and stream its output into the terminal.
     ptyOpen(id, term.rows, term.cols, (ev) => {
+      if (disposed) return; // ignore events for a superseded session
       if (ev.type === "data") term.write(fromB64(ev.data));
       else if (ev.type === "exit") {
-        aliveRef.current = false;
         setExited(true);
         term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
       }
-    })
-      .catch((e) => {
+    }).catch((e) => {
+      if (!disposed) {
         term.write(`\r\n\x1b[91m${String(e)}\x1b[0m\r\n`);
         setExited(true);
-      })
-      .finally(() => {
-        aliveRef.current = false;
-      });
+      }
+    });
 
     return () => {
-      aliveRef.current = false;
+      disposed = true;
       timers.forEach(clearTimeout);
       ro.disconnect();
-      window.removeEventListener("resize", refit);
-      vv?.removeEventListener("resize", refit);
+      window.removeEventListener("resize", pushResize);
+      vv?.removeEventListener("resize", pushResize);
       dataSub.dispose();
       ptyKill(id).catch(() => {});
       term.dispose();
-      termRef.current = null;
-      fitRef.current = null;
+      if (termRef.current === term) termRef.current = null;
+      if (fitRef.current === fit) fitRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restartN]);
