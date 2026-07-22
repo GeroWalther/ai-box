@@ -49,10 +49,27 @@ function LinkQR({ label, url, token }: { label: string; url: string; token: stri
   );
 }
 
+/** Render an error/status line, turning any embedded https URL into a link. */
+function HttpsMessage({ text }: { text: string }) {
+  const m = text.match(/https?:\/\/\S+/);
+  if (!m) return <p className="hint error">{text}</p>;
+  const [before, after] = text.split(m[0]);
+  return (
+    <p className="hint error">
+      {before}
+      <a href={m[0]} target="_blank" rel="noreferrer">
+        {m[0]}
+      </a>
+      {after}
+    </p>
+  );
+}
+
 export default function RemoteAccess({ settings, onChange }: Props) {
   const { error: toastError, success: toastOk } = useToast();
   const [urls, setUrls] = useState<Urls | null>(null);
   const [busy, setBusy] = useState(false);
+  const [httpsMsg, setHttpsMsg] = useState<string | null>(null);
 
   const desktop = isTauri();
 
@@ -122,12 +139,13 @@ export default function RemoteAccess({ settings, onChange }: Props) {
 
   async function enableHttps() {
     setBusy(true);
+    setHttpsMsg(null);
     try {
       const url = await invoke<string>("tailscale_serve_enable");
       toastOk(`HTTPS enabled: ${url}`);
       await refresh();
     } catch (e) {
-      toastError(String(e));
+      setHttpsMsg(String(e)); // may include a "click here to enable Serve" link
     } finally {
       setBusy(false);
     }
@@ -210,11 +228,13 @@ export default function RemoteAccess({ settings, onChange }: Props) {
                     clipboard, installable, no “Not Secure” warning) turn on Tailscale serve:
                   </p>
                   <button className="btn ghost" onClick={enableHttps} disabled={busy}>
-                    Enable HTTPS
+                    {busy ? "Enabling…" : "Enable HTTPS"}
                   </button>
+                  {httpsMsg && <HttpsMessage text={httpsMsg} />}
                   <p className="hint">
-                    Needs HTTPS certificates enabled for your tailnet (Tailscale admin → DNS →
-                    HTTPS Certificates). Or run <code>tailscale serve --bg localhost:{urls.port}</code>.
+                    Optional — the Tailscale link above is already encrypted. HTTPS just removes
+                    Safari’s “Not Secure” label and enables clipboard/home-screen install. Needs
+                    Serve enabled once for your tailnet.
                   </p>
                 </div>
               </div>

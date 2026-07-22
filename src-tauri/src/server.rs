@@ -298,24 +298,53 @@ fn tailscale_https_url(port: u16) -> Option<String> {
 }
 
 /// Turn on `tailscale serve` HTTPS for our port and return the resulting URL.
-/// Requires Tailscale installed + HTTPS certificates enabled for the tailnet.
-pub fn serve_enable(state: &RemoteState) -> Result<String, String> {
+/// Requires Tailscale installed + Serve/HTTPS enabled for the tailnet. Bounded by a
+/// timeout so a headless `--bg` invocation (no controlling tty) can't hang the UI.
+pub async fn serve_enable(state: &RemoteState) -> Result<String, String> {
     let port = {
         let inner = state.0.lock().unwrap();
         if inner.port == 0 { 8787 } else { inner.port }
     };
     let bin = tailscale_bin().ok_or("Tailscale isn't installed on this Mac.")?;
-    let out = std::process::Command::new(bin)
+    let run = tokio::process::Command::new(bin)
         .args(["serve", "--bg", &format!("localhost:{port}")])
-        .output()
-        .map_err(|e| format!("run tailscale serve: {e}"))?;
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .output();
+    let out = match tokio::time::timeout(std::time::Duration::from_secs(12), run).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return Err(format!("run tailscale serve: {e}")),
+        // A backgrounded serve can hold the pipe open past exit — if HTTPS is now
+        // live, treat that as success; otherwise report the stall.
+        Err(_) => {
+            return tailscale_https_url(port).ok_or_else(|| {
+                "Tailscale didn't respond. Try `tailscale serve --bg localhost:8787` in Terminal.".to_string()
+            });
+        }
+    };
+    let msg = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Serve is a per-tailnet capability that must be enabled once in the admin
+    // console. The CLI prints an enable link (and exits 0), so surface it.
+    if msg.contains("not enabled") || msg.contains("/f/serve") || msg.contains("Serve") && msg.contains("enable") {
+        let link = msg
+            .split_whitespace()
+            .find(|w| w.contains("login.tailscale.com"))
+            .unwrap_or("https://login.tailscale.com/admin/settings/general");
+        return Err(format!(
+            "Tailscale Serve isn't enabled for your tailnet yet. Enable it once here, then click Enable HTTPS again:  {link}"
+        ));
+    }
     if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        let msg = err.trim();
-        return Err(if msg.is_empty() {
-            "tailscale serve failed (is HTTPS enabled for your tailnet?).".to_string()
+        let e = msg.trim();
+        return Err(if e.is_empty() {
+            "tailscale serve failed.".to_string()
         } else {
-            msg.to_string()
+            e.to_string()
         });
     }
     tailscale_https_url(port)
