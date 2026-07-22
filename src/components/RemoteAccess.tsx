@@ -19,6 +19,7 @@ interface Urls {
   token: string;
   lan: string | null;
   tailscale: string | null;
+  tailscaleHttps: string | null;
 }
 
 function newToken(): string {
@@ -49,7 +50,7 @@ function LinkQR({ label, url, token }: { label: string; url: string; token: stri
 }
 
 export default function RemoteAccess({ settings, onChange }: Props) {
-  const { error: toastError } = useToast();
+  const { error: toastError, success: toastOk } = useToast();
   const [urls, setUrls] = useState<Urls | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -119,6 +120,19 @@ export default function RemoteAccess({ settings, onChange }: Props) {
     }
   }
 
+  async function enableHttps() {
+    setBusy(true);
+    try {
+      const url = await invoke<string>("tailscale_serve_enable");
+      toastOk(`HTTPS enabled: ${url}`);
+      await refresh();
+    } catch (e) {
+      toastError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!desktop) {
     return (
       <section>
@@ -181,16 +195,37 @@ export default function RemoteAccess({ settings, onChange }: Props) {
         <>
           <div className="remote-links">
             {urls.lan && <LinkQR label="On your Wi‑Fi (LAN)" url={urls.lan} token={urls.token} />}
-            {urls.tailscale ? (
-              <LinkQR label="Anywhere via Tailscale" url={urls.tailscale} token={urls.token} />
+            {urls.tailscaleHttps ? (
+              <LinkQR
+                label="Anywhere via Tailscale (HTTPS)"
+                url={urls.tailscaleHttps}
+                token={urls.token}
+              />
+            ) : urls.tailscale ? (
+              <div className="remote-tailscale-http">
+                <LinkQR label="Anywhere via Tailscale" url={urls.tailscale} token={urls.token} />
+                <div className="remote-qr-meta">
+                  <p className="hint">
+                    This is a plain-HTTP link. For a secure HTTPS link (better on phones —
+                    clipboard, installable, no “Not Secure” warning) turn on Tailscale serve:
+                  </p>
+                  <button className="btn ghost" onClick={enableHttps} disabled={busy}>
+                    Enable HTTPS
+                  </button>
+                  <p className="hint">
+                    Needs HTTPS certificates enabled for your tailnet (Tailscale admin → DNS →
+                    HTTPS Certificates). Or run <code>tailscale serve --bg localhost:{urls.port}</code>.
+                  </p>
+                </div>
+              </div>
             ) : (
               <div className="remote-qr">
                 <div className="remote-qr-meta">
                   <div className="remote-qr-label">Anywhere via Tailscale</div>
                   <p className="hint">
                     Tailscale not detected. Install it on this Mac and your phone
-                    (tailscale.com) to reach the app over cellular. For HTTPS, run{" "}
-                    <code>tailscale serve --bg localhost:{urls.port}</code>.
+                    (tailscale.com), sign into the same account, then reopen this panel to get a
+                    link that works over cellular.
                   </p>
                 </div>
               </div>

@@ -206,37 +206,121 @@ pub fn urls(state: &RemoteState) -> Value {
         .ok()
         .map(|ip| format!("http://{ip}:{port}"));
     let tailscale = tailscale_ip().map(|ip| format!("http://{ip}:{port}"));
+    // Preferred when present: a `tailscale serve` HTTPS endpoint (secure context —
+    // better on mobile: clipboard, installable PWA, no "Not Secure" banner).
+    let tailscale_https = tailscale_https_url(port);
     json!({
         "running": inner.running,
         "port": port,
         "token": inner.token,
         "lan": lan,
         "tailscale": tailscale,
+        "tailscaleHttps": tailscale_https,
     })
 }
 
-/// Best-effort Tailscale IPv4 lookup (the CLI often isn't on a GUI app's PATH).
-fn tailscale_ip() -> Option<String> {
-    let candidates = [
+/// Locate a runnable `tailscale` CLI (GUI apps rarely have it on PATH).
+fn tailscale_bin() -> Option<&'static str> {
+    const CANDIDATES: [&str; 4] = [
         "tailscale",
         "/usr/local/bin/tailscale",
         "/opt/homebrew/bin/tailscale",
         "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
     ];
-    for bin in candidates {
-        if let Ok(out) = std::process::Command::new(bin).args(["ip", "-4"]).output() {
-            if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout);
-                if let Some(line) = s.lines().next() {
-                    let ip = line.trim();
-                    if !ip.is_empty() {
-                        return Some(ip.to_string());
-                    }
-                }
-            }
+    CANDIDATES.into_iter().find(|bin| {
+        std::process::Command::new(bin)
+            .arg("version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Best-effort Tailscale IPv4 lookup.
+fn tailscale_ip() -> Option<String> {
+    let bin = tailscale_bin()?;
+    let out = std::process::Command::new(bin).args(["ip", "-4"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.lines()
+        .next()
+        .map(|l| l.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// This node's MagicDNS name (e.g. `machine.tailnet.ts.net`), used for the HTTPS URL.
+fn tailscale_dns_name() -> Option<String> {
+    let bin = tailscale_bin()?;
+    let out = std::process::Command::new(bin).args(["status", "--json"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let name = v.get("Self")?.get("DNSName")?.as_str()?.trim_end_matches('.');
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// If `tailscale serve` is exposing OUR port over HTTPS, return that https URL.
+fn tailscale_https_url(port: u16) -> Option<String> {
+    let bin = tailscale_bin()?;
+    let out = std::process::Command::new(bin)
+        .args(["serve", "status", "--json"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let web = v.get("Web")?.as_object()?;
+    let needle = format!(":{port}");
+    for (host_key, cfg) in web {
+        // host_key looks like "machine.tailnet.ts.net:443".
+        let proxies_our_port = cfg
+            .get("Handlers")
+            .and_then(|h| h.as_object())
+            .map(|handlers| {
+                handlers.values().any(|hd| {
+                    hd.get("Proxy")
+                        .and_then(|p| p.as_str())
+                        .map(|p| p.contains(&needle))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if proxies_our_port {
+            let host = host_key.split(':').next().unwrap_or(host_key);
+            return Some(format!("https://{host}"));
         }
     }
     None
+}
+
+/// Turn on `tailscale serve` HTTPS for our port and return the resulting URL.
+/// Requires Tailscale installed + HTTPS certificates enabled for the tailnet.
+pub fn serve_enable(state: &RemoteState) -> Result<String, String> {
+    let port = {
+        let inner = state.0.lock().unwrap();
+        if inner.port == 0 { 8787 } else { inner.port }
+    };
+    let bin = tailscale_bin().ok_or("Tailscale isn't installed on this Mac.")?;
+    let out = std::process::Command::new(bin)
+        .args(["serve", "--bg", &format!("localhost:{port}")])
+        .output()
+        .map_err(|e| format!("run tailscale serve: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let msg = err.trim();
+        return Err(if msg.is_empty() {
+            "tailscale serve failed (is HTTPS enabled for your tailnet?).".to_string()
+        } else {
+            msg.to_string()
+        });
+    }
+    tailscale_https_url(port)
+        .or_else(|| tailscale_dns_name().map(|n| format!("https://{n}")))
+        .ok_or_else(|| "Enabled, but no HTTPS URL was detected — try Refresh.".to_string())
 }
 
 // ---- auth ----------------------------------------------------------------

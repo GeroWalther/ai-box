@@ -1942,6 +1942,13 @@ fn remote_urls(state: tauri::State<'_, server::RemoteState>) -> serde_json::Valu
     server::urls(state.inner())
 }
 
+/// Turn on a `tailscale serve` HTTPS endpoint for the companion port; returns the
+/// resulting https URL (or a helpful error if Tailscale/HTTPS isn't set up).
+#[tauri::command]
+fn tailscale_serve_enable(state: tauri::State<'_, server::RemoteState>) -> Result<String, String> {
+    server::serve_enable(state.inner())
+}
+
 /// Fulfil a pending remote approval — called by the desktop after the user
 /// approves/denies on the Mac.
 #[tauri::command]
@@ -1995,6 +2002,7 @@ pub fn run() {
             start_remote_server,
             stop_remote_server,
             remote_urls,
+            tailscale_serve_enable,
             resolve_remote_approval,
             set_remote_settings,
             cancel_generation,
