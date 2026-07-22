@@ -1229,6 +1229,38 @@ input[type="range"]:focus {
   padding: 5px 8px;
   font-variant-numeric: tabular-nums;
 }
+/* All terminal panes stack in the same box; only the active one is visible, so
+   background shells keep running (and stay correctly sized) when not shown. */
+.xterm-stack {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.term-pane {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  display: flex;
+}
+.term-pane.active {
+  visibility: visible;
+}
+.term-ended-overlay {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(20, 20, 28, 0.92);
+  color: var(--muted);
+  font-size: 13px;
+}
 .xterm-host {
   flex: 1;
   min-height: 0;
@@ -1246,7 +1278,12 @@ input[type="range"]:focus {
   width: 100% !important;
   max-width: 100% !important;
 }
-.xterm-host .xterm-viewport { overflow-y: auto; }
+/* The viewport is the scroll container — allow native (touch) scrolling. */
+.xterm-host .xterm-viewport {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
 
 @media (max-width: 768px) {
   .xterm-topbar {

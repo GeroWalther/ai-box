@@ -1,13 +1,16 @@
-// Interactive terminal: a real shell on the Mac rendered with xterm.js, wired to
-// a PTY on the backend (see src-tauri/src/pty.rs). Works in the desktop app and
-// from a paired phone — keystrokes stream up, output streams down, so claude,
-// vim, top, a REPL, etc. all work. Each mount is one persistent shell session.
-import { useCallback, useEffect, useRef, useState } from "react";
+// Interactive terminals: real shells on the Mac rendered with xterm.js over a PTY
+// (see src-tauri/src/pty.rs). Multiple named terminals live side by side like chat
+// sessions — each keeps its own shell alive across tab switches, so a long-running
+// command in one keeps going while you work in another. The tab list persists; the
+// shells themselves are fresh each app launch (PTYs don't survive a restart).
+import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { ptyOpen, ptyWrite, ptyResize, ptyKill } from "../lib/api";
 import { isTauri } from "../lib/transport";
+import { SidebarSlot } from "./SidebarList";
+import SidebarList from "./SidebarList";
 
 // Base64 <-> bytes (keystrokes go up as base64; output comes down as base64).
 function toB64(s: string): string {
@@ -22,45 +25,157 @@ function fromB64(s: string): Uint8Array {
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
   return arr;
 }
+function uid(): string {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : String(Date.now()) + Math.random().toString(16).slice(2);
+}
 
 const FONT_KEY = "ai-studio.term-font";
+const TABS_KEY = "ai-studio.terminals";
 const MIN_FONT = 9;
 const MAX_FONT = 22;
 
 function defaultFont(): number {
   const saved = Number(localStorage.getItem(FONT_KEY));
   if (saved >= MIN_FONT && saved <= MAX_FONT) return saved;
-  // Smaller on phones so more columns fit before wrapping.
   return typeof window !== "undefined" && window.innerWidth < 640 ? 12 : 13;
 }
 
-export default function Terminal() {
+interface Tab {
+  id: string;
+  title: string;
+}
+
+function loadTabs(): Tab[] {
+  try {
+    const t = JSON.parse(localStorage.getItem(TABS_KEY) || "[]");
+    if (Array.isArray(t)) return t.filter((x) => x && typeof x.id === "string");
+  } catch {
+    /* ignore */
+  }
+  return [];
+}
+
+/** Next "Terminal N" number that doesn't collide with existing titles. */
+function nextNumber(tabs: Tab[]): number {
+  const nums = tabs.map((t) => Number(/(\d+)$/.exec(t.title)?.[1] ?? 0));
+  return Math.max(0, ...nums) + 1;
+}
+
+interface Props {
+  sidebarSlot: HTMLElement | null;
+  onCloseDrawer?: () => void;
+}
+
+export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
+  const [tabs, setTabs] = useState<Tab[]>(() => {
+    const t = loadTabs();
+    return t.length ? t : [{ id: uid(), title: "Terminal 1" }];
+  });
+  const [activeId, setActiveId] = useState<string>(
+    () => localStorage.getItem(TABS_KEY + ".active") || ""
+  );
+  const [fontSize, setFontSize] = useState<number>(defaultFont);
+
+  // Persist the tab list, active tab and font size.
+  useEffect(() => {
+    localStorage.setItem(TABS_KEY, JSON.stringify(tabs));
+  }, [tabs]);
+  useEffect(() => {
+    if (activeId) localStorage.setItem(TABS_KEY + ".active", activeId);
+  }, [activeId]);
+  useEffect(() => {
+    localStorage.setItem(FONT_KEY, String(fontSize));
+  }, [fontSize]);
+
+  // Keep a valid active tab.
+  useEffect(() => {
+    if (!tabs.find((t) => t.id === activeId)) setActiveId(tabs[0]?.id ?? "");
+  }, [tabs, activeId]);
+
+  function newTab() {
+    const t = { id: uid(), title: `Terminal ${nextNumber(tabs)}` };
+    setTabs((p) => [...p, t]);
+    setActiveId(t.id);
+  }
+  function closeTab(id: string) {
+    setTabs((p) => {
+      const next = p.filter((t) => t.id !== id);
+      return next.length ? next : [{ id: uid(), title: "Terminal 1" }];
+    });
+  }
+  const bumpFont = (d: number) =>
+    setFontSize((f) => Math.min(MAX_FONT, Math.max(MIN_FONT, f + d)));
+
+  const activeTitle = tabs.find((t) => t.id === activeId)?.title ?? "Terminal";
+
+  return (
+    <div className="xterm-view">
+      <SidebarSlot slot={sidebarSlot}>
+        <SidebarList
+          items={tabs}
+          activeId={activeId}
+          newLabel="+ New terminal"
+          emptyLabel="Your terminals appear here."
+          onSelect={(id) => {
+            setActiveId(id);
+            onCloseDrawer?.();
+          }}
+          onNew={() => {
+            newTab();
+            onCloseDrawer?.();
+          }}
+          onDelete={closeTab}
+        />
+      </SidebarSlot>
+
+      <div className="xterm-topbar">
+        <span className="xterm-title">
+          {activeTitle}
+          {isTauri() ? "" : " · remote"}
+        </span>
+        <div className="xterm-actions">
+          <button
+            className="btn ghost xterm-font-btn"
+            title="Smaller text"
+            onClick={() => bumpFont(-1)}
+            disabled={fontSize <= MIN_FONT}
+          >
+            A−
+          </button>
+          <button
+            className="btn ghost xterm-font-btn"
+            title="Larger text"
+            onClick={() => bumpFont(1)}
+            disabled={fontSize >= MAX_FONT}
+          >
+            A+
+          </button>
+        </div>
+      </div>
+
+      <div className="xterm-stack">
+        {tabs.map((t) => (
+          <TermPane key={t.id} active={t.id === activeId} fontSize={fontSize} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** One live shell: an xterm bound to its own PTY session. Stays mounted while its
+ *  tab exists (hidden when not active) so the shell keeps running in the background. */
+function TermPane({ active, fontSize }: { active: boolean; fontSize: number }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const idRef = useRef<string>("");
-  const [restartN, setRestartN] = useState(0);
   const [exited, setExited] = useState(false);
-  const [fontSize, setFontSize] = useState<number>(defaultFont);
-
-  // Refit the current grid to the host box and push the new rows/cols to the PTY.
-  const refit = useCallback(() => {
-    const term = termRef.current;
-    const fit = fitRef.current;
-    if (!term || !fit) return;
-    try {
-      fit.fit();
-    } catch {
-      /* host not laid out yet */
-    }
-    if (idRef.current) ptyResize(idRef.current, term.rows, term.cols).catch(() => {});
-  }, []);
+  const [epoch, setEpoch] = useState(0); // bump to restart the shell in place
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    // `disposed` is LOCAL to this session so a torn-down session (e.g. StrictMode's
-    // throwaway first mount) can never flip the live session's input/exit state.
     let disposed = false;
     setExited(false);
 
@@ -83,26 +198,18 @@ export default function Terminal() {
     termRef.current = term;
     fitRef.current = fit;
     fit.fit();
-    term.focus();
 
-    const id =
-      typeof crypto !== "undefined" && crypto.randomUUID
-        ? crypto.randomUUID()
-        : String(Date.now()) + Math.random().toString(16).slice(2);
-    idRef.current = id;
+    const id = uid();
 
-    // Send typed input up to the shell.
     const dataSub = term.onData((d) => {
       if (!disposed) ptyWrite(id, toB64(d)).catch(() => {});
     });
 
-    // Refit on container resize, window resize, and — crucially on mobile — when
-    // the on-screen keyboard opens/closes (visualViewport changes, not the window).
     const pushResize = () => {
       try {
         fit.fit();
       } catch {
-        /* not attached yet */
+        /* not laid out yet */
       }
       if (!disposed) ptyResize(id, term.rows, term.cols).catch(() => {});
     };
@@ -111,12 +218,10 @@ export default function Terminal() {
     window.addEventListener("resize", pushResize);
     const vv = window.visualViewport;
     vv?.addEventListener("resize", pushResize);
-    // Fonts load async and layout settles a beat after mount; refit a few times.
     const timers = [60, 250, 600].map((ms) => window.setTimeout(pushResize, ms));
 
-    // Open the shell and stream its output into the terminal.
     ptyOpen(id, term.rows, term.cols, (ev) => {
-      if (disposed) return; // ignore events for a superseded session
+      if (disposed) return;
       if (ev.type === "data") term.write(fromB64(ev.data));
       else if (ev.type === "exit") {
         setExited(true);
@@ -142,50 +247,46 @@ export default function Terminal() {
       if (fitRef.current === fit) fitRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [restartN]);
+  }, [epoch]);
 
-  // Live font-size changes (A− / A+) without tearing down the session.
+  // Live font-size changes without restarting the shell.
   useEffect(() => {
-    localStorage.setItem(FONT_KEY, String(fontSize));
     const term = termRef.current;
-    if (!term) return;
+    const fit = fitRef.current;
+    if (!term || !fit) return;
     term.options.fontSize = fontSize;
-    refit();
-  }, [fontSize, refit]);
+    try {
+      fit.fit();
+    } catch {
+      /* ignore */
+    }
+  }, [fontSize]);
 
-  const bumpFont = (delta: number) =>
-    setFontSize((f) => Math.min(MAX_FONT, Math.max(MIN_FONT, f + delta)));
+  // When this tab becomes active, refit (size may have drifted) and focus.
+  useEffect(() => {
+    if (!active) return;
+    const term = termRef.current;
+    const fit = fitRef.current;
+    if (!term || !fit) return;
+    try {
+      fit.fit();
+    } catch {
+      /* ignore */
+    }
+    term.focus();
+  }, [active]);
 
   return (
-    <div className="xterm-view">
-      <div className="xterm-topbar">
-        <span className="xterm-title">
-          Terminal{isTauri() ? "" : " · remote"}
-          {exited && <span className="xterm-ended"> — session ended</span>}
-        </span>
-        <div className="xterm-actions">
-          <button
-            className="btn ghost xterm-font-btn"
-            title="Smaller text"
-            onClick={() => bumpFont(-1)}
-            disabled={fontSize <= MIN_FONT}
-          >
-            A−
-          </button>
-          <button
-            className="btn ghost xterm-font-btn"
-            title="Larger text"
-            onClick={() => bumpFont(1)}
-            disabled={fontSize >= MAX_FONT}
-          >
-            A+
-          </button>
-          <button className="btn ghost" onClick={() => setRestartN((n) => n + 1)}>
-            {exited ? "New session" : "Restart"}
+    <div className={active ? "term-pane active" : "term-pane"}>
+      <div className="xterm-host" ref={hostRef} onClick={() => termRef.current?.focus()} />
+      {exited && (
+        <div className="term-ended-overlay">
+          <span>Session ended</span>
+          <button className="btn primary" onClick={() => setEpoch((e) => e + 1)}>
+            Restart shell
           </button>
         </div>
-      </div>
-      <div className="xterm-host" ref={hostRef} onClick={() => termRef.current?.focus()} />
+      )}
     </div>
   );
 }

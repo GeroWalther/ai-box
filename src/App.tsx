@@ -900,7 +900,7 @@ export default function App() {
           onCloseDrawer={() => setDrawerOpen(false)}
         />
       ) : (
-        <Terminal />
+        <Terminal sidebarSlot={sidebarSlot} onCloseDrawer={() => setDrawerOpen(false)} />
       )}
       </main>
 
