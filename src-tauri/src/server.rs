@@ -305,51 +305,55 @@ pub async fn serve_enable(state: &RemoteState) -> Result<String, String> {
         let inner = state.0.lock().unwrap();
         if inner.port == 0 { 8787 } else { inner.port }
     };
+    // Already serving over HTTPS? Just hand back the URL.
+    if let Some(u) = tailscale_https_url(port) {
+        return Ok(u);
+    }
     let bin = tailscale_bin().ok_or("Tailscale isn't installed on this Mac.")?;
     let run = tokio::process::Command::new(bin)
         .args(["serve", "--bg", &format!("localhost:{port}")])
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .output();
-    let out = match tokio::time::timeout(std::time::Duration::from_secs(12), run).await {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => return Err(format!("run tailscale serve: {e}")),
-        // A backgrounded serve can hold the pipe open past exit — if HTTPS is now
-        // live, treat that as success; otherwise report the stall.
-        Err(_) => {
-            return tailscale_https_url(port).ok_or_else(|| {
-                "Tailscale didn't respond. Try `tailscale serve --bg localhost:8787` in Terminal.".to_string()
-            });
-        }
-    };
-    let msg = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+    let out = tokio::time::timeout(std::time::Duration::from_secs(6), run).await;
+
+    // Guidance shown when the app can't drive `serve` itself — the Mac App Store
+    // Tailscale blocks config-writes by other apps, so it must be run manually.
+    let manual = format!(
+        "Enable HTTPS certificates for your tailnet at https://login.tailscale.com/admin/dns , then run  tailscale serve --bg localhost:{port}  in Terminal — the HTTPS link then appears here automatically. (The Mac App Store Tailscale can't be driven by the app; the standalone build from tailscale.com/download can.)"
     );
-    // Serve is a per-tailnet capability that must be enabled once in the admin
-    // console. The CLI prints an enable link (and exits 0), so surface it.
-    if msg.contains("not enabled") || msg.contains("/f/serve") || msg.contains("Serve") && msg.contains("enable") {
-        let link = msg
-            .split_whitespace()
-            .find(|w| w.contains("login.tailscale.com"))
-            .unwrap_or("https://login.tailscale.com/admin/settings/general");
-        return Err(format!(
-            "Tailscale Serve isn't enabled for your tailnet yet. Enable it once here, then click Enable HTTPS again:  {link}"
-        ));
+
+    match out {
+        Ok(Ok(o)) => {
+            let msg = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            // Serve is a per-tailnet capability; the CLI prints an enable link.
+            if msg.contains("/f/serve") || msg.contains("not enabled") {
+                let link = msg
+                    .split_whitespace()
+                    .find(|w| w.contains("login.tailscale.com"))
+                    .unwrap_or("https://login.tailscale.com/admin/dns");
+                return Err(format!(
+                    "Tailscale Serve isn't enabled for your tailnet yet. Enable it here, then click Enable HTTPS again:  {link}"
+                ));
+            }
+            // App Store sandbox refuses the write from a non-GUI caller.
+            if msg.contains("GUI failed to start") || msg.contains("CLIError") {
+                return Err(manual);
+            }
+            tailscale_https_url(port)
+                .or_else(|| tailscale_dns_name().map(|n| format!("https://{n}")))
+                .ok_or(manual)
+        }
+        Ok(Err(e)) => Err(format!("run tailscale serve: {e}")),
+        // Hung (the App Store build stalls on writes) — fall back to guidance.
+        Err(_) => tailscale_https_url(port).ok_or(manual),
     }
-    if !out.status.success() {
-        let e = msg.trim();
-        return Err(if e.is_empty() {
-            "tailscale serve failed.".to_string()
-        } else {
-            e.to_string()
-        });
-    }
-    tailscale_https_url(port)
-        .or_else(|| tailscale_dns_name().map(|n| format!("https://{n}")))
-        .ok_or_else(|| "Enabled, but no HTTPS URL was detected — try Refresh.".to_string())
 }
 
 // ---- auth ----------------------------------------------------------------
