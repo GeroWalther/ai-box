@@ -92,20 +92,26 @@ export async function downloadFile(
   await streamCmd<void>("download_file", { url, dest }, (line: string) => onProgress(line));
 }
 
-/** A live event while a shell command runs. */
+/** A live event while a shell command runs. `cwd` on "done" is the working
+ *  directory after the command (so `cd` can persist to the next command). */
 export type CmdEvent =
   | { type: "line"; text: string }
-  | { type: "done"; code: number }
+  | { type: "done"; code: number; cwd?: string }
   | { type: "error"; message: string };
 
 /** Run a shell command on the Mac, streaming stdout/stderr lines. Over the LAN the
- *  desktop must approve (unless auto-approve is on). Resolves with output + code. */
+ *  desktop must approve (unless auto-approve is on). `cwd` sets the directory (else
+ *  home); the resolved cwd comes back on the "done" event and in the result. */
 export async function runCommandStream(
   command: string,
   onEvent: (ev: CmdEvent) => void,
-  timeoutSecs?: number
-): Promise<{ output: string; code: number; timedOut?: boolean }> {
-  return streamCmd("run_command_stream", { command, timeoutSecs: timeoutSecs ?? null }, onEvent);
+  opts?: { cwd?: string; timeoutSecs?: number }
+): Promise<{ output: string; code: number; cwd?: string; timedOut?: boolean }> {
+  return streamCmd(
+    "run_command_stream",
+    { command, cwd: opts?.cwd ?? null, timeoutSecs: opts?.timeoutSecs ?? null },
+    onEvent
+  );
 }
 
 /** Save a base64 PNG to the desktop machine's Downloads folder; returns the path.

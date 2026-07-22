@@ -741,7 +741,8 @@ async fn dispatch_ws(
         "run_command_stream" => {
             require_approval(ctx, "Run this command?", &s("command")).await?;
             let timeout = args.get("timeoutSecs").and_then(|v| v.as_u64());
-            crate::run_command_stream_core(s("command"), timeout, sink).await
+            let cwd = args.get("cwd").and_then(|v| v.as_str()).map(|c| c.to_string());
+            crate::run_command_stream_core(s("command"), timeout, cwd, sink).await
         }
         other => Err(format!("unknown streaming command: {other}")),
     }

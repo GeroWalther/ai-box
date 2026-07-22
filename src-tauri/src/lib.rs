@@ -1012,9 +1012,15 @@ async fn run_command(command: String) -> Result<serde_json::Value, String> {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum CmdEvent {
     Line { text: String },
-    Done { code: i32 },
+    /// `cwd` is the working directory after the command ran, so the caller can
+    /// keep a persistent shell dir across commands (each run is a fresh `sh -c`).
+    Done { code: i32, cwd: Option<String> },
     Error { message: String },
 }
+
+/// Sentinel the wrapped command prints so we can recover the final working
+/// directory (making `cd` stick between commands) without a persistent shell.
+const CWD_MARK: &str = "__AISTUDIO_CWD__:";
 
 /// Run a shell command, streaming stdout/stderr lines to the frontend and
 /// enforcing a timeout. Also returns the aggregated output + exit code for the
@@ -1024,22 +1030,40 @@ enum CmdEvent {
 async fn run_command_stream(
     command: String,
     timeout_secs: Option<u64>,
+    cwd: Option<String>,
     on_event: Channel<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    run_command_stream_core(command, timeout_secs, &ChannelSink(on_event)).await
+    run_command_stream_core(command, timeout_secs, cwd, &ChannelSink(on_event)).await
 }
 
-/// Core shared by the Tauri command and the remote WS server.
+/// Core shared by the Tauri command and the remote WS server. `cwd` sets the
+/// directory the command runs in (defaults to the user's home); the returned
+/// `cwd` reflects any `cd` the command performed.
 pub(crate) async fn run_command_stream_core(
     command: String,
     timeout_secs: Option<u64>,
+    cwd: Option<String>,
     sink: &dyn EventSink,
 ) -> Result<serde_json::Value, String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
+    // Resolve the starting directory: the requested cwd if it still exists, else
+    // the user's home. Never inherit the app's own working dir (e.g. src-tauri).
+    let start_dir = cwd
+        .map(|c| expand_path(&c))
+        .filter(|c| std::path::Path::new(c).is_dir())
+        .unwrap_or_else(|| expand_path("~"));
+
+    // Run the user's command, then print the resulting pwd behind a sentinel so a
+    // `cd` persists to the next command. `exit $__ec` preserves the real code.
+    let wrapped = format!(
+        "{command}\n__ec=$?\nprintf '%s%s\\n' '{CWD_MARK}' \"$(pwd)\"\nexit $__ec"
+    );
+
     let mut child = tokio::process::Command::new("sh")
         .arg("-c")
-        .arg(&command)
+        .arg(&wrapped)
+        .current_dir(&start_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -1051,12 +1075,23 @@ pub(crate) async fn run_command_stream_core(
     let dur = std::time::Duration::from_secs(timeout_secs.unwrap_or(120).clamp(1, 1800));
 
     let mut collected = String::new();
+    let mut final_cwd = start_dir.clone();
     let run = async {
         let (mut out_done, mut err_done) = (false, false);
         while !(out_done && err_done) {
             tokio::select! {
                 l = out_lines.next_line(), if !out_done => match l {
-                    Ok(Some(s)) => { collected.push_str(&s); collected.push('\n'); emit_ev(sink, CmdEvent::Line { text: s }); }
+                    // A stdout line is either normal output or our cwd sentinel
+                    // (recorded to persist `cd`, and never shown to the user).
+                    Ok(Some(s)) => {
+                        if let Some(dir) = s.strip_prefix(CWD_MARK) {
+                            final_cwd = dir.to_string();
+                        } else {
+                            collected.push_str(&s);
+                            collected.push('\n');
+                            emit_ev(sink, CmdEvent::Line { text: s });
+                        }
+                    }
                     _ => out_done = true,
                 },
                 l = err_lines.next_line(), if !err_done => match l {
@@ -1070,8 +1105,8 @@ pub(crate) async fn run_command_stream_core(
 
     match tokio::time::timeout(dur, run).await {
         Ok(code) => {
-            emit_ev(sink, CmdEvent::Done { code });
-            Ok(serde_json::json!({ "output": collected, "code": code }))
+            emit_ev(sink, CmdEvent::Done { code, cwd: Some(final_cwd.clone()) });
+            Ok(serde_json::json!({ "output": collected, "code": code, "cwd": final_cwd }))
         }
         Err(_) => {
             emit_ev(sink, CmdEvent::Error {

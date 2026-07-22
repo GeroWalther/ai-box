@@ -8,6 +8,7 @@ import { isTauri } from "../lib/transport";
 
 interface Block {
   command: string;
+  dir: string; // directory (shortened) the command ran in
   lines: string[];
   code?: number;
   error?: string;
@@ -16,10 +17,20 @@ interface Block {
 
 const HISTORY_KEY = "ai-studio.terminal-history";
 
+/** Shorten a home-relative path for the prompt (e.g. ~/Documents/novel-studio). */
+function shortDir(dir: string): string {
+  if (!dir) return "";
+  const home = dir.match(/^(\/Users\/[^/]+|\/home\/[^/]+)(\/.*)?$/);
+  const rel = home ? "~" + (home[2] ?? "") : dir;
+  const parts = rel.split("/");
+  return parts.length > 4 ? "…/" + parts.slice(-2).join("/") : rel;
+}
+
 export default function Terminal() {
   const [input, setInput] = useState("");
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [running, setRunning] = useState(false);
+  const [cwd, setCwd] = useState<string>(""); // persistent working dir (empty = home until first run)
   const [history, setHistory] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
@@ -54,16 +65,23 @@ export default function Terminal() {
       /* ignore quota */
     }
     const idx = blocks.length;
-    setBlocks((b) => [...b, { command, lines: [], running: true }]);
+    setBlocks((b) => [...b, { command, dir: shortDir(cwd) || "~", lines: [], running: true }]);
     setRunning(true);
     const patch = (fn: (bl: Block) => Block) =>
       setBlocks((b) => b.map((bl, i) => (i === idx ? fn(bl) : bl)));
     try {
-      await runCommandStream(command, (ev) => {
-        if (ev.type === "line") patch((bl) => ({ ...bl, lines: [...bl.lines, ev.text] }));
-        else if (ev.type === "done") patch((bl) => ({ ...bl, code: ev.code, running: false }));
-        else if (ev.type === "error") patch((bl) => ({ ...bl, error: ev.message, running: false }));
-      });
+      await runCommandStream(
+        command,
+        (ev) => {
+          if (ev.type === "line") patch((bl) => ({ ...bl, lines: [...bl.lines, ev.text] }));
+          else if (ev.type === "done") {
+            patch((bl) => ({ ...bl, code: ev.code, running: false }));
+            if (ev.cwd) setCwd(ev.cwd); // remember the dir so `cd` sticks
+          } else if (ev.type === "error")
+            patch((bl) => ({ ...bl, error: ev.message, running: false }));
+        },
+        { cwd: cwd || undefined }
+      );
     } catch (e) {
       patch((bl) => ({ ...bl, error: String(e), running: false }));
     } finally {
@@ -105,15 +123,17 @@ export default function Terminal() {
       <div className="terminal-scroll" ref={scrollRef} onClick={() => inputRef.current?.focus()}>
         {blocks.length === 0 && (
           <div className="terminal-empty">
-            Run shell commands on this Mac{isTauri() ? "" : " from your phone"}. Each command is a
-            fresh <code>sh -c</code> (no persistent session — <code>cd</code> won&apos;t carry over;
-            chain with <code>&amp;&amp;</code>).
+            Run shell commands on this Mac{isTauri() ? "" : " from your phone"}. Starts in your home
+            folder, and <code>cd</code> persists between commands. Interactive programs (a REPL,
+            <code>vim</code>, <code>top</code>) aren&apos;t supported — there&apos;s no live terminal;
+            use non-interactive flags (e.g. <code>claude -p &quot;…&quot;</code>).
             {!isTauri() && " Commands may need approval on the Mac."}
           </div>
         )}
         {blocks.map((bl, i) => (
           <div className="terminal-block" key={i}>
             <div className="terminal-cmd">
+              <span className="terminal-dir">{bl.dir}</span>
               <span className="terminal-prompt">$</span> {bl.command}
             </div>
             {bl.lines.length > 0 && <pre className="terminal-out">{bl.lines.join("\n")}</pre>}
@@ -128,6 +148,7 @@ export default function Terminal() {
         ))}
       </div>
       <div className="terminal-bar">
+        <span className="terminal-dir">{shortDir(cwd) || "~"}</span>
         <span className="terminal-prompt">$</span>
         <textarea
           ref={inputRef}

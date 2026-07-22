@@ -1224,6 +1224,11 @@ input[type="range"]:focus {
   margin-right: 6px;
   user-select: none;
 }
+.terminal-dir {
+  color: #6bd08b;
+  margin-right: 8px;
+  user-select: none;
+}
 .terminal-out {
   margin: 4px 0 0;
   white-space: pre-wrap;
