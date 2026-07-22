@@ -607,6 +607,12 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             crate::remote_store_set(s("key"), s("value"))?;
             Ok(Value::Null)
         }
+        // Conflict-free list merge (chat sessions + Write documents). This is how a
+        // phone pulls the Mac's chats/docs — without it, phone sync fell back to
+        // local-only and never saw the desktop's data.
+        "store_merge_list" => {
+            Ok(Value::String(crate::store_merge_list(s("key"), s("incoming"))?))
+        }
         // Shared image gallery (files on the Mac), same on desktop and phone.
         "image_put" => {
             crate::image_put(s("id"), s("record"))?;
