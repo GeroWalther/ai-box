@@ -1184,6 +1184,87 @@ input[type="range"]:focus {
 .prompt-tools .chat-model { max-width: 340px; }
 .prompt-tools .lang-select { max-width: 140px; }
 .prompt-tools .preset-select { max-width: 200px; }
+
+/* ---- Terminal tab -------------------------------------------------------- */
+.terminal-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+}
+.terminal-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  cursor: text;
+}
+.terminal-empty {
+  color: var(--muted);
+  max-width: 640px;
+  line-height: 1.7;
+}
+.terminal-empty code {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.terminal-block { margin-bottom: 14px; }
+.terminal-cmd {
+  color: var(--text);
+  font-weight: 600;
+  word-break: break-all;
+}
+.terminal-prompt {
+  color: var(--accent-2);
+  margin-right: 6px;
+  user-select: none;
+}
+.terminal-out {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--muted);
+}
+.terminal-out.err { color: #ff8f8f; }
+.terminal-status {
+  margin-top: 4px;
+  font-size: 11.5px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.terminal-status.running { color: var(--accent-2); }
+.terminal-status.err { color: #ff8f8f; }
+.terminal-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 24px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.terminal-bar .terminal-prompt {
+  align-self: center;
+  font-size: 15px;
+}
+.terminal-input {
+  flex: 1;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  max-height: 40vh;
+}
 .promptbar-status {
   color: var(--accent-2);
   font-size: 12px;

@@ -92,6 +92,22 @@ export async function downloadFile(
   await streamCmd<void>("download_file", { url, dest }, (line: string) => onProgress(line));
 }
 
+/** A live event while a shell command runs. */
+export type CmdEvent =
+  | { type: "line"; text: string }
+  | { type: "done"; code: number }
+  | { type: "error"; message: string };
+
+/** Run a shell command on the Mac, streaming stdout/stderr lines. Over the LAN the
+ *  desktop must approve (unless auto-approve is on). Resolves with output + code. */
+export async function runCommandStream(
+  command: string,
+  onEvent: (ev: CmdEvent) => void,
+  timeoutSecs?: number
+): Promise<{ output: string; code: number; timedOut?: boolean }> {
+  return streamCmd("run_command_stream", { command, timeoutSecs: timeoutSecs ?? null }, onEvent);
+}
+
 /** Save a base64 PNG to the desktop machine's Downloads folder; returns the path.
  *  Used when browsing over the LAN from a phone (the browser can't write to the
  *  host disk, but the companion server can). */

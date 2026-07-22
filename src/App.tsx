@@ -28,6 +28,7 @@ import { remoteStoreMerge } from "./lib/remoteStore";
 import { parseSyncList } from "./lib/syncList";
 import { useToast } from "./lib/toast";
 import PromptBar from "./components/PromptBar";
+import Terminal from "./components/Terminal";
 import SettingsModal from "./components/SettingsModal";
 import RemoteApprovalListener from "./components/RemoteApprovalListener";
 import ImagePanel from "./components/ImagePanel";
@@ -102,7 +103,7 @@ const ICON_STROKE = {
   strokeLinejoin: "round" as const,
 };
 
-type ViewKey = "chat" | "write" | "images";
+type ViewKey = "chat" | "write" | "images" | "terminal";
 const SECTIONS: { key: ViewKey; label: string; icon: React.ReactNode }[] = [
   {
     key: "chat",
@@ -134,6 +135,17 @@ const SECTIONS: { key: ViewKey; label: string; icon: React.ReactNode }[] = [
       </svg>
     ),
   },
+  {
+    key: "terminal",
+    label: "Terminal",
+    icon: (
+      <svg viewBox="0 0 24 24" {...ICON_STROKE}>
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <path d="M7 9l3 3-3 3" />
+        <path d="M13 15h4" />
+      </svg>
+    ),
+  },
 ];
 
 export default function App() {
@@ -145,7 +157,7 @@ export default function App() {
   const [showModels, setShowModels] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false); // mobile nav drawer
   const [sidebarSlot, setSidebarSlot] = useState<HTMLDivElement | null>(null); // list portal target
-  const [view, setView] = useState<"chat" | "write" | "images">("chat");
+  const [view, setView] = useState<ViewKey>("chat");
   const [imagePrefill, setImagePrefill] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [status, setStatus] = useState("");
@@ -644,6 +656,7 @@ export default function App() {
       if (mod && e.key === "1") { e.preventDefault(); setView("chat"); return; }
       if (mod && e.key === "2") { e.preventDefault(); setView("write"); return; }
       if (mod && e.key === "3") { e.preventDefault(); setView("images"); return; }
+      if (mod && e.key === "4") { e.preventDefault(); setView("terminal"); return; }
       if (mod && e.key === ",") { e.preventDefault(); setShowSettings(true); return; }
       if (viewRef.current === "write") {
         if (mod && e.key === "Enter") { e.preventDefault(); kbdRef.current.generate(); }
@@ -868,7 +881,7 @@ export default function App() {
             onExtract={extractBible}
           />
         </div>
-      ) : (
+      ) : view === "images" ? (
         <ImagePanel
           settings={settings}
           onChange={updateSettings}
@@ -878,6 +891,8 @@ export default function App() {
           sidebarSlot={sidebarSlot}
           onCloseDrawer={() => setDrawerOpen(false)}
         />
+      ) : (
+        <Terminal />
       )}
       </main>
 
