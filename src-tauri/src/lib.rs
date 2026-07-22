@@ -2029,6 +2029,7 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 use tauri::Manager;
                 app.state::<comfy::ManagedComfy>().kill();
+                app.state::<pty::PtyRegistry>().kill_all();
             }
         });
 }

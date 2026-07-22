@@ -1261,6 +1261,19 @@ input[type="range"]:focus {
   color: var(--muted);
   font-size: 13px;
 }
+.term-status-pill {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(123, 110, 240, 0.22);
+  border: 1px solid rgba(123, 110, 240, 0.4);
+  color: #c9c2ff;
+  font-size: 12px;
+  z-index: 3;
+}
 .xterm-host {
   flex: 1;
   min-height: 0;

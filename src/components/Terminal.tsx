@@ -100,6 +100,7 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
     setActiveId(t.id);
   }
   function closeTab(id: string) {
+    ptyKill(id).catch(() => {}); // closing a tab really does end its shell
     setTabs((p) => {
       const next = p.filter((t) => t.id !== id);
       return next.length ? next : [{ id: uid(), title: "Terminal 1" }];
@@ -157,27 +158,39 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
 
       <div className="xterm-stack">
         {tabs.map((t) => (
-          <TermPane key={t.id} active={t.id === activeId} fontSize={fontSize} />
+          <TermPane key={t.id} ptyId={t.id} active={t.id === activeId} fontSize={fontSize} />
         ))}
       </div>
     </div>
   );
 }
 
-/** One live shell: an xterm bound to its own PTY session. Stays mounted while its
- *  tab exists (hidden when not active) so the shell keeps running in the background. */
-function TermPane({ active, fontSize }: { active: boolean; fontSize: number }) {
+/** One live shell: an xterm bound to a persistent PTY session (keyed by the tab id
+ *  so it survives disconnects). Stays mounted while its tab exists (hidden when not
+ *  active) so the shell keeps running in the background. On a dropped connection it
+ *  auto-reconnects and re-attaches — no reload, no lost output. */
+function TermPane({
+  ptyId,
+  active,
+  fontSize,
+}: {
+  ptyId: string;
+  active: boolean;
+  fontSize: number;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const [exited, setExited] = useState(false);
-  const [epoch, setEpoch] = useState(0); // bump to restart the shell in place
+  const [reconnecting, setReconnecting] = useState(false);
+  const [epoch, setEpoch] = useState(0); // bump to start a brand-new shell in place
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     let disposed = false;
     setExited(false);
+    setReconnecting(false);
 
     const term = new XTerm({
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, "DejaVu Sans Mono", monospace',
@@ -199,7 +212,10 @@ function TermPane({ active, fontSize }: { active: boolean; fontSize: number }) {
     fitRef.current = fit;
     fit.fit();
 
-    const id = uid();
+    // Stable PTY id = the tab id, so a reconnect re-attaches to the same shell.
+    // (A "Restart shell" bumps `epoch` only to re-run this effect; the previous
+    // shell has already exited by then, so attach spawns a fresh one.)
+    const id = ptyId;
 
     const dataSub = term.onData((d) => {
       if (!disposed) ptyWrite(id, toB64(d)).catch(() => {});
@@ -220,34 +236,77 @@ function TermPane({ active, fontSize }: { active: boolean; fontSize: number }) {
     vv?.addEventListener("resize", pushResize);
     const timers = [60, 250, 600].map((ms) => window.setTimeout(pushResize, ms));
 
-    ptyOpen(id, term.rows, term.cols, (ev) => {
-      if (disposed) return;
-      if (ev.type === "data") term.write(fromB64(ev.data));
-      else if (ev.type === "exit") {
-        setExited(true);
-        term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
+    // Touch scrolling (xterm doesn't handle it natively): drag to scroll the
+    // scrollback by whole rows.
+    let touchY = 0;
+    const onTouchStart = (e: TouchEvent) => {
+      touchY = e.touches[0]?.clientY ?? 0;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      const y = e.touches[0]?.clientY ?? touchY;
+      const rowPx = Math.max(8, fontSize * 1.05);
+      const lines = Math.trunc((touchY - y) / rowPx);
+      if (lines !== 0) {
+        term.scrollLines(lines);
+        touchY -= lines * rowPx;
       }
-    }).catch((e) => {
-      if (!disposed) {
-        term.write(`\r\n\x1b[91m${String(e)}\x1b[0m\r\n`);
-        setExited(true);
+    };
+    host.addEventListener("touchstart", onTouchStart, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: true });
+
+    // Attach/stream with auto-reconnect. A connection drop just retries the same
+    // id; the backend keeps the shell alive and replays recent output on re-attach.
+    let firstChunk = true;
+    (async function attachLoop() {
+      while (!disposed) {
+        let cleanExit = false;
+        firstChunk = true;
+        try {
+          await ptyOpen(id, term.rows, term.cols, (ev) => {
+            if (disposed) return;
+            if (ev.type === "data") {
+              // Clear before applying the replay so re-attach doesn't duplicate.
+              if (firstChunk) {
+                term.reset();
+                firstChunk = false;
+                setReconnecting(false);
+              }
+              term.write(fromB64(ev.data));
+            } else if (ev.type === "exit") {
+              cleanExit = true;
+              setExited(true);
+              term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
+            }
+          });
+        } catch {
+          /* connection dropped — retry below */
+        }
+        if (cleanExit || disposed) return;
+        // Resolved without a real exit → we were detached (connection lost). Retry.
+        setReconnecting(true);
+        await new Promise((r) => setTimeout(r, 1200));
       }
-    });
+    })();
 
     return () => {
+      // Note: we do NOT kill the shell here. Unmount happens on navigate/reload/
+      // blip too, and the shell must survive those so we can re-attach. Shells are
+      // killed only on explicit tab close (below) or app exit. A stale stream is
+      // superseded server-side by the next attach (generation check).
       disposed = true;
       timers.forEach(clearTimeout);
       ro.disconnect();
       window.removeEventListener("resize", pushResize);
       vv?.removeEventListener("resize", pushResize);
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
       dataSub.dispose();
-      ptyKill(id).catch(() => {});
       term.dispose();
       if (termRef.current === term) termRef.current = null;
       if (fitRef.current === fit) fitRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [epoch]);
+  }, [epoch, ptyId]);
 
   // Live font-size changes without restarting the shell.
   useEffect(() => {
@@ -279,6 +338,9 @@ function TermPane({ active, fontSize }: { active: boolean; fontSize: number }) {
   return (
     <div className={active ? "term-pane active" : "term-pane"}>
       <div className="xterm-host" ref={hostRef} onClick={() => termRef.current?.focus()} />
+      {reconnecting && !exited && (
+        <div className="term-status-pill">Reconnecting…</div>
+      )}
       {exited && (
         <div className="term-ended-overlay">
           <span>Session ended</span>

@@ -1,33 +1,46 @@
-// Interactive pseudo-terminal (PTY) sessions for the Terminal tab. Unlike the
-// one-shot `run_command_stream`, this keeps a real shell alive so interactive
-// programs (claude, vim, top, a REPL) work — the same session serves the desktop
-// webview (Tauri Channel) and a paired phone (companion WebSocket).
-//
-// Protocol: the UI opens a session (`pty_open`, streaming) that emits raw output
-// bytes as base64; it writes keystrokes (`pty_write`), resizes (`pty_resize`) and
-// closes (`pty_kill`) via one-shot commands keyed by a client-generated id.
+// Interactive pseudo-terminal (PTY) sessions for the Terminal tab. A real shell
+// stays alive on the Mac, addressable by a stable id, so it survives a dropped
+// WebSocket (phone sleep, Wi-Fi↔cellular, Tailscale reconnect): the client simply
+// re-attaches to the same id and the recent output is replayed. Serves the desktop
+// webview (Tauri Channel) and a paired phone (companion WebSocket) identically.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
+use tokio::sync::broadcast;
 
 use crate::{emit_ev, EventSink};
 
-/// One live shell + its PTY master, addressable for write/resize/kill.
+/// How much recent output to keep per session for replay on re-attach.
+const BUFFER_CAP: usize = 512 * 1024;
+
+/// One live shell + its PTY, its output fanned out to a replay buffer and a
+/// broadcast so multiple/rotating clients can attach over the session's lifetime.
 struct PtySession {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    tx: broadcast::Sender<Vec<u8>>,
+    buffer: Mutex<VecDeque<u8>>,
+    dead: AtomicBool,
+    /// Bumped on every attach; an older stream sees the change and steps aside so
+    /// only the latest client streams (no stale streams after reconnect/navigate).
+    gen: AtomicU64,
 }
 
-/// App-global registry of open PTY sessions, keyed by the client's session id.
+/// App-global registry of open PTY sessions, keyed by a stable client id (the
+/// terminal tab's id), so a re-attach finds the same shell.
 #[derive(Default)]
 pub struct PtyRegistry(Mutex<HashMap<String, Arc<PtySession>>>);
+
+fn b64(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
 
 impl PtyRegistry {
     fn get(&self, id: &str) -> Option<Arc<PtySession>> {
@@ -35,6 +48,104 @@ impl PtyRegistry {
     }
     fn remove(&self, id: &str) -> Option<Arc<PtySession>> {
         self.0.lock().unwrap().remove(id)
+    }
+
+    /// Kill every session — used on app shutdown so no shell is orphaned.
+    pub fn kill_all(&self) {
+        for (_, s) in self.0.lock().unwrap().drain() {
+            let _ = s.child.lock().unwrap().kill();
+        }
+    }
+
+    /// Attach to a live session (returning its replay buffer) or spawn a fresh
+    /// shell. Resizes the PTY to the attaching client's viewport.
+    fn attach(
+        &self,
+        id: &str,
+        rows: u16,
+        cols: u16,
+    ) -> Result<(Arc<PtySession>, broadcast::Receiver<Vec<u8>>, Vec<u8>, u64), String> {
+        let size = PtySize {
+            rows: rows.max(1),
+            cols: cols.max(1),
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let mut map = self.0.lock().unwrap();
+
+        // Re-attach to an existing, still-running shell.
+        if let Some(s) = map.get(id) {
+            if !s.dead.load(Ordering::Relaxed) {
+                let rx = s.tx.subscribe();
+                let replay: Vec<u8> = s.buffer.lock().unwrap().iter().copied().collect();
+                let _ = s.master.lock().unwrap().resize(size); // triggers a TUI redraw
+                let mygen = s.gen.fetch_add(1, Ordering::Relaxed) + 1;
+                return Ok((s.clone(), rx, replay, mygen));
+            }
+            map.remove(id); // dead → recreate below
+        }
+
+        // Spawn a new login shell in the home directory.
+        let pair = native_pty_system()
+            .openpty(size)
+            .map_err(|e| format!("openpty: {e}"))?;
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let mut cmd = CommandBuilder::new(shell);
+        cmd.env("TERM", "xterm-256color");
+        if let Ok(home) = std::env::var("HOME") {
+            cmd.cwd(home);
+        }
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("spawn shell: {e}"))?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("pty reader: {e}"))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("pty writer: {e}"))?;
+
+        let (tx, rx) = broadcast::channel::<Vec<u8>>(2048);
+        let session = Arc::new(PtySession {
+            master: Mutex::new(pair.master),
+            writer: Mutex::new(writer),
+            child: Mutex::new(child),
+            tx,
+            buffer: Mutex::new(VecDeque::new()),
+            dead: AtomicBool::new(false),
+            gen: AtomicU64::new(1),
+        });
+        map.insert(id.to_string(), session.clone());
+
+        // Reader thread (portable-pty is blocking): fan output into the replay
+        // buffer + broadcast. On EOF the shell has exited.
+        let s2 = session.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let chunk = buf[..n].to_vec();
+                        {
+                            let mut b = s2.buffer.lock().unwrap();
+                            b.extend(chunk.iter().copied());
+                            while b.len() > BUFFER_CAP {
+                                b.pop_front();
+                            }
+                        }
+                        let _ = s2.tx.send(chunk); // Err when no subscribers — fine
+                    }
+                }
+            }
+            s2.dead.store(true, Ordering::Relaxed);
+            let _ = s2.tx.send(Vec::new()); // wake any subscriber so it emits Exit
+        });
+
+        Ok((session, rx, Vec::new(), 1))
     }
 }
 
@@ -44,13 +155,13 @@ impl PtyRegistry {
 enum PtyEvent {
     /// Raw terminal bytes, base64-encoded.
     Data { data: String },
-    /// The shell exited or the session was closed.
+    /// The shell process exited (not a mere disconnect).
     Exit,
 }
 
-/// Open a shell in a fresh PTY and stream its output until it exits (or `cancel`
-/// flips — used when a phone disconnects so we don't orphan the shell). Runs for
-/// the whole session lifetime, so callers should spawn it.
+/// Attach to (or open) a session and stream its output until the shell exits or the
+/// client disconnects. On disconnect (`cancel` flips) the shell is LEFT RUNNING so a
+/// reconnect can re-attach; only a real shell exit emits `Exit`.
 pub async fn pty_open_core(
     id: String,
     rows: u16,
@@ -59,89 +170,54 @@ pub async fn pty_open_core(
     sink: &dyn EventSink,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<serde_json::Value, String> {
-    let size = PtySize {
-        rows: rows.max(1),
-        cols: cols.max(1),
-        pixel_width: 0,
-        pixel_height: 0,
-    };
-    let pair = native_pty_system()
-        .openpty(size)
-        .map_err(|e| format!("openpty: {e}"))?;
+    let (session, mut rx, replay, mygen) = reg.attach(&id, rows, cols)?;
 
-    // Launch the user's login shell in the home directory, advertising a
-    // color-capable terminal so programs render properly.
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let mut cmd = CommandBuilder::new(shell);
-    cmd.env("TERM", "xterm-256color");
-    if let Ok(home) = std::env::var("HOME") {
-        cmd.cwd(home);
+    // Replay recent output so a re-attached (or freshly reloaded) client sees the
+    // current screen. The client resets its terminal before applying this.
+    if !replay.is_empty() {
+        emit_ev(sink, PtyEvent::Data { data: b64(&replay) });
     }
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| format!("spawn shell: {e}"))?;
 
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| format!("pty reader: {e}"))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| format!("pty writer: {e}"))?;
-
-    let session = Arc::new(PtySession {
-        master: Mutex::new(pair.master),
-        writer: Mutex::new(writer),
-        child: Mutex::new(child),
-    });
-    reg.0.lock().unwrap().insert(id.clone(), session.clone());
-
-    // portable-pty is blocking, so read the master on a dedicated thread and
-    // forward chunks into the async loop.
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if tx.send(buf[..n].to_vec()).is_err() {
+    let mut detached = false;
+    let superseded = || session.gen.load(Ordering::Relaxed) != mygen;
+    loop {
+        tokio::select! {
+            r = rx.recv() => match r {
+                Ok(bytes) => {
+                    if superseded() { detached = true; break; }
+                    if !bytes.is_empty() {
+                        emit_ev(sink, PtyEvent::Data { data: b64(&bytes) });
+                    }
+                    if session.dead.load(Ordering::Relaxed) {
                         break;
                     }
                 }
-            }
-        }
-    });
-
-    loop {
-        tokio::select! {
-            chunk = rx.recv() => match chunk {
-                Some(bytes) => {
-                    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    emit_ev(sink, PtyEvent::Data { data });
-                }
-                None => break, // shell exited (reader hit EOF)
+                // Fell behind the broadcast; the periodic replay-on-reattach keeps
+                // the gross screen state correct, so just resume.
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
             },
-            // Periodically check whether the client vanished (phone disconnect).
-            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
-                if cancel.as_ref().map(|c| c.load(Ordering::Relaxed)).unwrap_or(false) {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => {
+                // Detach if the client disconnected or a newer attach took over.
+                if superseded()
+                    || cancel.as_ref().map(|c| c.load(Ordering::Relaxed)).unwrap_or(false)
+                {
+                    detached = true;
                     break;
                 }
             }
         }
     }
 
-    // Tear the session down: kill the shell (no-op if it already exited) and drop it.
-    if let Some(s) = reg.remove(&id) {
-        let _ = s.child.lock().unwrap().kill();
+    if session.dead.load(Ordering::Relaxed) && !detached {
+        reg.remove(&id);
+        emit_ev(sink, PtyEvent::Exit);
     }
-    emit_ev(sink, PtyEvent::Exit);
+    // Detached (client gone): the shell keeps running for a later re-attach.
     Ok(serde_json::Value::Null)
 }
 
-/// Send keystrokes (base64-encoded bytes) to a session's shell.
+/// Send keystrokes (base64 bytes) to a session's shell.
 pub fn pty_write_core(id: &str, data_b64: &str, reg: &PtyRegistry) -> Result<(), String> {
     let session = reg.get(id).ok_or("no such terminal session")?;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -165,7 +241,7 @@ pub fn pty_resize_core(id: &str, rows: u16, cols: u16, reg: &PtyRegistry) -> Res
     res.map_err(|e| format!("resize: {e}"))
 }
 
-/// Kill a session's shell and forget it.
+/// Kill a session's shell and forget it (user closed the tab).
 pub fn pty_kill_core(id: &str, reg: &PtyRegistry) {
     if let Some(s) = reg.remove(id) {
         let _ = s.child.lock().unwrap().kill();
