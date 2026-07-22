@@ -214,7 +214,9 @@ export default function App() {
     didHydrateRef.current = true;
     const loaded = loadSettings();
     setSettings(loaded);
-    if (!loaded.onboarded) setShowOnboarding(true);
+    // Onboarding (provider + API key setup) is a desktop-only concern — the phone
+    // adopts whatever the Mac is configured with, so never prompt for it here.
+    if (!loaded.onboarded && isTauri()) setShowOnboarding(true);
     if (isTauri()) {
       // Desktop: hydrate API keys from the OS keychain (migrating any legacy key
       // still in localStorage), scrub the plaintext copy, then publish settings so
@@ -244,7 +246,13 @@ export default function App() {
             });
           }
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          // Auto-sync on connect: pull the Mac's latest chats, documents and images
+          // so the phone picks up exactly where the desktop left off. The short
+          // delay lets each view register its "ai-studio-sync" listener first.
+          setTimeout(() => window.dispatchEvent(new Event("ai-studio-sync")), 500);
+        });
     }
   }, []);
 
