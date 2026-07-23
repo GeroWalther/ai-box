@@ -295,6 +295,11 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
       return next.length ? next : [newSession()];
     });
   }
+  function renameChat(id: string, title: string) {
+    setSessions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, title, updatedAt: Date.now() } : s))
+    );
+  }
 
   const canSend =
     !!provider.model &&
@@ -597,6 +602,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
           onSelect={switchChat}
           onNew={newChat}
           onDelete={deleteChat}
+          onRename={renameChat}
           newLabel="+ New chat"
           onAfterAction={onCloseDrawer}
         />

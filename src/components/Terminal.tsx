@@ -8,7 +8,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { ptyOpen, ptyWrite, ptyResize, ptyKill } from "../lib/api";
-import { isTauri, cancelStream } from "../lib/transport";
+import { cancelStream } from "../lib/transport";
 import { remoteStoreMerge } from "../lib/remoteStore";
 import { SidebarSlot } from "./SidebarList";
 import SidebarList from "./SidebarList";
@@ -173,8 +173,6 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
   const bumpFont = (d: number) =>
     setFontSize((f) => Math.min(MAX_FONT, Math.max(MIN_FONT, f + d)));
 
-  const activeTitle = tabs.find((t) => t.id === activeId)?.title ?? "Terminal";
-
   return (
     <div className="xterm-view">
       <SidebarSlot slot={sidebarSlot}>
@@ -194,14 +192,10 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
           onDelete={closeTab}
           onRename={renameTab}
         />
-      </SidebarSlot>
-
-      <div className="xterm-topbar">
-        <span className="xterm-title">
-          {activeTitle}
-          {isTauri() ? "" : " · remote"}
-        </span>
-        <div className="xterm-actions">
+        {/* Terminal text size lives in the side menu (no top bar), the tab name
+            is already shown/highlighted in the list above. */}
+        <div className="xterm-side-tools">
+          <span className="xterm-side-label">Text size</span>
           <button
             className="btn ghost xterm-font-btn"
             title="Smaller text"
@@ -219,7 +213,7 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
             A+
           </button>
         </div>
-      </div>
+      </SidebarSlot>
 
       <div className="xterm-stack">
         {tabs.map((t) => (

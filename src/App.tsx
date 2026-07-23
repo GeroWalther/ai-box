@@ -69,6 +69,8 @@ interface Doc {
    *  and how many characters of the manuscript it covers (to detect staleness). */
   summary?: string;
   summaryChars?: number;
+  /** True once the user renames the doc, so the title stops auto-deriving. */
+  titleManual?: boolean;
   /** Last-edit timestamp (ms) used to merge concurrent desktop/phone edits. */
   updatedAt?: number;
 }
@@ -213,10 +215,17 @@ export default function App() {
     autofocus: "end",
     onUpdate: ({ editor }) => {
       const html = editor.getHTML();
-      const title = docTitle(editor.getText());
       setDocuments((prev) =>
         prev.map((d) =>
-          d.id === activeDocIdRef.current ? { ...d, html, title, updatedAt: Date.now() } : d
+          d.id === activeDocIdRef.current
+            ? {
+                ...d,
+                html,
+                // Keep a manually-renamed title; otherwise derive from the text.
+                title: d.titleManual ? d.title : docTitle(editor.getText()),
+                updatedAt: Date.now(),
+              }
+            : d
         )
       );
       // Manual typing dismisses the AI accept/undo bar (AI's own edits happen
@@ -385,6 +394,11 @@ export default function App() {
       editor?.commands.setContent(docs[0].html || "", false);
     }
   }
+  function renameDoc(id: string, title: string) {
+    setDocuments((prev) =>
+      prev.map((d) => (d.id === id ? { ...d, title, titleManual: true, updatedAt: Date.now() } : d))
+    );
+  }
 
   const updateSettings = (patch: Partial<Settings>) =>
     setSettings((prev) => {
@@ -422,7 +436,12 @@ export default function App() {
     localStorage.setItem("ai-studio.view", view);
   }, [view]);
 
+  // A device suppresses pushing its workspace until it has first ADOPTED the shared
+  // one on connect — otherwise a freshly-opened phone would overwrite where the
+  // desktop left off before it ever reads it.
+  const wsReadyRef = useRef(false);
   function pushWorkspace() {
+    if (!wsReadyRef.current) return;
     const ws = {
       view: viewRef.current,
       doc: activeDocIdRef.current,
@@ -432,6 +451,15 @@ export default function App() {
     };
     remoteStoreSet(WORKSPACE_KEY, JSON.stringify(ws)).catch(() => {});
   }
+  // On launch/connect: adopt the shared workspace first, then allow pushing.
+  useEffect(() => {
+    pullWorkspace();
+    const t = setTimeout(() => {
+      wsReadyRef.current = true;
+    }, 1600);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Push on navigation (view / active doc) and when a child reports a nav change.
   useEffect(() => {
     const t = setTimeout(pushWorkspace, 500);
@@ -938,6 +966,7 @@ export default function App() {
               onSelect={switchDoc}
               onNew={newDoc}
               onDelete={deleteDoc}
+              onRename={renameDoc}
               newLabel="+ New document"
               onAfterAction={() => setDrawerOpen(false)}
             />
