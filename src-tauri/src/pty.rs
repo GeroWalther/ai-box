@@ -88,6 +88,9 @@ impl PtyRegistry {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
         let mut cmd = CommandBuilder::new(shell);
         cmd.env("TERM", "xterm-256color");
+        // Suppress zsh's reverse-video "%" end-of-line marker (shown for output
+        // without a trailing newline) — it looks like stray junk in the UI.
+        cmd.env("PROMPT_EOL_MARK", "");
         if let Ok(home) = std::env::var("HOME") {
             cmd.cwd(home);
         }
