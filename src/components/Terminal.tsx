@@ -282,25 +282,6 @@ function TermPane({
     vv?.addEventListener("resize", pushResize);
     const timers = [60, 250, 600].map((ms) => window.setTimeout(pushResize, ms));
 
-    // Touch scrolling (this is the version that worked): drag scrolls the xterm
-    // scrollback by whole rows. Passive listeners — no preventDefault, which was
-    // what killed scrolling. Pull-to-refresh is handled by CSS overscroll-behavior.
-    let touchY = 0;
-    const onTouchStart = (e: TouchEvent) => {
-      touchY = e.touches[0]?.clientY ?? 0;
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      const y = e.touches[0]?.clientY ?? touchY;
-      const rowPx = Math.max(8, fontSize * 1.05);
-      const lines = Math.trunc((touchY - y) / rowPx);
-      if (lines !== 0) {
-        term.scrollLines(lines);
-        touchY -= lines * rowPx;
-      }
-    };
-    host.addEventListener("touchstart", onTouchStart, { passive: true });
-    host.addEventListener("touchmove", onTouchMove, { passive: true });
-
     // Attach/stream with auto-reconnect. A connection drop just retries the same
     // id; the backend keeps the shell alive and replays recent output on re-attach.
     let firstChunk = true;
@@ -346,8 +327,6 @@ function TermPane({
       ro.disconnect();
       window.removeEventListener("resize", pushResize);
       vv?.removeEventListener("resize", pushResize);
-      host.removeEventListener("touchstart", onTouchStart);
-      host.removeEventListener("touchmove", onTouchMove);
       dataSub.dispose();
       term.dispose();
       if (termRef.current === term) termRef.current = null;

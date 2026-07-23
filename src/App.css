@@ -1394,16 +1394,24 @@ input[type="range"]:focus {
   width: 100% !important;
   max-width: 100% !important;
 }
-/* The viewport is the scroll container — allow native (touch) scrolling. */
+/* The viewport is the scroll container — allow native (touch) scrolling and keep
+   pull-to-refresh from chaining to the page when it's at the top/bottom. */
 .xterm-host .xterm-viewport {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 
 @media (max-width: 768px) {
   .xterm-host {
     padding: 6px 8px 8px;
+  }
+  /* THE mobile scroll fix: xterm's canvas overlay sits on top of the scrollable
+     viewport and swallows touches. Let touches pass through it to the viewport so
+     native touch-scroll works. (Desktop keeps pointer events for wheel/selection.) */
+  .xterm-host .xterm-screen {
+    pointer-events: none;
   }
   /* xterm's own hidden input must stay ≥16px so iOS doesn't zoom on focus. */
   .xterm-host .xterm-helper-textarea {
