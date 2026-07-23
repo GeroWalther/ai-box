@@ -76,9 +76,12 @@ function nextNumber(tabs: Tab[]): number {
 interface Props {
   sidebarSlot: HTMLElement | null;
   onCloseDrawer?: () => void;
+  /** When the sidebar is collapsed the side-menu font controls are hidden, so
+   *  show a small floating fallback in the terminal instead. */
+  sidebarCollapsed?: boolean;
 }
 
-export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
+export default function Terminal({ sidebarSlot, onCloseDrawer, sidebarCollapsed }: Props) {
   const [tabs, setTabs] = useState<Tab[]>(() => {
     const t = loadTabs();
     return t.length ? t : [{ id: uid(), title: "Terminal 1", updatedAt: Date.now() }];
@@ -214,6 +217,27 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
           </button>
         </div>
       </SidebarSlot>
+
+      {sidebarCollapsed && (
+        <div className="xterm-float-tools">
+          <button
+            className="btn ghost xterm-font-btn"
+            title="Smaller text"
+            onClick={() => bumpFont(-1)}
+            disabled={fontSize <= MIN_FONT}
+          >
+            A−
+          </button>
+          <button
+            className="btn ghost xterm-font-btn"
+            title="Larger text"
+            onClick={() => bumpFont(1)}
+            disabled={fontSize >= MAX_FONT}
+          >
+            A+
+          </button>
+        </div>
+      )}
 
       <div className="xterm-stack">
         {tabs.map((t) => (

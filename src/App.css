@@ -1303,6 +1303,7 @@ input[type="range"]:focus {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative; /* positioning context for the floating text-size control */
   /* Must be able to shrink below the xterm canvas width, or the grid renders
      wider than the screen and clips on the right (esp. on phones). */
   min-width: 0;
@@ -1356,6 +1357,21 @@ input[type="range"]:focus {
   flex: 1;
   font-size: 12px;
   color: var(--muted);
+}
+/* Floating text-size control, shown only when the sidebar is collapsed (so the
+   side-menu controls aren't reachable). Subtle until hovered. */
+.xterm-float-tools {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 4;
+  display: flex;
+  gap: 4px;
+  opacity: 0.35;
+  transition: opacity 0.15s;
+}
+.xterm-float-tools:hover {
+  opacity: 1;
 }
 .xterm-stack {
   position: relative;

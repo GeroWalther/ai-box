@@ -1117,7 +1117,11 @@ export default function App() {
           onCloseDrawer={() => setDrawerOpen(false)}
         />
       ) : (
-        <Terminal sidebarSlot={sidebarSlot} onCloseDrawer={() => setDrawerOpen(false)} />
+        <Terminal
+          sidebarSlot={sidebarSlot}
+          onCloseDrawer={() => setDrawerOpen(false)}
+          sidebarCollapsed={settings.sidebarCollapsed}
+        />
       )}
       </main>
 
