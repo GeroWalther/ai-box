@@ -784,9 +784,9 @@ export default function App() {
           </svg>
         </button>
         <span className="mtb-title">{SECTIONS.find((s) => s.key === view)?.label}</span>
-        <button className="mtb-btn" aria-label="Sync" onClick={syncNow} disabled={syncing}>
-          <span className={syncing ? "sync-spin" : ""} style={{ fontSize: 18 }}>↻</span>
-        </button>
+        {/* Sync lives in one place now (the drawer's "Sync devices"), and syncing
+            also happens automatically on connect — no redundant top-bar button. */}
+        <span className="mtb-btn" aria-hidden="true" />
       </header>
 
       {/* Backdrop behind the mobile drawer */}

@@ -9,6 +9,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { ptyOpen, ptyWrite, ptyResize, ptyKill } from "../lib/api";
 import { isTauri } from "../lib/transport";
+import { remoteStoreMerge } from "../lib/remoteStore";
 import { SidebarSlot } from "./SidebarList";
 import SidebarList from "./SidebarList";
 
@@ -45,6 +46,8 @@ function defaultFont(): number {
 interface Tab {
   id: string;
   title: string;
+  /** For conflict-free cross-device merge (last-writer-wins). */
+  updatedAt?: number;
 }
 
 function loadTabs(): Tab[] {
@@ -55,6 +58,13 @@ function loadTabs(): Tab[] {
     /* ignore */
   }
   return [];
+}
+function loadDeleted(): Record<string, number> {
+  try {
+    return JSON.parse(localStorage.getItem(TABS_KEY + ".deleted") || "{}") || {};
+  } catch {
+    return {};
+  }
 }
 
 /** Next "Terminal N" number that doesn't collide with existing titles. */
@@ -71,17 +81,25 @@ interface Props {
 export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
   const [tabs, setTabs] = useState<Tab[]>(() => {
     const t = loadTabs();
-    return t.length ? t : [{ id: uid(), title: "Terminal 1" }];
+    return t.length ? t : [{ id: uid(), title: "Terminal 1", updatedAt: Date.now() }];
   });
+  const [deleted, setDeleted] = useState<Record<string, number>>(loadDeleted);
   const [activeId, setActiveId] = useState<string>(
     () => localStorage.getItem(TABS_KEY + ".active") || ""
   );
   const [fontSize, setFontSize] = useState<number>(defaultFont);
+  const tabsRef = useRef(tabs);
+  const deletedRef = useRef(deleted);
+  tabsRef.current = tabs;
+  deletedRef.current = deleted;
 
-  // Persist the tab list, active tab and font size.
+  // Persist locally. (Active tab & font size stay per-device.)
   useEffect(() => {
     localStorage.setItem(TABS_KEY, JSON.stringify(tabs));
   }, [tabs]);
+  useEffect(() => {
+    localStorage.setItem(TABS_KEY + ".deleted", JSON.stringify(deleted));
+  }, [deleted]);
   useEffect(() => {
     if (activeId) localStorage.setItem(TABS_KEY + ".active", activeId);
   }, [activeId]);
@@ -94,16 +112,49 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
     if (!tabs.find((t) => t.id === activeId)) setActiveId(tabs[0]?.id ?? "");
   }, [tabs, activeId]);
 
+  // Terminals are the Mac's shells, so the tab LIST is shared across devices:
+  // pull+merge the union, and mirror local changes back (debounced). The live
+  // shells (keyed by tab id) are then reachable from whichever device attaches.
+  async function syncTabs() {
+    try {
+      const merged = await remoteStoreMerge(
+        TABS_KEY,
+        JSON.stringify({ items: tabsRef.current, deleted: deletedRef.current })
+      );
+      const parsed = JSON.parse(merged);
+      const items: Tab[] = Array.isArray(parsed.items) ? parsed.items : [];
+      setTabs(items.length ? items : [{ id: uid(), title: "Terminal 1", updatedAt: Date.now() }]);
+      setDeleted(parsed.deleted || {});
+    } catch {
+      /* offline / no server — keep working locally */
+    }
+  }
+  useEffect(() => {
+    syncTabs();
+    const onSync = () => syncTabs();
+    window.addEventListener("ai-studio-sync", onSync);
+    return () => window.removeEventListener("ai-studio-sync", onSync);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Mirror local edits to the shared store shortly after they happen.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      remoteStoreMerge(TABS_KEY, JSON.stringify({ items: tabs, deleted })).catch(() => {});
+    }, 400);
+    return () => clearTimeout(t);
+  }, [tabs, deleted]);
+
   function newTab() {
-    const t = { id: uid(), title: `Terminal ${nextNumber(tabs)}` };
+    const t = { id: uid(), title: `Terminal ${nextNumber(tabs)}`, updatedAt: Date.now() };
     setTabs((p) => [...p, t]);
     setActiveId(t.id);
   }
   function closeTab(id: string) {
     ptyKill(id).catch(() => {}); // closing a tab really does end its shell
+    setDeleted((d) => ({ ...d, [id]: Date.now() })); // tombstone so it stays closed everywhere
     setTabs((p) => {
       const next = p.filter((t) => t.id !== id);
-      return next.length ? next : [{ id: uid(), title: "Terminal 1" }];
+      return next.length ? next : [{ id: uid(), title: "Terminal 1", updatedAt: Date.now() }];
     });
   }
   const bumpFont = (d: number) =>
@@ -237,12 +288,14 @@ function TermPane({
     const timers = [60, 250, 600].map((ms) => window.setTimeout(pushResize, ms));
 
     // Touch scrolling (xterm doesn't handle it natively): drag to scroll the
-    // scrollback by whole rows.
+    // scrollback by whole rows. preventDefault stops the browser from turning the
+    // same drag into pull-to-refresh / page scroll.
     let touchY = 0;
     const onTouchStart = (e: TouchEvent) => {
       touchY = e.touches[0]?.clientY ?? 0;
     };
     const onTouchMove = (e: TouchEvent) => {
+      if (e.cancelable) e.preventDefault();
       const y = e.touches[0]?.clientY ?? touchY;
       const rowPx = Math.max(8, fontSize * 1.05);
       const lines = Math.trunc((touchY - y) / rowPx);
@@ -252,7 +305,7 @@ function TermPane({
       }
     };
     host.addEventListener("touchstart", onTouchStart, { passive: true });
-    host.addEventListener("touchmove", onTouchMove, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
 
     // Attach/stream with auto-reconnect. A connection drop just retries the same
     // id; the backend keeps the shell alive and replays recent output on re-attach.
