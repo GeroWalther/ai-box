@@ -8,7 +8,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { ptyOpen, ptyWrite, ptyResize, ptyKill } from "../lib/api";
-import { isTauri } from "../lib/transport";
+import { isTauri, cancelStream } from "../lib/transport";
 import { remoteStoreMerge } from "../lib/remoteStore";
 import { SidebarSlot } from "./SidebarList";
 import SidebarList from "./SidebarList";
@@ -347,6 +347,7 @@ function TermPane({
       // killed only on explicit tab close (below) or app exit. A stale stream is
       // superseded server-side by the next attach (generation check).
       disposed = true;
+      cancelStream(id); // detach this stream server-side (shell keeps running)
       timers.forEach(clearTimeout);
       ro.disconnect();
       window.removeEventListener("resize", pushResize);

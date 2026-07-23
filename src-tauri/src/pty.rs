@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
@@ -28,9 +28,6 @@ struct PtySession {
     tx: broadcast::Sender<Vec<u8>>,
     buffer: Mutex<VecDeque<u8>>,
     dead: AtomicBool,
-    /// Bumped on every attach; an older stream sees the change and steps aside so
-    /// only the latest client streams (no stale streams after reconnect/navigate).
-    gen: AtomicU64,
 }
 
 /// App-global registry of open PTY sessions, keyed by a stable client id (the
@@ -64,7 +61,7 @@ impl PtyRegistry {
         id: &str,
         rows: u16,
         cols: u16,
-    ) -> Result<(Arc<PtySession>, broadcast::Receiver<Vec<u8>>, Vec<u8>, u64), String> {
+    ) -> Result<(Arc<PtySession>, broadcast::Receiver<Vec<u8>>, Vec<u8>), String> {
         let size = PtySize {
             rows: rows.max(1),
             cols: cols.max(1),
@@ -73,14 +70,13 @@ impl PtyRegistry {
         };
         let mut map = self.0.lock().unwrap();
 
-        // Re-attach to an existing, still-running shell.
+        // Re-attach to an existing, still-running shell (multiple viewers allowed).
         if let Some(s) = map.get(id) {
             if !s.dead.load(Ordering::Relaxed) {
                 let rx = s.tx.subscribe();
                 let replay: Vec<u8> = s.buffer.lock().unwrap().iter().copied().collect();
                 let _ = s.master.lock().unwrap().resize(size); // triggers a TUI redraw
-                let mygen = s.gen.fetch_add(1, Ordering::Relaxed) + 1;
-                return Ok((s.clone(), rx, replay, mygen));
+                return Ok((s.clone(), rx, replay));
             }
             map.remove(id); // dead → recreate below
         }
@@ -116,7 +112,6 @@ impl PtyRegistry {
             tx,
             buffer: Mutex::new(VecDeque::new()),
             dead: AtomicBool::new(false),
-            gen: AtomicU64::new(1),
         });
         map.insert(id.to_string(), session.clone());
 
@@ -145,7 +140,7 @@ impl PtyRegistry {
             let _ = s2.tx.send(Vec::new()); // wake any subscriber so it emits Exit
         });
 
-        Ok((session, rx, Vec::new(), 1))
+        Ok((session, rx, Vec::new()))
     }
 }
 
@@ -170,7 +165,7 @@ pub async fn pty_open_core(
     sink: &dyn EventSink,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<serde_json::Value, String> {
-    let (session, mut rx, replay, mygen) = reg.attach(&id, rows, cols)?;
+    let (session, mut rx, replay) = reg.attach(&id, rows, cols)?;
 
     // Replay recent output so a re-attached (or freshly reloaded) client sees the
     // current screen. The client resets its terminal before applying this.
@@ -179,12 +174,10 @@ pub async fn pty_open_core(
     }
 
     let mut detached = false;
-    let superseded = || session.gen.load(Ordering::Relaxed) != mygen;
     loop {
         tokio::select! {
             r = rx.recv() => match r {
                 Ok(bytes) => {
-                    if superseded() { detached = true; break; }
                     if !bytes.is_empty() {
                         emit_ev(sink, PtyEvent::Data { data: b64(&bytes) });
                     }
@@ -197,11 +190,10 @@ pub async fn pty_open_core(
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => break,
             },
+            // This client detached (navigated away / closed the view). The shell is
+            // left running for re-attach; other viewers keep streaming.
             _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => {
-                // Detach if the client disconnected or a newer attach took over.
-                if superseded()
-                    || cancel.as_ref().map(|c| c.load(Ordering::Relaxed)).unwrap_or(false)
-                {
+                if cancel.as_ref().map(|c| c.load(Ordering::Relaxed)).unwrap_or(false) {
                     detached = true;
                     break;
                 }

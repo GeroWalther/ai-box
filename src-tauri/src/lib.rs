@@ -1126,9 +1126,15 @@ async fn pty_open(
     rows: u16,
     cols: u16,
     reg: tauri::State<'_, pty::PtyRegistry>,
+    cancels: tauri::State<'_, server::CancelRegistry>,
     on_event: Channel<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    pty::pty_open_core(id, rows, cols, &reg, &ChannelSink(on_event), None).await
+    // Register a cancel flag keyed by the pty id so the UI can detach this stream
+    // (via `cancel_generation`) when it navigates away — without killing the shell.
+    let flag = cancels.register(id.clone());
+    let res = pty::pty_open_core(id.clone(), rows, cols, &reg, &ChannelSink(on_event), Some(flag)).await;
+    cancels.remove(&id);
+    res
 }
 
 #[tauri::command]
