@@ -76,12 +76,9 @@ function nextNumber(tabs: Tab[]): number {
 interface Props {
   sidebarSlot: HTMLElement | null;
   onCloseDrawer?: () => void;
-  /** When the sidebar is collapsed the side-menu font controls are hidden, so
-   *  show a small floating fallback in the terminal instead. */
-  sidebarCollapsed?: boolean;
 }
 
-export default function Terminal({ sidebarSlot, onCloseDrawer, sidebarCollapsed }: Props) {
+export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
   const [tabs, setTabs] = useState<Tab[]>(() => {
     const t = loadTabs();
     return t.length ? t : [{ id: uid(), title: "Terminal 1", updatedAt: Date.now() }];
@@ -175,6 +172,14 @@ export default function Terminal({ sidebarSlot, onCloseDrawer, sidebarCollapsed 
   }
   const bumpFont = (d: number) =>
     setFontSize((f) => Math.min(MAX_FONT, Math.max(MIN_FONT, f + d)));
+  // The A-/A+ controls live in the sidebar footer (App) so they stay reachable
+  // even when the sidebar is collapsed; they reach us via this event.
+  useEffect(() => {
+    const onFont = (e: Event) => bumpFont((e as CustomEvent).detail || 0);
+    window.addEventListener("ai-studio-term-font", onFont);
+    return () => window.removeEventListener("ai-studio-term-font", onFont);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="xterm-view">
@@ -195,49 +200,7 @@ export default function Terminal({ sidebarSlot, onCloseDrawer, sidebarCollapsed 
           onDelete={closeTab}
           onRename={renameTab}
         />
-        {/* Terminal text size lives in the side menu (no top bar), the tab name
-            is already shown/highlighted in the list above. */}
-        <div className="xterm-side-tools">
-          <span className="xterm-side-label">Text size</span>
-          <button
-            className="btn ghost xterm-font-btn"
-            title="Smaller text"
-            onClick={() => bumpFont(-1)}
-            disabled={fontSize <= MIN_FONT}
-          >
-            A−
-          </button>
-          <button
-            className="btn ghost xterm-font-btn"
-            title="Larger text"
-            onClick={() => bumpFont(1)}
-            disabled={fontSize >= MAX_FONT}
-          >
-            A+
-          </button>
-        </div>
       </SidebarSlot>
-
-      {sidebarCollapsed && (
-        <div className="xterm-float-tools">
-          <button
-            className="btn ghost xterm-font-btn"
-            title="Smaller text"
-            onClick={() => bumpFont(-1)}
-            disabled={fontSize <= MIN_FONT}
-          >
-            A−
-          </button>
-          <button
-            className="btn ghost xterm-font-btn"
-            title="Larger text"
-            onClick={() => bumpFont(1)}
-            disabled={fontSize >= MAX_FONT}
-          >
-            A+
-          </button>
-        </div>
-      )}
 
       <div className="xterm-stack">
         {tabs.map((t) => (

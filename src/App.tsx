@@ -931,6 +931,24 @@ export default function App() {
         <div className="sidebar-list" ref={setSidebarSlot} />
         <div className="sidebar-foot">
           {view === "write" && <span className="navrail-count">{wordCount} words</span>}
+          {view === "terminal" && (
+            <div className="term-font-rail">
+              <button
+                className="term-font-btn"
+                title="Smaller terminal text"
+                onClick={() => window.dispatchEvent(new CustomEvent("ai-studio-term-font", { detail: -1 }))}
+              >
+                A−
+              </button>
+              <button
+                className="term-font-btn"
+                title="Larger terminal text"
+                onClick={() => window.dispatchEvent(new CustomEvent("ai-studio-term-font", { detail: 1 }))}
+              >
+                A+
+              </button>
+            </div>
+          )}
           <button
             className="sidebar-sec"
             title="Sync chats, docs & settings with your other devices"
@@ -1117,11 +1135,7 @@ export default function App() {
           onCloseDrawer={() => setDrawerOpen(false)}
         />
       ) : (
-        <Terminal
-          sidebarSlot={sidebarSlot}
-          onCloseDrawer={() => setDrawerOpen(false)}
-          sidebarCollapsed={settings.sidebarCollapsed}
-        />
+        <Terminal sidebarSlot={sidebarSlot} onCloseDrawer={() => setDrawerOpen(false)} />
       )}
       </main>
 
