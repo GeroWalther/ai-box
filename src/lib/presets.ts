@@ -473,7 +473,26 @@ export function buildBibleContext(b: StoryBibleData | undefined, recentText: str
 }
 
 // Keep only the trailing window so we stay within context and steer on recent voice.
-const MAX_CONTEXT_CHARS = 8000;
+export const MAX_CONTEXT_CHARS = 8000;
+
+/** Build messages that produce/refresh a compact "story so far" continuity memory
+ *  for text beyond the verbatim window — so the model keeps track of the whole book. */
+export function buildSummaryMessages(text: string, previous?: string): ChatMsg[] {
+  const system =
+    "You maintain a running 'story so far' memory for a novelist. From the manuscript " +
+    "below, produce a CONCISE, factual continuity digest — not prose: key plot events in " +
+    "order; the current situation; each major character's state, location, and relationships; " +
+    "established facts and world rules; and unresolved threads. Terse sentences or bullets, " +
+    "~200–400 words. This is context for continuing the story, so prioritize what the author " +
+    "must not contradict. No preamble or commentary.";
+  const user = previous
+    ? `Previous memory (update and extend it to cover the whole manuscript):\n${previous}\n\nManuscript:\n${text}`
+    : `Manuscript:\n${text}`;
+  return [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ];
+}
 
 export interface ChatMsg {
   role: "system" | "user" | "assistant";
@@ -493,7 +512,8 @@ export function buildContinuationMessages(
   storyText: string,
   s: Settings,
   opts: ContinueOpts,
-  bible?: StoryBibleData
+  bible?: StoryBibleData,
+  summary?: string
 ): ChatMsg[] {
   const { wordTarget, instruction, finish } = opts;
 
@@ -520,6 +540,9 @@ export function buildContinuationMessages(
     "You are a masterful novelist and prose stylist collaborating with an author.",
     "Match the established voice, tense, point of view, and pacing seamlessly; begin mid-flow so it joins onto the last words.",
     presetGuidance(s),
+    summary?.trim()
+      ? `Story so far (earlier chapters, condensed — treat as established canon; do not contradict):\n${summary.trim()}`
+      : "",
     buildBibleContext(bible, context),
     langLine,
     task,

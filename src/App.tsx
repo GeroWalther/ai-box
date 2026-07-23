@@ -7,6 +7,8 @@ import {
   buildContinuationMessages,
   buildRewriteMessages,
   buildImagePromptMessages,
+  buildSummaryMessages,
+  MAX_CONTEXT_CHARS,
   EMPTY_BIBLE,
   LANGUAGES,
   type StoryBibleData,
@@ -63,6 +65,10 @@ interface Doc {
   title: string;
   html: string;
   bible?: StoryBibleData;
+  /** Running "story so far" memory of the chapters before the verbatim window,
+   *  and how many characters of the manuscript it covers (to detect staleness). */
+  summary?: string;
+  summaryChars?: number;
   /** Last-edit timestamp (ms) used to merge concurrent desktop/phone edits. */
   updatedAt?: number;
 }
@@ -491,6 +497,41 @@ export default function App() {
 
   // Core continuation: append a passage from `instruction` (empty = free
   // continue), recording its inserted range so it can be regenerated.
+  // Keep a "story so far" memory of the chapters that fall outside the verbatim
+  // window fresh, so the model stays consistent across a whole book. Returns the
+  // summary to inject (or "" when the manuscript still fits in the window).
+  async function ensureSummary(storyText: string): Promise<string> {
+    const coverTo = storyText.length - MAX_CONTEXT_CHARS;
+    if (coverTo <= 500) return ""; // whole manuscript fits in the verbatim window
+    const doc = documents.find((d) => d.id === activeDocIdRef.current);
+    // Reuse the stored summary if it already covers nearly everything old.
+    if (doc?.summary && (doc.summaryChars ?? 0) >= coverTo - 3000) return doc.summary;
+    setStatus("Updating story memory…");
+    try {
+      const msg = await chatCompletion({
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        model: provider.model,
+        messages: buildSummaryMessages(storyText.slice(0, coverTo), doc?.summary),
+        tools: [],
+        temperature: 0.3,
+      });
+      const summary = (msg.content || "").trim();
+      if (summary) {
+        setDocuments((prev) =>
+          prev.map((d) =>
+            d.id === activeDocIdRef.current
+              ? { ...d, summary, summaryChars: coverTo, updatedAt: Date.now() }
+              : d
+          )
+        );
+      }
+      return summary;
+    } catch {
+      return doc?.summary || ""; // fall back to the last known memory
+    }
+  }
+
   async function generateContinuation(instruction: string) {
     if (!editor) return;
     stoppedRef.current = false;
@@ -498,11 +539,18 @@ export default function App() {
     setStatus(instruction ? "Writing…" : "Continuing…");
 
     const storyText = editor.getText();
+    const summary = await ensureSummary(storyText);
+    if (stoppedRef.current) {
+      setGenerating(false);
+      return;
+    }
+    setStatus(instruction ? "Writing…" : "Continuing…");
     const messages = buildContinuationMessages(
       storyText,
       settings,
       { wordTarget: settings.wordTarget, instruction },
-      activeBible
+      activeBible,
+      summary
     );
 
     editor.commands.focus("end");
