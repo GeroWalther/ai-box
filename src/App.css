@@ -1359,19 +1359,27 @@ input[type="range"]:focus {
   color: var(--muted);
 }
 /* Floating text-size control, shown only when the sidebar is collapsed (so the
-   side-menu controls aren't reachable). Subtle until hovered. */
+   side-menu controls aren't reachable). A visible pill, dimmed slightly until hover. */
 .xterm-float-tools {
   position: absolute;
-  top: 8px;
-  right: 12px;
+  top: 10px;
+  right: 14px;
   z-index: 4;
   display: flex;
   gap: 4px;
-  opacity: 0.35;
+  padding: 4px;
+  border-radius: 10px;
+  background: rgba(24, 24, 34, 0.9);
+  border: 1px solid var(--border);
+  opacity: 0.85;
   transition: opacity 0.15s;
 }
 .xterm-float-tools:hover {
   opacity: 1;
+}
+.xterm-float-tools .xterm-font-btn {
+  background: var(--panel);
+  color: var(--text);
 }
 .xterm-stack {
   position: relative;
