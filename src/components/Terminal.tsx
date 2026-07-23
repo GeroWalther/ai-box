@@ -283,18 +283,18 @@ function TermPane({
     const timers = [60, 250, 600].map((ms) => window.setTimeout(pushResize, ms));
 
     // Touch scrolling (xterm doesn't handle it natively): drag to scroll the
-    // scrollback by whole rows. preventDefault stops the browser from turning the
-    // same drag into pull-to-refresh / page scroll.
+    // scrollback by whole rows. Only preventDefault (blocking pull-to-refresh)
+    // when we ACTUALLY scroll the terminal, so it never traps other gestures.
     let touchY = 0;
     const onTouchStart = (e: TouchEvent) => {
       touchY = e.touches[0]?.clientY ?? 0;
     };
     const onTouchMove = (e: TouchEvent) => {
-      if (e.cancelable) e.preventDefault();
       const y = e.touches[0]?.clientY ?? touchY;
       const rowPx = Math.max(8, fontSize * 1.05);
       const lines = Math.trunc((touchY - y) / rowPx);
       if (lines !== 0) {
+        if (e.cancelable) e.preventDefault();
         term.scrollLines(lines);
         touchY -= lines * rowPx;
       }

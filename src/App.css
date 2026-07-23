@@ -26,9 +26,9 @@ body,
 #root {
   margin: 0;
   height: 100%;
-  /* Kill browser pull-to-refresh / rubber-banding so dragging inside the app
-     (esp. scrolling the terminal on mobile) never reloads the page. */
-  overscroll-behavior: none;
+  /* Stop pull-to-refresh chaining to the page (so dragging in the terminal
+     doesn't reload), without disabling scrolling inside containers. */
+  overscroll-behavior-y: contain;
 }
 
 body {
