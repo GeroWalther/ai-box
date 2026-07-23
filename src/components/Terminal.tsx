@@ -282,28 +282,53 @@ function TermPane({
     vv?.addEventListener("resize", pushResize);
     const timers = [60, 250, 600].map((ms) => window.setTimeout(pushResize, ms));
 
-    // Touch scroll — capture phase so it runs before xterm's own handlers, and
-    // scroll via the core scrollLines API (same one the desktop wheel uses).
+    // Scrolling. Normal buffer (shell output) → scroll xterm's own scrollback.
+    // Alternate buffer (claude/vim/top) has no scrollback — like the desktop mouse
+    // wheel, we forward synthetic wheel events so xterm relays them to the app.
+    const inAltBuffer = () => term.buffer.active.type === "alternate";
+    const dispatchWheel = (deltaY: number) => {
+      (term.element ?? host).dispatchEvent(
+        new WheelEvent("wheel", { deltaY, deltaMode: 0, bubbles: true, cancelable: true })
+      );
+    };
     let touchY = 0;
+    let altAccum = 0;
     const onTouchStart = (e: TouchEvent) => {
       touchY = e.touches[0]?.clientY ?? 0;
+      altAccum = 0;
     };
     const onTouchMove = (e: TouchEvent) => {
       const y = e.touches[0]?.clientY ?? touchY;
       const rowPx = Math.max(8, fontSize * 1.05);
-      const lines = Math.trunc((touchY - y) / rowPx);
-      if (lines !== 0) {
-        term.scrollLines(lines);
-        touchY -= lines * rowPx;
+      const dy = touchY - y;
+      if (inAltBuffer()) {
+        // Emit one wheel "notch" per row dragged so the app (claude) scrolls.
+        altAccum += dy;
+        touchY = y;
+        while (Math.abs(altAccum) >= rowPx) {
+          const dir = altAccum > 0 ? 1 : -1;
+          dispatchWheel(dir * 120);
+          altAccum -= dir * rowPx;
+        }
+      } else {
+        const lines = Math.trunc(dy / rowPx);
+        if (lines !== 0) {
+          term.scrollLines(lines);
+          touchY -= lines * rowPx;
+        }
       }
     };
     host.addEventListener("touchstart", onTouchStart, { passive: true });
     host.addEventListener("touchmove", onTouchMove, { passive: true });
-    // Buttons (guaranteed): scroll a page up/down.
+    // Buttons: page up/down (works in both buffers).
     const onScroll = (e: Event) => {
       if (disposed) return;
       const dir = (e as CustomEvent).detail;
-      if (dir === "up") term.scrollLines(-Math.max(3, term.rows - 2));
+      if (inAltBuffer()) {
+        if (dir === "bottom") return;
+        const sign = dir === "up" ? -1 : 1;
+        for (let i = 0; i < 3; i++) dispatchWheel(sign * 120);
+      } else if (dir === "up") term.scrollLines(-Math.max(3, term.rows - 2));
       else if (dir === "down") term.scrollLines(Math.max(3, term.rows - 2));
       else if (dir === "bottom") term.scrollToBottom();
     };
