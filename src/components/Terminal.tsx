@@ -230,6 +230,8 @@ function TermPane({
   const [exited, setExited] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [epoch, setEpoch] = useState(0); // bump to start a brand-new shell in place
+  // Scroll slider (thumb size + position 0..1); hidden when there's no scrollback.
+  const [slider, setSlider] = useState({ show: false, frac: 0, thumb: 1 });
 
   useEffect(() => {
     const host = hostRef.current;
@@ -320,19 +322,22 @@ function TermPane({
     };
     host.addEventListener("touchstart", onTouchStart, { passive: true });
     host.addEventListener("touchmove", onTouchMove, { passive: true });
-    // Buttons: page up/down (works in both buffers).
-    const onScroll = (e: Event) => {
-      if (disposed) return;
-      const dir = (e as CustomEvent).detail;
-      if (inAltBuffer()) {
-        if (dir === "bottom") return;
-        const sign = dir === "up" ? -1 : 1;
-        for (let i = 0; i < 3; i++) dispatchWheel(sign * 120);
-      } else if (dir === "up") term.scrollLines(-Math.max(3, term.rows - 2));
-      else if (dir === "down") term.scrollLines(Math.max(3, term.rows - 2));
-      else if (dir === "bottom") term.scrollToBottom();
+
+    // Draggable scroll slider (normal buffer only — the alt buffer has no
+    // scrollback). Poll to keep the thumb's size/position in sync.
+    const updateSlider = () => {
+      const b = term.buffer.active;
+      if (b.type === "alternate" || b.baseY <= 0) {
+        setSlider((s) => (s.show ? { ...s, show: false } : s));
+        return;
+      }
+      const total = b.length;
+      const thumb = Math.max(0.08, term.rows / Math.max(1, total));
+      const frac = b.viewportY / b.baseY; // 0 = top, 1 = bottom
+      setSlider({ show: true, frac, thumb });
     };
-    host.addEventListener("ai-studio-term-scroll", onScroll as EventListener);
+    const sliderScrollSub = term.onScroll(updateSlider);
+    const sliderTimer = window.setInterval(updateSlider, 250);
 
     // Attach/stream with auto-reconnect. A connection drop just retries the same
     // id; the backend keeps the shell alive and replays recent output on re-attach.
@@ -381,7 +386,8 @@ function TermPane({
       vv?.removeEventListener("resize", pushResize);
       host.removeEventListener("touchstart", onTouchStart);
       host.removeEventListener("touchmove", onTouchMove);
-      host.removeEventListener("ai-studio-term-scroll", onScroll as EventListener);
+      sliderScrollSub.dispose();
+      clearInterval(sliderTimer);
       dataSub.dispose();
       term.dispose();
       if (termRef.current === term) termRef.current = null;
@@ -417,18 +423,40 @@ function TermPane({
     term.focus();
   }, [active]);
 
-  const scroll = (dir: "up" | "down" | "bottom") =>
-    hostRef.current?.dispatchEvent(new CustomEvent("ai-studio-term-scroll", { detail: dir }));
+  // Drag the slider track/thumb to scroll to that position (normal buffer).
+  const onSliderDown = (e: React.PointerEvent) => {
+    const term = termRef.current;
+    if (!term) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const to = (clientY: number) => {
+      const frac = Math.min(1, Math.max(0, (clientY - rect.top) / rect.height));
+      term.scrollToLine(Math.round(frac * term.buffer.active.baseY));
+    };
+    to(e.clientY);
+    const onMove = (ev: PointerEvent) => to(ev.clientY);
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    e.preventDefault();
+  };
 
   return (
     <div className={active ? "term-pane active" : "term-pane"}>
       <div className="xterm-host" ref={hostRef} onClick={() => termRef.current?.focus()} />
-      {/* Guaranteed scroll controls (touch-drag also works). */}
-      <div className="term-scroll-btns">
-        <button title="Scroll up" onClick={() => scroll("up")}>⌃</button>
-        <button title="Scroll down" onClick={() => scroll("down")}>⌄</button>
-        <button title="Jump to bottom" onClick={() => scroll("bottom")}>⤓</button>
-      </div>
+      {slider.show && (
+        <div className="term-slider" onPointerDown={onSliderDown}>
+          <div
+            className="term-slider-thumb"
+            style={{
+              height: `${Math.max(8, slider.thumb * 100)}%`,
+              top: `${slider.frac * (100 - Math.max(8, slider.thumb * 100))}%`,
+            }}
+          />
+        </div>
+      )}
       {reconnecting && !exited && (
         <div className="term-status-pill">Reconnecting…</div>
       )}
