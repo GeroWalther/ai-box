@@ -172,6 +172,7 @@ export default function App() {
   const [imagePrefill, setImagePrefill] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const generatingRef = useRef(false);
+  const [hydrated, setHydrated] = useState(false); // saved settings loaded from localStorage
   useEffect(() => {
     generatingRef.current = generating;
   }, [generating]);
@@ -241,6 +242,7 @@ export default function App() {
     didHydrateRef.current = true;
     const loaded = loadSettings();
     setSettings(loaded);
+    setHydrated(true); // saved settings (incl. the pairing token) are now loaded
     // Onboarding (provider + API key setup) is a desktop-only concern — the phone
     // adopts whatever the Mac is configured with, so never prompt for it here.
     if (!loaded.onboarded && isTauri()) setShowOnboarding(true);
@@ -414,7 +416,10 @@ export default function App() {
   // the phone can reach the Mac without toggling it each time.
   const remoteStartedRef = useRef(false);
   useEffect(() => {
-    if (!isTauri() || remoteStartedRef.current || !settings.remoteEnabled) return;
+    // Wait for saved settings (the pairing token!) to hydrate before starting —
+    // otherwise we'd start with an empty token and mint a NEW one, breaking any
+    // already-paired phone.
+    if (!hydrated || !isTauri() || remoteStartedRef.current || !settings.remoteEnabled) return;
     remoteStartedRef.current = true;
     let token = settings.remoteToken;
     if (!token) {
@@ -426,7 +431,7 @@ export default function App() {
       token,
       wakeLock: settings.remoteWakeLock,
     }).catch(() => {});
-  }, [settings.remoteEnabled, settings.remoteToken, settings.remotePort, settings.remoteWakeLock]);
+  }, [hydrated, settings.remoteEnabled, settings.remoteToken, settings.remotePort, settings.remoteWakeLock]);
 
   // ---- Cross-device "where you left off" -------------------------------------
   // A shared workspace pointer (active section + active document / chat / terminal)
