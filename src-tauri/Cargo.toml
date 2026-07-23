@@ -36,4 +36,7 @@ url = "2"
 keyring = { version = "3", features = ["apple-native"] }
 # Pseudo-terminal for the interactive Terminal tab (real shell: claude, vim, top…).
 portable-pty = "0.8"
+# In-app auto-updates (checks GitHub Releases, applies signed updates).
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 

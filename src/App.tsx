@@ -29,6 +29,7 @@ import { isTauri, invokeCmd, cancelStream } from "./lib/transport";
 import { remoteStoreMerge, remoteStoreGet, remoteStoreSet } from "./lib/remoteStore";
 import { parseSyncList } from "./lib/syncList";
 import { useToast } from "./lib/toast";
+import { checkForUpdate } from "./lib/updater";
 import PromptBar from "./components/PromptBar";
 import Terminal from "./components/Terminal";
 import Outline from "./components/Outline";
@@ -243,6 +244,10 @@ export default function App() {
     const loaded = loadSettings();
     setSettings(loaded);
     setHydrated(true); // saved settings (incl. the pairing token) are now loaded
+    // Desktop: quietly check for an app update in the background.
+    if (isTauri()) {
+      checkForUpdate((msg, kind) => (kind === "ready" ? toastSuccess(msg) : undefined));
+    }
     // Onboarding (provider + API key setup) is a desktop-only concern — the phone
     // adopts whatever the Mac is configured with, so never prompt for it here.
     if (!loaded.onboarded && isTauri()) setShowOnboarding(true);

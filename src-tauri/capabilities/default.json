@@ -6,6 +6,8 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "updater:default",
+    "process:default",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://civitai.com/*" }]
