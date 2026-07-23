@@ -26,12 +26,15 @@ body,
 #root {
   margin: 0;
   height: 100%;
-  /* Stop pull-to-refresh chaining to the page (so dragging in the terminal
-     doesn't reload), without disabling scrolling inside containers. */
-  overscroll-behavior-y: contain;
+  overscroll-behavior: none;
 }
 
+/* Lock the page to the viewport so iOS can NEVER pull-to-refresh. Inner scroll
+   containers (chat, editor, terminal) still scroll normally. */
 body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
   background:
     radial-gradient(1100px 620px at 82% -8%, rgba(107, 92, 240, 0.08), transparent 60%),
     radial-gradient(900px 560px at 0% 106%, rgba(107, 92, 240, 0.05), transparent 62%),
@@ -1364,6 +1367,29 @@ input[type="range"]:focus {
   color: var(--muted);
   font-size: 13px;
 }
+/* Guaranteed scroll controls, bottom-right of the terminal. */
+.term-scroll-btns {
+  position: absolute;
+  right: 10px;
+  bottom: 14px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.term-scroll-btns button {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(24, 24, 34, 0.9);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.term-scroll-btns button:hover { opacity: 1; }
 .term-status-pill {
   position: absolute;
   top: 10px;
@@ -1406,12 +1432,6 @@ input[type="range"]:focus {
 @media (max-width: 768px) {
   .xterm-host {
     padding: 6px 8px 8px;
-  }
-  /* THE mobile scroll fix: xterm's canvas overlay sits on top of the scrollable
-     viewport and swallows touches. Let touches pass through it to the viewport so
-     native touch-scroll works. (Desktop keeps pointer events for wheel/selection.) */
-  .xterm-host .xterm-screen {
-    pointer-events: none;
   }
   /* xterm's own hidden input must stay ≥16px so iOS doesn't zoom on focus. */
   .xterm-host .xterm-helper-textarea {
