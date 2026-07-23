@@ -66,6 +66,9 @@ export interface Settings {
   remotePort: number;
   remoteToken: string;
   remoteWakeLock: boolean;
+  /** "Away mode" on: auto-start the companion server on launch so the phone can
+   *  reach the Mac without toggling it each time. */
+  remoteEnabled: boolean;
 
   // Agentic Chat: start new chats in Agent mode (can run tools) by default.
   agentMode: boolean;
@@ -125,6 +128,7 @@ export const DEFAULT_SETTINGS: Settings = {
   remotePort: 8787,
   remoteToken: "",
   remoteWakeLock: true,
+  remoteEnabled: true,
 
   agentMode: true,
   autoApproveTools: false,

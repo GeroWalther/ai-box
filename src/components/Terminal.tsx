@@ -102,7 +102,17 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
   }, [deleted]);
   useEffect(() => {
     if (activeId) localStorage.setItem(TABS_KEY + ".active", activeId);
+    window.dispatchEvent(new Event("ai-studio-nav")); // cross-device "where you left off"
   }, [activeId]);
+  // A workspace sync from another device may pick a different active terminal.
+  useEffect(() => {
+    const onWs = () => {
+      const id = localStorage.getItem(TABS_KEY + ".active");
+      if (id && tabsRef.current.find((t) => t.id === id)) setActiveId(id);
+    };
+    window.addEventListener("ai-studio-ws", onWs);
+    return () => window.removeEventListener("ai-studio-ws", onWs);
+  }, []);
   useEffect(() => {
     localStorage.setItem(FONT_KEY, String(fontSize));
   }, [fontSize]);
@@ -157,6 +167,9 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
       return next.length ? next : [{ id: uid(), title: "Terminal 1", updatedAt: Date.now() }];
     });
   }
+  function renameTab(id: string, title: string) {
+    setTabs((p) => p.map((t) => (t.id === id ? { ...t, title, updatedAt: Date.now() } : t)));
+  }
   const bumpFont = (d: number) =>
     setFontSize((f) => Math.min(MAX_FONT, Math.max(MIN_FONT, f + d)));
 
@@ -179,6 +192,7 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
             onCloseDrawer?.();
           }}
           onDelete={closeTab}
+          onRename={renameTab}
         />
       </SidebarSlot>
 

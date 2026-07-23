@@ -26,7 +26,7 @@ import { chatCompletion } from "./lib/agent";
 import { buildExtractionMessages, parseExtraction, type Extraction } from "./lib/extract";
 import { useOpenrouterModels } from "./lib/openrouterModels";
 import { isTauri, invokeCmd, cancelStream } from "./lib/transport";
-import { remoteStoreMerge } from "./lib/remoteStore";
+import { remoteStoreMerge, remoteStoreGet, remoteStoreSet } from "./lib/remoteStore";
 import { parseSyncList } from "./lib/syncList";
 import { useToast } from "./lib/toast";
 import PromptBar from "./components/PromptBar";
@@ -164,7 +164,9 @@ export default function App() {
   const [showModels, setShowModels] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false); // mobile nav drawer
   const [sidebarSlot, setSidebarSlot] = useState<HTMLDivElement | null>(null); // list portal target
-  const [view, setView] = useState<ViewKey>("chat");
+  const [view, setView] = useState<ViewKey>(
+    () => (localStorage.getItem("ai-studio.view") as ViewKey) || "chat"
+  );
   const [imagePrefill, setImagePrefill] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const generatingRef = useRef(false);
@@ -393,6 +395,80 @@ export default function App() {
       if ("openrouterKey" in patch || "customKey" in patch) saveSecrets(next);
       return next;
     });
+
+  // Away mode: auto-start the companion server on desktop launch when enabled, so
+  // the phone can reach the Mac without toggling it each time.
+  const remoteStartedRef = useRef(false);
+  useEffect(() => {
+    if (!isTauri() || remoteStartedRef.current || !settings.remoteEnabled) return;
+    remoteStartedRef.current = true;
+    let token = settings.remoteToken;
+    if (!token) {
+      token = crypto.randomUUID().replace(/-/g, "");
+      updateSettings({ remoteToken: token });
+    }
+    invokeCmd("start_remote_server", {
+      port: settings.remotePort || 8787,
+      token,
+      wakeLock: settings.remoteWakeLock,
+    }).catch(() => {});
+  }, [settings.remoteEnabled, settings.remoteToken, settings.remotePort, settings.remoteWakeLock]);
+
+  // ---- Cross-device "where you left off" -------------------------------------
+  // A shared workspace pointer (active section + active document / chat / terminal)
+  // so a sync jumps you to exactly what the other device had open.
+  const WORKSPACE_KEY = "ai-studio.workspace";
+  useEffect(() => {
+    localStorage.setItem("ai-studio.view", view);
+  }, [view]);
+
+  function pushWorkspace() {
+    const ws = {
+      view: viewRef.current,
+      doc: activeDocIdRef.current,
+      chat: localStorage.getItem("ai-studio.chat.active") || "",
+      term: localStorage.getItem("ai-studio.terminals.active") || "",
+      at: Date.now(),
+    };
+    remoteStoreSet(WORKSPACE_KEY, JSON.stringify(ws)).catch(() => {});
+  }
+  // Push on navigation (view / active doc) and when a child reports a nav change.
+  useEffect(() => {
+    const t = setTimeout(pushWorkspace, 500);
+    const onNav = () => pushWorkspace();
+    window.addEventListener("ai-studio-nav", onNav);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("ai-studio-nav", onNav);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, activeDocId]);
+
+  // Adopt the other device's workspace on a sync/connect — jump to where it was.
+  async function pullWorkspace() {
+    const raw = await remoteStoreGet(WORKSPACE_KEY).catch(() => null);
+    if (!raw) return;
+    let ws: { view?: ViewKey; doc?: string; chat?: string; term?: string };
+    try {
+      ws = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    // Give the data sync (docs/chats/terminals) a beat to land first.
+    setTimeout(() => {
+      if (ws.chat) localStorage.setItem("ai-studio.chat.active", ws.chat);
+      if (ws.term) localStorage.setItem("ai-studio.terminals.active", ws.term);
+      if (ws.doc) setActiveDocId(ws.doc);
+      if (ws.view) setView(ws.view);
+      window.dispatchEvent(new Event("ai-studio-ws")); // children re-read their active id
+    }, 350);
+  }
+  useEffect(() => {
+    const onSync = () => pullWorkspace();
+    window.addEventListener("ai-studio-sync", onSync);
+    return () => window.removeEventListener("ai-studio-sync", onSync);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Pull the latest shared state (chat history + desktop settings) from the Mac.
   // Tabs listen for the "ai-studio-sync" event to re-read their own data.

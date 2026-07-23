@@ -97,7 +97,9 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
       return [newSession()];
     }
   });
-  const [activeId, setActiveId] = useState<string>(() => "");
+  const [activeId, setActiveId] = useState<string>(
+    () => localStorage.getItem("ai-studio.chat.active") || ""
+  );
   const [input, setInput] = useState("");
   const [generating, setGenerating] = useState(false);
   // Start in Agent mode by default (persisted in settings) so it can run tools.
@@ -155,7 +157,19 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   }, [sessions, activeId]);
   useEffect(() => {
     activeIdRef.current = activeId;
+    // Persist + broadcast so cross-device "where you left off" can restore it.
+    localStorage.setItem("ai-studio.chat.active", activeId);
+    window.dispatchEvent(new Event("ai-studio-nav"));
   }, [activeId]);
+  // A workspace sync from another device may pick a different active chat.
+  useEffect(() => {
+    const onWs = () => {
+      const id = localStorage.getItem("ai-studio.chat.active");
+      if (id && sessionsRef.current.find((s) => s.id === id)) setActiveId(id);
+    };
+    window.addEventListener("ai-studio-ws", onWs);
+    return () => window.removeEventListener("ai-studio-ws", onWs);
+  }, []);
 
   const provider = useMemo(() => resolveTextProvider(settings), [settings]);
   const {

@@ -75,8 +75,8 @@ export default function RemoteAccess({ settings, onChange }: Props) {
       let token = settings.remoteToken;
       if (!token) {
         token = newToken();
-        onChange({ remoteToken: token });
       }
+      onChange({ remoteToken: token, remoteEnabled: true }); // remember away mode is on
       const result = await invoke<Urls>("start_remote_server", {
         port: settings.remotePort || 8787,
         token,
@@ -93,6 +93,7 @@ export default function RemoteAccess({ settings, onChange }: Props) {
   async function stop() {
     setBusy(true);
     try {
+      onChange({ remoteEnabled: false }); // don't auto-start next launch
       await invoke("stop_remote_server");
       await refresh();
     } catch (e) {
