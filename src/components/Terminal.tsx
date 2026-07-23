@@ -282,25 +282,27 @@ function TermPane({
     vv?.addEventListener("resize", pushResize);
     const timers = [60, 250, 600].map((ms) => window.setTimeout(pushResize, ms));
 
-    // Touch scrolling (xterm doesn't handle it natively): drag to scroll the
-    // scrollback by whole rows. Only preventDefault (blocking pull-to-refresh)
-    // when we ACTUALLY scroll the terminal, so it never traps other gestures.
+    // Touch scrolling: xterm's canvas overlay swallows touches, so drag the
+    // xterm viewport directly (1:1 with the finger) and claim the gesture so the
+    // page doesn't scroll instead. Capture phase so we win over xterm's handlers.
     let touchY = 0;
+    const viewport = () => host.querySelector<HTMLElement>(".xterm-viewport");
     const onTouchStart = (e: TouchEvent) => {
       touchY = e.touches[0]?.clientY ?? 0;
     };
     const onTouchMove = (e: TouchEvent) => {
+      const vp = viewport();
+      if (!vp) return;
       const y = e.touches[0]?.clientY ?? touchY;
-      const rowPx = Math.max(8, fontSize * 1.05);
-      const lines = Math.trunc((touchY - y) / rowPx);
-      if (lines !== 0) {
+      const dy = touchY - y; // finger up → positive → scroll toward newer output
+      if (dy !== 0) {
+        vp.scrollTop += dy;
         if (e.cancelable) e.preventDefault();
-        term.scrollLines(lines);
-        touchY -= lines * rowPx;
+        touchY = y;
       }
     };
-    host.addEventListener("touchstart", onTouchStart, { passive: true });
-    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchstart", onTouchStart, { passive: true, capture: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: false, capture: true });
 
     // Attach/stream with auto-reconnect. A connection drop just retries the same
     // id; the backend keeps the shell alive and replays recent output on re-attach.
@@ -347,8 +349,8 @@ function TermPane({
       ro.disconnect();
       window.removeEventListener("resize", pushResize);
       vv?.removeEventListener("resize", pushResize);
-      host.removeEventListener("touchstart", onTouchStart);
-      host.removeEventListener("touchmove", onTouchMove);
+      host.removeEventListener("touchstart", onTouchStart, { capture: true });
+      host.removeEventListener("touchmove", onTouchMove, { capture: true });
       dataSub.dispose();
       term.dispose();
       if (termRef.current === term) termRef.current = null;
