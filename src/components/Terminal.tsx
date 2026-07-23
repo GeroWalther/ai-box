@@ -297,8 +297,8 @@ function TermPane({
         touchY -= lines * rowPx;
       }
     };
-    host.addEventListener("touchstart", onTouchStart, { passive: true, capture: true });
-    host.addEventListener("touchmove", onTouchMove, { passive: true, capture: true });
+    host.addEventListener("touchstart", onTouchStart, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: true });
     // Buttons (guaranteed): scroll a page up/down.
     const onScroll = (e: Event) => {
       if (disposed) return;
@@ -354,8 +354,8 @@ function TermPane({
       ro.disconnect();
       window.removeEventListener("resize", pushResize);
       vv?.removeEventListener("resize", pushResize);
-      host.removeEventListener("touchstart", onTouchStart, { capture: true });
-      host.removeEventListener("touchmove", onTouchMove, { capture: true });
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
       host.removeEventListener("ai-studio-term-scroll", onScroll as EventListener);
       dataSub.dispose();
       term.dispose();
