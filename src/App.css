@@ -26,6 +26,10 @@ body,
 #root {
   margin: 0;
   height: 100%;
+  /* Lock the document (no page scroll) so iOS can't pull-to-refresh. Inner
+     containers (terminal, chat, editor) keep their own overflow scrolling. */
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body {
