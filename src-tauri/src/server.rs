@@ -611,6 +611,12 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             crate::doc_versions_clear(s("docId"))?;
             Ok(Value::Null)
         }
+        // A file dropped onto the phone's terminal: the Mac writes the bytes and
+        // hands back a path the shell can actually open.
+        "save_dropped_file" => Ok(Value::String(crate::save_dropped_file(
+            s("base64"),
+            s("name"),
+        )?)),
         "export_library" => {
             let files = args
                 .get("files")

@@ -2160,6 +2160,64 @@ fn doc_versions_clear(doc_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Save a file dropped into the app and return its path on this Mac.
+///
+/// Dropping an image onto the terminal has to end with a real filesystem path,
+/// because that is what a CLI (Claude Code, say) can actually open. On the
+/// desktop the OS hands us the path directly, so this is only needed for the
+/// phone: the browser there holds bytes with no host path, so it ships them over
+/// and the Mac materialises the file.
+///
+/// Files land in ~/.ai-box/dropped and are pruned, so a long remote session
+/// can't quietly fill the disk with screenshots.
+#[tauri::command]
+fn save_dropped_file(base64: String, name: String) -> Result<String, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64.trim())
+        .map_err(|e| format!("decode dropped file: {e}"))?;
+    const MAX_BYTES: usize = 25 * 1024 * 1024;
+    if bytes.len() > MAX_BYTES {
+        return Err("that file is larger than 25 MB".into());
+    }
+    let dir = app_path("dropped");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {dir}: {e}"))?;
+
+    // The name comes from a remote device, so it is untrusted input: keep the
+    // basename only and strip anything that could walk out of the folder.
+    let base = name.rsplit('/').next().unwrap_or("file");
+    let safe = safe_export_name(base);
+    let mut path = std::path::Path::new(&dir).join(&safe);
+    let mut n = 2;
+    while path.exists() {
+        let (stem, ext) = match safe.rsplit_once('.') {
+            Some((s, e)) => (s.to_string(), format!(".{e}")),
+            None => (safe.clone(), String::new()),
+        };
+        path = std::path::Path::new(&dir).join(format!("{stem}-{n}{ext}"));
+        n += 1;
+    }
+    std::fs::write(&path, &bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
+    prune_dropped(&dir, 50);
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Keep only the newest `keep` dropped files.
+fn prune_dropped(dir: &str, keep: usize) {
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    if files.len() <= keep {
+        return;
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    for (_, p) in files.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
 /// Make a filename safe to join onto the export directory.
 ///
 /// The name comes from a user-chosen document title, which may contain path
@@ -2366,6 +2424,7 @@ pub fn run() {
             doc_version_get,
             doc_versions_clear,
             export_library,
+            save_dropped_file,
             comfy_status,
             comfy_download_model,
             comfy_installed_models,

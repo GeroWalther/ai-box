@@ -8,6 +8,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { ptyOpen, ptyWrite, ptyResize, ptyKill } from "../lib/api";
+import { quoteForShell, useFileDrop } from "../hooks/useFileDrop";
 import { cancelStream } from "../lib/transport";
 import { remoteStoreMerge } from "../lib/remoteStore";
 import { SidebarSlot } from "./SidebarList";
@@ -423,6 +424,20 @@ function TermPane({
     term.focus();
   }, [active]);
 
+  // Dropping a file (an image for Claude, a log to inspect) types its path at
+  // the cursor, exactly as dropping onto a native terminal does. A trailing
+  // space — not a newline — so the user can keep typing around it and decide
+  // when to hit Enter.
+  const dragHover = useFileDrop({
+    target: hostRef,
+    enabled: active,
+    onPaths: (paths) => {
+      const text = paths.map(quoteForShell).join(" ") + " ";
+      ptyWrite(ptyId, toB64(text)).catch(() => {});
+      termRef.current?.focus();
+    },
+  });
+
   // Drag the slider track/thumb to scroll to that position (normal buffer).
   const onSliderDown = (e: React.PointerEvent) => {
     const term = termRef.current;
@@ -446,6 +461,11 @@ function TermPane({
   return (
     <div className={active ? "term-pane active" : "term-pane"}>
       <div className="xterm-host" ref={hostRef} onClick={() => termRef.current?.focus()} />
+      {dragHover && (
+        <div className="term-drop" aria-hidden="true">
+          <span>Drop to paste the file path</span>
+        </div>
+      )}
       {slider.show && (
         <div className="term-slider" onPointerDown={onSliderDown}>
           <div
