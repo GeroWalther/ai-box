@@ -2118,6 +2118,29 @@ fn doc_versions_clear(doc_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Make a filename safe to join onto the export directory.
+///
+/// The name comes from a user-chosen document title, which may contain path
+/// separators ("Act 1/2"), be a traversal attempt (".."), or be empty. Anything
+/// that could escape the export folder becomes an ordinary character.
+fn safe_export_name(name: &str) -> String {
+    let mapped: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' => '-',
+            // Control characters have no business in a filename.
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect();
+    let trimmed = mapped.trim().trim_start_matches('.').trim();
+    if trimmed.is_empty() {
+        "untitled".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Write every document to a timestamped folder in ~/Downloads and return its
 /// path. The library lives in an app-private store, which is fine until the day
 /// someone wants their manuscripts *out* — this is that escape hatch, and it
@@ -2133,14 +2156,7 @@ fn export_library(files: Vec<serde_json::Value>) -> Result<String, String> {
     for f in &files {
         let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("untitled");
         let content = f.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        // Filenames come from user-chosen document titles: strip separators so a
-        // title like "Act 1/2" can't write outside the export folder.
-        let safe: String = name
-            .chars()
-            .map(|c| if c == '/' || c == '\\' || c == ':' { '-' } else { c })
-            .collect();
-        let safe = safe.trim_start_matches('.').trim();
-        let safe = if safe.is_empty() { "untitled" } else { safe };
+        let safe = safe_export_name(name);
         std::fs::write(format!("{dir}/{safe}"), content)
             .map_err(|e| format!("write {safe}: {e}"))?;
     }
@@ -2460,6 +2476,24 @@ mod tests {
         let incoming = r#"{"items":[{"id":"A","html":"y","updatedAt":9}],"deleted":{}}"#;
         let out = merge(legacy, incoming);
         assert_eq!(out["items"][0]["html"], "y");
+    }
+
+    #[test]
+    fn export_names_cannot_escape_the_folder() {
+        // A title with separators must not become a path.
+        assert_eq!(safe_export_name("Act 1/2.md"), "Act 1-2.md");
+        assert_eq!(safe_export_name("../../etc/passwd"), "-..-etc-passwd");
+        assert_eq!(safe_export_name("..").as_str(), "untitled");
+        assert_eq!(safe_export_name("   ").as_str(), "untitled");
+        assert_eq!(safe_export_name(".hidden"), "hidden");
+        assert_eq!(safe_export_name("C:\\Windows\\evil"), "C--Windows-evil");
+        // Ordinary titles survive intact.
+        assert_eq!(safe_export_name("Chapter 3 — The Fall.md"), "Chapter 3 — The Fall.md");
+        // No result may contain a separator, whatever went in.
+        for evil in ["../x", "a/b/c", "..\\..\\x", "\u{0}/etc"] {
+            let out = safe_export_name(evil);
+            assert!(!out.contains('/') && !out.contains('\\'), "{evil} -> {out}");
+        }
     }
 
     #[test]
