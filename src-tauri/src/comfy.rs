@@ -292,7 +292,7 @@ async fn run_streamed(
 }
 
 const DOWNLOAD_UA: &str =
-    "AIStudio/0.1 (+https://github.com/GeroWalther/novel-studio)";
+    "AIStudio/0.1 (+https://github.com/GeroWalther/ai-studio)";
 const MAX_DL_ATTEMPTS: u32 = 5;
 
 /// Transient HTTP statuses worth retrying. 403 is included because Hugging Face's

@@ -49,8 +49,8 @@ Release when you push a tag (`git tag v0.2.0 && git push --tags`). Add these rep
 Without the secrets the workflow still builds, but the artifact is unsigned.
 
 ## Decisions still open (see docs/PRODUCTION.md, Phase 1)
-- **Bundle identifier** is now `com.novelstudio.app` (was a personal-machine name).
+- **Bundle identifier** is now `com.gwintech.aistudio` (was a personal-machine name).
   Change it to a domain you control before first public release — it's the app's
   permanent identity.
 - **Product name / trademark**: the UI says "AI Studio" (collides with Google AI
-  Studio); the repo/README say "Novel Studio". Pick one before shipping.
+  Studio); the repo/README say "AI Studio". Pick one before shipping.

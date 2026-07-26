@@ -20,6 +20,8 @@ import { remoteStoreMerge } from "../lib/remoteStore";
 import { parseSyncList } from "../lib/syncList";
 import { useOpenrouterModels } from "../lib/openrouterModels";
 import { useToast } from "../lib/toast";
+import { lineDiffText } from "../lib/diff";
+import DiffPreview from "./DiffPreview";
 import ModelManager from "./ModelManager";
 import ModelSelect from "./ModelSelect";
 import Markdown from "./Markdown";
@@ -112,9 +114,17 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   const [pending, setPending] = useState<{
     title: string;
     body: string;
+    /** Optional unified-diff preview so the user approves a change they can see. */
+    diff?: string;
+    /** Which tool asked, so "always allow" can be scoped to just that one. */
+    tool: string;
     resolve: (ok: boolean) => void;
   } | null>(null);
-  const allowAllRef = useRef(false); // "always allow this session"
+  // "Always allow" used to be a single boolean that, once clicked for a harmless
+  // read, waved through every delete and shell command for the rest of the
+  // session. It is now per-tool and per-session: allowing `edit_file` says
+  // nothing about `run_command`, and nothing survives a reload.
+  const allowedToolsRef = useRef<Set<string>>(new Set());
   const genIdRef = useRef(0);
   const reqIdRef = useRef(""); // id of the in-flight generation, for server-side cancel
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -448,7 +458,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
 
         // run_command streams into its own live tool line.
         if (name === "run_command") {
-          const approved = await requestApproval("Run this command?", args.command);
+          const approved = await requestApproval("run_command", "Run this command?", args.command);
           if (!approved) {
             pushMsg({ role: "tool", content: `Denied: ${args.command}`, reasoning: "", ok: false });
             observe(tc, JSON.stringify({ denied: true }));
@@ -479,15 +489,43 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
             detail = content;
             result = { content };
           } else if (name === "write_file") {
-            const msg = await fsWrite(args.path, args.content ?? "");
-            label = `Wrote ${args.path}`;
-            detail = args.content ?? "";
-            result = { message: msg };
+            // Creating or overwriting a file is destructive and the path comes
+            // from model output, so it is approved with a visible diff — the
+            // same treatment a remote request already got.
+            const content = args.content ?? "";
+            const approved = await requestApproval(
+              "write_file",
+              "Write this file?",
+              args.path,
+              await writeDiff(args.path, content)
+            );
+            if (!approved) {
+              ok = false;
+              label = `Denied write: ${args.path}`;
+              result = { denied: true };
+            } else {
+              const msg = await fsWrite(args.path, content);
+              label = `Wrote ${args.path}`;
+              detail = content;
+              result = { message: msg };
+            }
           } else if (name === "edit_file") {
-            const r = await fsEdit(args.path, args.old ?? "", args.new ?? "");
-            label = `Edited ${args.path}`;
-            detail = r.diff;
-            result = r;
+            const approved = await requestApproval(
+              "edit_file",
+              "Apply this edit?",
+              args.path,
+              lineDiffText(args.old ?? "", args.new ?? "")
+            );
+            if (!approved) {
+              ok = false;
+              label = `Denied edit: ${args.path}`;
+              result = { denied: true };
+            } else {
+              const r = await fsEdit(args.path, args.old ?? "", args.new ?? "");
+              label = `Edited ${args.path}`;
+              detail = r.diff;
+              result = r;
+            }
           } else if (name === "list_dir") {
             const entries = await fsList(args.path);
             label = `Listed ${args.path} (${entries.length})`;
@@ -510,7 +548,11 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
             detail = text.slice(0, 2000);
             result = { message: "Appended to the Write tab manuscript." };
           } else if (name === "move_file") {
-            const approved = await requestApproval("Move a file?", `${args.from}\n→ ${args.to}`);
+            const approved = await requestApproval(
+              "move_file",
+              "Move a file?",
+              `${args.from}\n→ ${args.to}`
+            );
             if (!approved) {
               ok = false;
               label = `Denied move: ${args.from}`;
@@ -521,7 +563,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
               result = { message: m };
             }
           } else if (name === "delete_file") {
-            const approved = await requestApproval("Delete this path?", args.path);
+            const approved = await requestApproval("delete_file", "Delete this path?", args.path);
             if (!approved) {
               ok = false;
               label = `Denied delete: ${args.path}`;
@@ -578,19 +620,43 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     if (genIdRef.current === myGen) setGenerating(false);
   }
 
-  function requestApproval(title: string, body: string): Promise<boolean> {
-    // Over the network (phone), approval happens ON THE MAC via the server bridge,
-    // so we don't prompt again here — the desktop enforces it once.
+  /**
+   * Ask the human before a tool does something consequential.
+   *
+   * Three ways this resolves without a prompt, in order:
+   *  1. Not on the desktop — we're the phone, and the Mac's server already
+   *     enforces its own approval for this call. Prompting here would ask twice.
+   *  2. `autoApproveTools` is on — the deliberate "I'm away from my desk" switch.
+   *     Note this only skips PROMPTS: the Rust guard still refuses protected
+   *     paths, so unattended never means unprotected.
+   *  3. The user already chose "always allow" for this specific tool this session.
+   */
+  function requestApproval(
+    tool: string,
+    title: string,
+    body: string,
+    diff?: string
+  ): Promise<boolean> {
     if (!isTauri()) return Promise.resolve(true);
-    // Away-mode escape hatch: skip the prompt entirely when the user has opted in.
     if (settings.autoApproveTools) return Promise.resolve(true);
-    if (allowAllRef.current) return Promise.resolve(true);
-    return new Promise((resolve) => setPending({ title, body, resolve }));
+    if (allowedToolsRef.current.has(tool)) return Promise.resolve(true);
+    return new Promise((resolve) => setPending({ tool, title, body, diff, resolve }));
   }
   function answerApproval(ok: boolean, always = false) {
-    if (always && ok) allowAllRef.current = true;
+    if (always && ok && pending) allowedToolsRef.current.add(pending.tool);
     pending?.resolve(ok);
     setPending(null);
+  }
+
+  /** Preview of what a whole-file write would change, for the approval dialog. */
+  async function writeDiff(path: string, next: string): Promise<string> {
+    let current = "";
+    try {
+      current = await fsRead(path);
+    } catch {
+      current = ""; // new file — the diff is simply "all of it is added"
+    }
+    return lineDiffText(current, next);
   }
 
   return (
@@ -814,10 +880,15 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
             <div className="modal-body">
               <p className="hint">The agent wants to take this action on your Mac:</p>
               <pre className="cmd-preview">{pending.body}</pre>
+              {pending.diff && <DiffPreview diff={pending.diff} />}
             </div>
             <div className="modal-foot approve-foot">
-              <button className="btn ghost" onClick={() => answerApproval(true, true)}>
-                Always allow this session
+              <button
+                className="btn ghost"
+                title={`Stop asking about ${pending.tool.replace(/_/g, " ")} until you quit the app. Other tools still ask.`}
+                onClick={() => answerApproval(true, true)}
+              >
+                Always allow “{pending.tool.replace(/_/g, " ")}”
               </button>
               <div className="approve-foot-right">
                 <button className="btn" onClick={() => answerApproval(false)}>

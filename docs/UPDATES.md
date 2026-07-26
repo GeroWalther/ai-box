@@ -6,7 +6,7 @@ background (a toast says "restart to apply"). See `src/lib/updater.ts` and the
 
 ## How it works
 1. On desktop launch, the app fetches the updater manifest:
-   `https://github.com/GeroWalther/novel-studio/releases/latest/download/latest.json`
+   `https://github.com/GeroWalther/ai-studio/releases/latest/download/latest.json`
 2. If it advertises a newer version, the app downloads the `.app.tar.gz`, **verifies
    its signature against the public key** baked into `tauri.conf.json`, installs it,
    and toasts. It applies on next restart.
@@ -53,5 +53,5 @@ at `releases/latest`, which only counts published releases). New users download 
 
 ## Heads-up: product name
 The UI/landing page say **"AI Studio"**, which collides with Google's "AI Studio", and
-the repo is `novel-studio`. Pick a final, ownable name before a public launch (it also
-sets the bundle identifier, currently `com.novelstudio.app`). See `docs/SIGNING.md`.
+the repo is `ai-studio`. Pick a final, ownable name before a public launch (it also
+sets the bundle identifier, currently `com.gwintech.aistudio`). See `docs/SIGNING.md`.

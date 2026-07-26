@@ -1,5 +1,7 @@
 // App settings: shape, defaults, persistence, and provider resolution.
 import { invokeCmd, isTauri } from "./transport";
+import { readWithLegacy, writeJson } from "./storage";
+import { logError } from "./log";
 
 export type Provider = "openrouter" | "ollama" | "custom";
 
@@ -72,6 +74,14 @@ export interface Settings {
 
   // Agentic Chat: start new chats in Agent mode (can run tools) by default.
   agentMode: boolean;
+  /** Directory the agent's file tools are confined to, on the desktop AND for a
+   *  paired phone. "~" means the whole home folder. Paths outside it are refused
+   *  by the Rust guard, not merely hidden in the UI. */
+  agentWorkspace: string;
+  /** Opt out of the protected-path denylist (~/.ssh, shell rc files, keychains,
+   *  LaunchAgents…). Off by default, and deliberately independent of
+   *  autoApproveTools: turning off prompts must never turn off this protection. */
+  allowProtectedPaths: boolean;
   // Auto-approve the agent's file writes / commands without prompting. Off by
   // default — a deliberate away-mode escape hatch (skips the "approve on the Mac"
   // safety gate for both the desktop agent and remote/phone requests).
@@ -131,10 +141,14 @@ export const DEFAULT_SETTINGS: Settings = {
   remoteEnabled: true,
 
   agentMode: true,
+  agentWorkspace: "~",
+  allowProtectedPaths: false,
   autoApproveTools: false,
 };
 
-const STORAGE_KEY = "novel-studio.settings";
+const STORAGE_KEY = "ai-studio.settings";
+/** Pre-rename key, read once and migrated forward (see readWithLegacy). */
+const LEGACY_STORAGE_KEY = "novel-studio.settings";
 
 // API keys are secrets — kept in the OS keychain at rest (desktop) or injected by
 // the Mac (phone), never written to localStorage.
@@ -142,7 +156,7 @@ const SECRET_FIELDS = ["openrouterKey", "customKey"] as const;
 
 export function loadSettings(): Settings {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = readWithLegacy(STORAGE_KEY, LEGACY_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
     // Merge so new fields added in updates get their defaults.
     const s = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
@@ -159,7 +173,7 @@ export function saveSettings(s: Settings): void {
   // Never persist API keys to localStorage — strip them from the on-disk blob.
   const redacted = { ...s };
   for (const k of SECRET_FIELDS) redacted[k] = "";
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(redacted));
+  writeJson(STORAGE_KEY, redacted);
 }
 
 /** Load API keys from the OS keychain (desktop only; no-op on the phone). */
@@ -170,8 +184,8 @@ export async function loadSecrets(): Promise<Partial<Settings>> {
     try {
       const v = await invokeCmd<string | null>("secret_get", { name: k });
       if (v) out[k] = v;
-    } catch {
-      /* ignore — keychain unavailable */
+    } catch (e) {
+      logError("keychain.read", e); // non-fatal: the user can re-enter the key
     }
   }
   return out;
@@ -183,8 +197,8 @@ export async function saveSecrets(s: Settings): Promise<void> {
   for (const k of SECRET_FIELDS) {
     try {
       await invokeCmd("secret_set", { name: k, value: s[k] ?? "" });
-    } catch {
-      /* ignore — keychain unavailable */
+    } catch (e) {
+      logError("keychain.write", e);
     }
   }
 }

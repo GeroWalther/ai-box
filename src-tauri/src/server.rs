@@ -91,7 +91,9 @@ impl RemoteSettings {
     pub fn set(&self, json: String) {
         *self.0.lock().unwrap() = Some(json);
     }
-    fn value(&self) -> Value {
+    /// The last-pushed settings as JSON (Null if the frontend hasn't pushed yet).
+    /// Also read by the desktop tool guard, so both transports share one policy.
+    pub fn value(&self) -> Value {
         self.0
             .lock()
             .unwrap()
@@ -388,73 +390,14 @@ fn authorized(ctx: &ServerCtx, headers: &HeaderMap) -> bool {
 
 // ---- remote filesystem confinement ---------------------------------------
 
-/// Root the remote (phone) filesystem tools are confined to. Desktop/local access
-/// is unrestricted; only network callers are jailed here so a paired device can't
-/// read ~/.ssh, ~/.aws, etc. Honours a `remoteWorkspace` field pushed in the
-/// desktop settings, else defaults to ~/Documents.
-fn workspace_root(ctx: &ServerCtx) -> std::path::PathBuf {
-    let configured = ctx
-        .settings
-        .value()
-        .get("remoteWorkspace")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-    let raw = configured.unwrap_or_else(|| format!("{home}/Documents"));
-    let expanded = if raw == "~" {
-        home.clone()
-    } else if let Some(rest) = raw.strip_prefix("~/") {
-        format!("{home}/{rest}")
-    } else {
-        raw
-    };
-    let p = std::path::PathBuf::from(&expanded);
-    p.canonicalize().unwrap_or(p)
-}
-
-/// Nearest ancestor of `p` that exists on disk (so we can canonicalize a path that
-/// doesn't exist yet, e.g. a file about to be written).
-fn nearest_existing(p: &std::path::Path) -> std::path::PathBuf {
-    let mut cur = p;
-    loop {
-        if cur.exists() {
-            return cur.to_path_buf();
-        }
-        match cur.parent() {
-            Some(parent) => cur = parent,
-            None => return std::path::PathBuf::from("/"),
-        }
-    }
-}
-
-/// Resolve a remote-supplied path inside the workspace root, rejecting `~`, `..`,
-/// and anything that canonicalizes outside the root (defeats symlink escapes).
-/// Relative paths are taken relative to the root. Returns an absolute path string.
+/// Resolve a remote-supplied path through the shared guard: confined to the
+/// configured agent workspace, with `..`, symlink escapes and protected locations
+/// (credentials, shell startup files, launch agents) refused.
+///
+/// Desktop tool calls run through the very same `guard::confine`, so there is one
+/// definition of "where may the agent touch" rather than two that can drift.
 fn confine(ctx: &ServerCtx, path: &str) -> Result<String, String> {
-    if path.contains('~') {
-        return Err("remote paths can't use ~".into());
-    }
-    let root = workspace_root(ctx);
-    let candidate = std::path::Path::new(path);
-    let joined = if candidate.is_absolute() {
-        candidate.to_path_buf()
-    } else {
-        root.join(candidate)
-    };
-    if joined
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err("remote paths can't contain ..".into());
-    }
-    let canon = nearest_existing(&joined)
-        .canonicalize()
-        .map_err(|e| format!("bad path: {e}"))?;
-    if !canon.starts_with(&root) {
-        return Err("path is outside the remote workspace".into());
-    }
-    Ok(joined.to_string_lossy().to_string())
+    crate::guard::confine(&crate::guard::Policy::from_settings(&ctx.settings.value()), path)
 }
 
 /// Block until the desktop user approves (or denies / times out) an action.
@@ -672,11 +615,11 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             Ok(Value::String(crate::edit_image_openrouter(params(&a)?).await?))
         }
         // --- filesystem / web (read-only, confined to the workspace root) ---
-        "fs_read" => Ok(Value::String(crate::fs_read(confine(ctx, &s("path"))?)?)),
-        "fs_list" => Ok(json!(crate::fs_list(confine(ctx, &s("path"))?)?)),
+        "fs_read" => Ok(Value::String(crate::fs_read_core(confine(ctx, &s("path"))?)?)),
+        "fs_list" => Ok(json!(crate::fs_list_core(confine(ctx, &s("path"))?)?)),
         "fs_search" => {
             let kind = args.get("kind").and_then(|v| v.as_str()).map(|s| s.to_string());
-            Ok(json!(crate::fs_search(confine(ctx, &s("root"))?, s("query"), kind)?))
+            Ok(json!(crate::fs_search_core(confine(ctx, &s("root"))?, s("query"), kind)?))
         }
         "web_fetch" => Ok(Value::String(crate::web_fetch(s("url")).await?)),
         // --- dangerous → confined AND approved on the Mac ---
@@ -686,24 +629,24 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             let diff = preview_diff(&old, &s("content"));
             let title = if old.is_empty() { "Create a file?" } else { "Overwrite a file?" };
             require_approval_diff(ctx, title, &path, Some(diff)).await?;
-            Ok(Value::String(crate::fs_write(path, s("content"))?))
+            Ok(Value::String(crate::fs_write_core(path, s("content"))?))
         }
         "fs_edit" => {
             let path = confine(ctx, &s("path"))?;
             let diff = preview_diff(&s("old"), &s("new"));
             require_approval_diff(ctx, "Edit a file?", &path, Some(diff)).await?;
-            crate::fs_edit(path, s("old"), s("new"))
+            crate::fs_edit_core(path, s("old"), s("new"))
         }
         "fs_move" => {
             let from = confine(ctx, &s("from"))?;
             let to = confine(ctx, &s("to"))?;
             require_approval(ctx, "Move a file?", &format!("{from}\n→ {to}")).await?;
-            Ok(Value::String(crate::fs_move(from, to)?))
+            Ok(Value::String(crate::fs_move_core(from, to)?))
         }
         "fs_delete" => {
             let path = confine(ctx, &s("path"))?;
             require_approval(ctx, "Delete this path?", &path).await?;
-            Ok(Value::String(crate::fs_delete(path)?))
+            Ok(Value::String(crate::fs_delete_core(path)?))
         }
         "run_command" => {
             require_approval(ctx, "Run this command?", &s("command")).await?;

@@ -164,20 +164,11 @@ export default function RemoteAccess({ settings, onChange }: Props) {
         Keep the Mac awake while serving (needed for access when you're away)
       </label>
 
-      <label className="remote-inline">
-        <input
-          type="checkbox"
-          checked={settings.autoApproveTools}
-          onChange={(e) => onChange({ autoApproveTools: e.target.checked })}
-        />
-        <span>
-          Auto-approve agent actions (no prompt)
-          <span className="remote-danger">
-            {" "}— the agent can run commands and change files on this Mac
-            <b> without asking</b>. Only enable on a trusted device.
-          </span>
-        </span>
-      </label>
+      <p className="hint">
+        Approval behaviour and the folder the agent may touch are configured under
+        <b> Agent permissions</b> above — including away mode, which lets it act without
+        stopping to ask while you're driving the Mac from your phone.
+      </p>
 
       {running && urls && (
         <>

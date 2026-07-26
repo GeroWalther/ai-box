@@ -1,4 +1,4 @@
-# Novel Studio — Production-Readiness Plan
+# AI Studio — Production-Readiness Plan
 
 Vision: **an OpenHands/Claude-Code-style agent for novelists** — writes and edits
 prose, acts as an agent on your Mac, works with **local (Ollama) and cloud
@@ -9,7 +9,7 @@ Status legend: ✅ done · 🔨 in progress · ⬜ todo
 
 ## North star — why this beats "LM Studio + a writing tool"
 Running uncensored local models is commodity (LM Studio, Ollama). The reason to
-choose Novel Studio is the **combination no runtime offers**, carried by three
+choose AI Studio is the **combination no runtime offers**, carried by three
 pillars:
 1. **Continuity-aware Story Bible** — keeps characters/world/canon consistent across
    a whole novel, not just the last few pages. *(v1 shipped — see Phase 0.)*

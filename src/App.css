@@ -2699,3 +2699,43 @@ input[type="range"]:focus {
 }
 :root[data-theme="dark"] .remote-danger { color: #fb923c; }
 :root[data-theme="light"] .remote-danger { color: #c2410c; }
+
+/* ---- Diagnostics (Settings) --------------------------------------------- */
+.diag-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.diag-log {
+  max-height: 220px;
+  overflow: auto;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.diag-row {
+  display: grid;
+  grid-template-columns: 68px 110px 1fr;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border);
+  word-break: break-word;
+}
+.diag-row:last-child { border-bottom: none; }
+.diag-time { color: var(--muted); }
+.diag-scope { color: var(--accent); }
+.diag-error .diag-msg { color: var(--danger); }
+.diag-warn .diag-msg { color: #b8860b; }
+:root[data-theme="dark"] .diag-warn .diag-msg { color: #e0b341; }
+.diag-actions { display: flex; gap: 8px; margin-top: 8px; }

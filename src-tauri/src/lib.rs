@@ -1,4 +1,4 @@
-// Novel Studio — Rust backend.
+// AI Studio — Rust backend.
 // All network calls live here so the webview never sees CORS issues and the
 // API key is passed per-request rather than embedded in the frontend bundle.
 
@@ -8,8 +8,21 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
 mod comfy;
+mod guard;
 mod pty;
 mod server;
+
+/// The guard policy for a desktop tool call, derived from the settings the
+/// frontend pushes on every change. Falls back to "home directory, protections
+/// on" if nothing has been pushed yet, so the agent is never unguarded.
+fn agent_policy(settings: &tauri::State<'_, server::RemoteSettings>) -> guard::Policy {
+    let v = settings.value();
+    if v.is_null() {
+        guard::Policy::default_home()
+    } else {
+        guard::Policy::from_settings(&v)
+    }
+}
 
 /// A sink for streamed events, abstracting over the Tauri IPC Channel (desktop
 /// webview) and a WebSocket connection (remote/phone). Streaming command cores
@@ -466,7 +479,7 @@ async fn generate_image_comfy(params: ComfyParams) -> Result<String, String> {
         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": params.prompt, "clip": ["4", 1]}},
         "7": {"class_type": "CLIPTextEncode", "inputs": {"text": params.negative_prompt, "clip": ["4", 1]}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
-        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "NovelStudio", "images": ["8", 0]}}
+        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "AIStudio", "images": ["8", 0]}}
     });
 
     run_comfy_workflow(&client, &root, workflow).await
@@ -478,7 +491,7 @@ async fn run_comfy_workflow(
     root: &str,
     workflow: serde_json::Value,
 ) -> Result<String, String> {
-    let body = serde_json::json!({ "prompt": workflow, "client_id": "novel-studio" });
+    let body = serde_json::json!({ "prompt": workflow, "client_id": "ai-studio" });
     let resp = client
         .post(format!("{root}/prompt"))
         .json(&body)
@@ -580,7 +593,7 @@ async fn generate_img2img_comfy(params: Img2ImgParams) -> Result<String, String>
         .decode(params.image_base64.trim())
         .map_err(|e| format!("Bad image data: {e}"))?;
     let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name("novelstudio_input.png")
+        .file_name("aistudio_input.png")
         .mime_str("image/png")
         .map_err(|e| e.to_string())?;
     let form = reqwest::multipart::Form::new()
@@ -620,7 +633,7 @@ async fn generate_img2img_comfy(params: Img2ImgParams) -> Result<String, String>
         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": params.prompt, "clip": ["4", 1]}},
         "7": {"class_type": "CLIPTextEncode", "inputs": {"text": params.negative_prompt, "clip": ["4", 1]}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
-        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "NovelStudio", "images": ["8", 0]}},
+        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "AIStudio", "images": ["8", 0]}},
         "10": {"class_type": "VAEEncode", "inputs": {"pixels": ["11", 0], "vae": ["4", 2]}},
         "11": {"class_type": "LoadImage", "inputs": {"image": image_ref}}
     });
@@ -916,22 +929,41 @@ pub(crate) fn expand_path(p: &str) -> String {
     p.to_string()
 }
 
-/// Read a text file (auto — no approval).
-#[tauri::command]
-fn fs_read(path: String) -> Result<String, String> {
-    let path = expand_path(&path);
+// The `*_core` functions do the actual work and assume their path has ALREADY
+// been through `guard::confine`. The `#[tauri::command]` wrappers are what the
+// desktop webview calls, and they do that confinement; the companion server
+// confines with the same function before calling the core directly.
+
+pub(crate) fn fs_read_core(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))
 }
 
-/// Write a text file, creating parent dirs (auto — no approval).
+/// Read a text file. Confined to the agent workspace; protected paths refused.
 #[tauri::command]
-fn fs_write(path: String, content: String) -> Result<String, String> {
-    let path = expand_path(&path);
+fn fs_read(
+    path: String,
+    settings: tauri::State<'_, server::RemoteSettings>,
+) -> Result<String, String> {
+    fs_read_core(guard::confine(&agent_policy(&settings), &path)?)
+}
+
+pub(crate) fn fs_write_core(path: String, content: String) -> Result<String, String> {
     if let Some(parent) = std::path::Path::new(&path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     std::fs::write(&path, content).map_err(|e| format!("write {path}: {e}"))?;
     Ok(format!("Wrote {path}"))
+}
+
+/// Write a text file, creating parent dirs. Confined; the FRONTEND additionally
+/// shows a diff and asks for approval before calling this.
+#[tauri::command]
+fn fs_write(
+    path: String,
+    content: String,
+    settings: tauri::State<'_, server::RemoteSettings>,
+) -> Result<String, String> {
+    fs_write_core(guard::confine(&agent_policy(&settings), &path)?, content)
 }
 
 /// Save a base64-encoded PNG to the desktop machine's Downloads folder, returning
@@ -964,10 +996,7 @@ fn save_png(base64: String, name: Option<String>) -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
-/// List a directory's entries (auto — no approval).
-#[tauri::command]
-fn fs_list(path: String) -> Result<Vec<String>, String> {
-    let path = expand_path(&path);
+pub(crate) fn fs_list_core(path: String) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(&path).map_err(|e| format!("list {path}: {e}"))? {
         if let Ok(entry) = entry {
@@ -981,6 +1010,15 @@ fn fs_list(path: String) -> Result<Vec<String>, String> {
     }
     out.sort();
     Ok(out)
+}
+
+/// List a directory's entries. Confined to the agent workspace.
+#[tauri::command]
+fn fs_list(
+    path: String,
+    settings: tauri::State<'_, server::RemoteSettings>,
+) -> Result<Vec<String>, String> {
+    fs_list_core(guard::confine(&agent_policy(&settings), &path)?)
 }
 
 /// Run a shell command. The FRONTEND gates this behind user approval; over the
@@ -1154,9 +1192,11 @@ fn pty_kill(id: String, reg: tauri::State<'_, pty::PtyRegistry>) {
 
 /// Recursively search a directory by filename and/or file content. Bounded to
 /// keep results and time in check; skips heavy/hidden dirs. Auto (read-only).
-#[tauri::command]
-fn fs_search(root: String, query: String, kind: Option<String>) -> Result<Vec<String>, String> {
-    let root = expand_path(&root);
+pub(crate) fn fs_search_core(
+    root: String,
+    query: String,
+    kind: Option<String>,
+) -> Result<Vec<String>, String> {
     let kind = kind.unwrap_or_else(|| "both".to_string());
     let want_name = kind == "name" || kind == "both";
     let want_content = kind == "content" || kind == "both";
@@ -1212,11 +1252,24 @@ fn fs_search(root: String, query: String, kind: Option<String>) -> Result<Vec<St
     Ok(out)
 }
 
-/// Replace the first exact occurrence of `old` with `new` in a file, returning
-/// a compact diff. Requires `old` to be unique. Auto (a diff is surfaced in UI).
+/// Search file names and/or contents under `root`. Confined to the workspace.
 #[tauri::command]
-fn fs_edit(path: String, old: String, new: String) -> Result<serde_json::Value, String> {
-    let path = expand_path(&path);
+fn fs_search(
+    root: String,
+    query: String,
+    kind: Option<String>,
+    settings: tauri::State<'_, server::RemoteSettings>,
+) -> Result<Vec<String>, String> {
+    fs_search_core(guard::confine(&agent_policy(&settings), &root)?, query, kind)
+}
+
+/// Replace the first exact occurrence of `old` with `new` in a file, returning
+/// a compact diff. Requires `old` to be unique.
+pub(crate) fn fs_edit_core(
+    path: String,
+    old: String,
+    new: String,
+) -> Result<serde_json::Value, String> {
     let content = std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?;
     let count = content.matches(&old).count();
     if count == 0 {
@@ -1238,11 +1291,18 @@ fn fs_edit(path: String, old: String, new: String) -> Result<serde_json::Value, 
     Ok(serde_json::json!({ "message": format!("Edited {path}"), "diff": diff }))
 }
 
-/// Move/rename a path. FRONTEND gates this behind user approval.
+/// Targeted file edit. Confined; the frontend shows the diff and asks first.
 #[tauri::command]
-fn fs_move(from: String, to: String) -> Result<String, String> {
-    let from = expand_path(&from);
-    let to = expand_path(&to);
+fn fs_edit(
+    path: String,
+    old: String,
+    new: String,
+    settings: tauri::State<'_, server::RemoteSettings>,
+) -> Result<serde_json::Value, String> {
+    fs_edit_core(guard::confine(&agent_policy(&settings), &path)?, old, new)
+}
+
+pub(crate) fn fs_move_core(from: String, to: String) -> Result<String, String> {
     if let Some(p) = std::path::Path::new(&to).parent() {
         let _ = std::fs::create_dir_all(p);
     }
@@ -1250,10 +1310,21 @@ fn fs_move(from: String, to: String) -> Result<String, String> {
     Ok(format!("Moved {from} → {to}"))
 }
 
-/// Delete a file or directory (recursive). FRONTEND gates this behind approval.
+/// Move/rename a path. Both ends confined; the frontend asks for approval.
 #[tauri::command]
-fn fs_delete(path: String) -> Result<String, String> {
-    let path = expand_path(&path);
+fn fs_move(
+    from: String,
+    to: String,
+    settings: tauri::State<'_, server::RemoteSettings>,
+) -> Result<String, String> {
+    let policy = agent_policy(&settings);
+    fs_move_core(
+        guard::confine(&policy, &from)?,
+        guard::confine(&policy, &to)?,
+    )
+}
+
+pub(crate) fn fs_delete_core(path: String) -> Result<String, String> {
     let meta = std::fs::metadata(&path).map_err(|e| format!("stat {path}: {e}"))?;
     if meta.is_dir() {
         std::fs::remove_dir_all(&path).map_err(|e| format!("delete {path}: {e}"))?;
@@ -1261,6 +1332,15 @@ fn fs_delete(path: String) -> Result<String, String> {
         std::fs::remove_file(&path).map_err(|e| format!("delete {path}: {e}"))?;
     }
     Ok(format!("Deleted {path}"))
+}
+
+/// Delete a file or directory (recursive). Confined; approval required.
+#[tauri::command]
+fn fs_delete(
+    path: String,
+    settings: tauri::State<'_, server::RemoteSettings>,
+) -> Result<String, String> {
+    fs_delete_core(guard::confine(&agent_policy(&settings), &path)?)
 }
 
 /// True for addresses that must never be reached by a server-side fetch: loopback,
@@ -1550,7 +1630,15 @@ fn cancel_generation(registry: tauri::State<'_, server::CancelRegistry>, request
 // These are desktop-only Tauri commands (not exposed over the companion server),
 // so a paired phone can never read the Mac's keychain.
 
-const KEYCHAIN_SERVICE: &str = "com.novelstudio.app";
+// Only referenced by the release-build keychain path; dev builds use a 0600 file.
+#[cfg_attr(debug_assertions, allow(dead_code))]
+const KEYCHAIN_SERVICE: &str = "com.gwintech.aistudio";
+
+/// The pre-rename bundle identifier. Keys stored by an older install live under
+/// this service name, so `secret_get` falls back to it (and migrates the value
+/// forward) rather than making the user re-enter an API key after updating.
+#[cfg(not(debug_assertions))]
+const LEGACY_KEYCHAIN_SERVICE: &str = "com.novelstudio.app";
 
 // In DEBUG (dev) builds the binary is unsigned and its identity changes on every
 // rebuild, so macOS re-prompts for the login-keychain password on every key read.
@@ -1623,7 +1711,21 @@ fn secret_get(name: String) -> Result<Option<String>, String> {
         let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &name).map_err(|e| e.to_string())?;
         match entry.get_password() {
             Ok(v) => Ok(Some(v)),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            // Nothing under the current service — look for a key left by the
+            // pre-rename install and migrate it forward, so updating the app
+            // never silently loses the user's API key.
+            Err(keyring::Error::NoEntry) => {
+                let legacy = keyring::Entry::new(LEGACY_KEYCHAIN_SERVICE, &name)
+                    .ok()
+                    .and_then(|e| e.get_password().ok());
+                match legacy {
+                    Some(v) => {
+                        let _ = entry.set_password(&v);
+                        Ok(Some(v))
+                    }
+                    None => Ok(None),
+                }
+            }
             Err(e) => Err(e.to_string()),
         }
     }

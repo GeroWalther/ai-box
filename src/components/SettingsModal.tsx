@@ -1,4 +1,6 @@
 import type { Settings } from "../lib/settings";
+import AgentSettings from "./AgentSettings";
+import Diagnostics from "./Diagnostics";
 import RemoteAccess from "./RemoteAccess";
 
 interface Props {
@@ -61,7 +63,11 @@ export default function SettingsModal({ settings, onChange, onClose }: Props) {
             to any model picker. No URLs to configure.
           </p>
 
+          <AgentSettings settings={settings} onChange={onChange} />
+
           <RemoteAccess settings={settings} onChange={onChange} />
+
+          <Diagnostics />
         </div>
 
         <div className="modal-foot">

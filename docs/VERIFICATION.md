@@ -24,7 +24,7 @@ npm run tauri dev        # launches the desktop app
    # The key should NO LONGER be in the localStorage-backed settings on disk:
    grep -o 'openrouterKey' ~/Library/WebKit/*/WebsiteData/LocalStorage/* 2>/dev/null; echo "---"
    # And it SHOULD be in the keychain:
-   security find-generic-password -s com.novelstudio.app -a openrouterKey -w 2>/dev/null | head -c 6; echo "…"
+   security find-generic-password -s com.gwintech.aistudio -a openrouterKey -w 2>/dev/null | head -c 6; echo "…"
    ```
 3. Expect: the real `sk-…` value is in the keychain, not in localStorage. Generation
    still works (key hydrated from keychain on startup).

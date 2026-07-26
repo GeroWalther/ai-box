@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isTauri } from "../lib/transport";
+import DiffPreview from "./DiffPreview";
 
 interface Req {
   id: string;
@@ -66,22 +67,7 @@ export default function RemoteApprovalListener({ autoApprove = false }: { autoAp
         <div className="modal-body">
           <p className="hint">A remote device (your phone) wants to take this action on your Mac:</p>
           <pre className="cmd-preview">{req.body}</pre>
-          {req.diff && (
-            <pre className="diff-preview" aria-label="change preview">
-              {req.diff.split("\n").map((line, i) => {
-                const cls = line.startsWith("+")
-                  ? "diff-add"
-                  : line.startsWith("-")
-                    ? "diff-del"
-                    : "diff-ctx";
-                return (
-                  <div key={i} className={cls}>
-                    {line || " "}
-                  </div>
-                );
-              })}
-            </pre>
-          )}
+          {req.diff && <DiffPreview diff={req.diff} />}
         </div>
         <div className="modal-foot approve-foot">
           <div className="approve-foot-right">

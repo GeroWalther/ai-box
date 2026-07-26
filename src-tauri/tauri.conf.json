@@ -3,7 +3,7 @@
   "productName": "AI Studio",
   "mainBinaryName": "AI Studio",
   "version": "0.1.0",
-  "identifier": "com.novelstudio.app",
+  "identifier": "com.gwintech.aistudio",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -43,7 +43,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/GeroWalther/novel-studio/releases/latest/download/latest.json"
+        "https://github.com/GeroWalther/ai-studio/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNERUI2QzlEQ0ZCM0E1OApSV1JZT3Z2Y3liYmVBMnFYNHVQK2hFUW1LTVVNOEhTZ0c0MkNPM2hBSUZQazlkU0RkQ2gxaGpRQwo="
     }
