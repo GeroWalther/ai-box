@@ -102,7 +102,7 @@ export default function StoryBible({ bible, onChange, open, onToggle, storyText,
 
   if (!open) {
     return (
-      <button className="bible-tab" onClick={onToggle} title="Open Story Bible">
+      <button className="bible-tab" onClick={onToggle} title="Open Story Bible" aria-label="Open Story Bible">
         📔
       </button>
     );
@@ -112,7 +112,7 @@ export default function StoryBible({ bible, onChange, open, onToggle, storyText,
     <aside className="bible-panel">
       <div className="bible-head">
         <span>Story Bible</span>
-        <button className="btn ghost" onClick={onToggle} title="Collapse">
+        <button className="btn ghost" onClick={onToggle} title="Collapse" aria-label="Collapse Story Bible">
           ›
         </button>
       </div>

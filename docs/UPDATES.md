@@ -51,7 +51,13 @@ git tag v0.2.0 && git push origin v0.2.0
 at `releases/latest`, which only counts published releases). New users download the
 `.dmg`; existing users get the update automatically on next launch.
 
-## Heads-up: product name
-The UI/landing page say **"AI Studio"**, which collides with Google's "AI Studio", and
-the repo is `ai-studio`. Pick a final, ownable name before a public launch (it also
-sets the bundle identifier, currently `com.gwintech.aistudio`). See `docs/SIGNING.md`.
+## Naming
+Everything is now consistently **AI Studio**: the product, the repo, the crate, and
+the bundle identifier `com.gwintech.aistudio`.
+
+One thing to keep in mind before charging money for it: "AI Studio" is also the name
+of a Google product, so it is a weak trademark and hard to own or defend. That does
+not matter for a free portfolio release, and it is fixable later — but a rename after
+launch costs more than one now, because the bundle identifier is the app's permanent
+identity and changing it makes macOS treat the app as brand new. If a paid tier ever
+becomes the plan, revisit the name at the same time.

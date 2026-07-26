@@ -53,7 +53,7 @@ export default function ModelManager({ settings, installed, onClose, onChanged }
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h2>Local models</h2>
-          <button className="btn ghost" onClick={onClose}>
+          <button className="btn ghost" onClick={onClose} aria-label="Close local models">
             ×
           </button>
         </div>

@@ -15,7 +15,7 @@ export default function SettingsModal({ settings, onChange, onClose }: Props) {
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h2>Settings</h2>
-          <button className="btn ghost" onClick={onClose}>
+          <button className="btn ghost" onClick={onClose} aria-label="Close settings">
             ×
           </button>
         </div>

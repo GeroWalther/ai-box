@@ -115,7 +115,7 @@ export default function ImageModels({ onClose, onChange, onChanged }: Props) {
         <div className="modal-head">
           <h2>Local image models</h2>
           {!busy && (
-            <button className="btn ghost" onClick={onClose}>
+            <button className="btn ghost" onClick={onClose} aria-label="Close model library">
               ×
             </button>
           )}

@@ -50,7 +50,10 @@ Without the secrets the workflow still builds, but the artifact is unsigned.
 
 ## Decisions still open (see docs/PRODUCTION.md, Phase 1)
 - **Bundle identifier** is now `com.gwintech.aistudio` (was a personal-machine name).
-  Change it to a domain you control before first public release — it's the app's
-  permanent identity.
-- **Product name / trademark**: the UI says "AI Studio" (collides with Google AI
-  Studio); the repo/README say "AI Studio". Pick one before shipping.
+  It is now `com.gwintech.aistudio`, under a domain you control. It is the app's
+  permanent identity — changing it again would make macOS treat the app as new
+  (and orphan the existing keychain entry, though `secret_get` migrates the old
+  `com.novelstudio.app` one forward).
+- **Product name / trademark**: everything now says "AI Studio" consistently. Note
+  it collides with Google's "AI Studio", so it is not really ownable as a mark —
+  see the naming note in `docs/UPDATES.md` before any paid launch.

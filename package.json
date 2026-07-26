@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "release": "./scripts/release.sh",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

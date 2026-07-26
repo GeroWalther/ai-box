@@ -13,6 +13,7 @@ import { remoteStoreMerge } from "../lib/remoteStore";
 import { SidebarSlot } from "./SidebarList";
 import SidebarList from "./SidebarList";
 import { registerSyncSource } from "../lib/syncBus";
+import { logError } from "../lib/log";
 
 // Base64 <-> bytes (keystrokes go up as base64; output comes down as base64).
 function toB64(s: string): string {
@@ -136,8 +137,8 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
       const items: Tab[] = Array.isArray(parsed.items) ? parsed.items : [];
       setTabs(items.length ? items : [{ id: uid(), title: "Terminal 1", updatedAt: Date.now() }]);
       setDeleted(parsed.deleted || {});
-    } catch {
-      /* offline / no server — keep working locally */
+    } catch (e) {
+      logError("terminals.sync", e);
     }
   }
   useEffect(() => {

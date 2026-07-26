@@ -18,6 +18,7 @@ import { resolveTextProvider, type Settings } from "../lib/settings";
 import { isTauri, cancelStream } from "../lib/transport";
 import { remoteStoreMerge } from "../lib/remoteStore";
 import { registerSyncSource } from "../lib/syncBus";
+import { logError } from "../lib/log";
 import { parseSyncList } from "../lib/syncList";
 import { useOpenrouterModels } from "../lib/openrouterModels";
 import { useToast } from "../lib/toast";
@@ -221,8 +222,9 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
         JSON.stringify({ items: sessionsRef.current, deleted: deletedRef.current })
       );
       adoptSessions(merged);
-    } catch {
-      /* offline / no server — keep working locally */
+    } catch (e) {
+      // Offline or no server — local work continues and the next sync reconciles.
+      logError("chats.sync", e);
     }
   }
 

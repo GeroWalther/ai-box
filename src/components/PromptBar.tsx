@@ -57,11 +57,11 @@ export default function PromptBar({
           }}
         />
         {generating ? (
-          <button className="btn stop promptbar-send" onClick={onStop}>
+          <button className="btn stop promptbar-send" onClick={onStop} aria-label="Stop generating" title="Stop (Esc)">
             ■
           </button>
         ) : (
-          <button className="btn primary promptbar-send" onClick={onSubmit}>
+          <button className="btn primary promptbar-send" onClick={onSubmit} aria-label="Generate" title="Generate (⌘↵)">
             →
           </button>
         )}
