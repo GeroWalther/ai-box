@@ -1,0 +1,456 @@
+/* Approvals, remote access, collapsible side panels.
+ *
+ * Part of the former single App.css. Files are imported in their original
+ * order by styles/index.css — the cascade depends on it, so keep them ordered. */
+
+.tool-line.has-detail { padding: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.tool-line.has-detail summary {
+  cursor: pointer;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  list-style: none;
+  user-select: none;
+}
+.tool-line.has-detail summary::-webkit-details-marker { display: none; }
+.tool-line.has-detail[open] summary { border-bottom: 1px solid var(--border); }
+.tool-icon { color: #1f8b4c; font-weight: 700; }
+.tool-line.err .tool-icon, .tool-line.has-detail.err .tool-icon { color: #c0392b; }
+.tool-detail {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px 12px;
+  background: #0d1117;
+  color: #c9d1d9;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Approval modal footer */
+.approve-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.approve-foot-right { display: flex; gap: 8px; }
+
+/* Attach button */
+.attach-btn { width: 38px; height: 40px; padding: 0; font-size: 16px; flex: none; }
+
+/* Image preview action row */
+.preview-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.btn.danger { color: #c0392b; border-color: rgba(192, 57, 43, 0.4); }
+.btn.danger:hover { background: rgba(192, 57, 43, 0.1); border-color: #c0392b; }
+
+/* ---- Phone / remote access panel ---- */
+.remote-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2ecc71;
+  margin-left: 6px;
+  box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.18);
+  vertical-align: middle;
+}
+.remote-away {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  margin: 10px 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  cursor: pointer;
+}
+.remote-away input { width: 18px; height: 18px; flex: none; }
+.remote-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  margin: 4px 0 10px;
+}
+.remote-inline input { width: 15px; height: 15px; flex: none; }
+.remote-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 8px 0;
+}
+.remote-qr {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex: 1 1 260px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.remote-qr-code {
+  background: #fff;
+  padding: 8px;
+  border-radius: 8px;
+  flex: none;
+  line-height: 0;
+}
+.remote-qr-meta { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.remote-qr-label { font-weight: 600; font-size: 13px; }
+.remote-qr-url {
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+.remote-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+  flex-wrap: wrap;
+}
+.remote-security { margin-top: 10px; }
+
+/* ---- Shared collapsible sidebar (chats / documents / history) ---- */
+.sidepanel {
+  width: 240px;
+  flex: none;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.sidepanel.collapsed {
+  width: 42px;
+  align-items: center;
+}
+.sidepanel-expand {
+  margin-top: 12px;
+  width: 30px;
+  height: 34px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 15px;
+}
+.sidepanel-expand:hover { color: var(--text); border-color: var(--accent); }
+.sidepanel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 10px 8px 14px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+.sidepanel-toggle {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+.sidepanel-toggle:hover { color: var(--text); background: var(--panel-2); }
+.sidepanel-new { margin: 0 12px 8px; text-align: center; }
+.sidepanel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ======================================================================
+   Phone / small-screen layout. The desktop UI is a set of fixed-width
+   columns; on a narrow screen we turn the nav rail into a bottom tab bar
+   and make the secondary side panels (chats/docs/history/story-bible)
+   float as overlays so the main content gets the full width.
+   ====================================================================== */
+@media (max-width: 768px) {
+  /* App becomes a vertical stack: content on top, nav bar at the bottom. */
+  .app {
+    flex-direction: column;
+  }
+  /* Hard stop against any accidental horizontal scroll on small screens. */
+  html,
+  body,
+  #root {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+  .main {
+    order: 1;
+    position: relative; /* anchor the overlay side panels */
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  /* Replace the desktop rail with a top bar + slide-out drawer (ChatGPT-style). */
+  .navrail {
+    display: none;
+  }
+  .mobiletopbar {
+    display: flex;
+    order: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: calc(6px + env(safe-area-inset-top)) 8px 6px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-2);
+  }
+
+  /* The unified sidebar becomes an off-canvas drawer that slides in over the
+     content and out of the column flow. The hamburger toggles .open. */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(84vw, 320px);
+    z-index: 70;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    box-shadow: 2px 0 22px rgba(0, 0, 0, 0.28);
+  }
+  .sidebar.open { transform: translateX(0); }
+  /* Ignore the desktop "collapsed" state on mobile — the drawer is always full. */
+  .sidebar.collapsed { width: min(84vw, 320px); }
+  .sidebar.collapsed .sidebar-brand,
+  .sidebar.collapsed .navrail-count { display: inline; }
+  .sidebar.collapsed .sidebar-sec-label { display: inline; }
+  .sidebar.collapsed .sidebar-list { display: flex; }
+  .sidebar.collapsed .sidebar-head { justify-content: space-between; padding: 14px 12px 10px; }
+  .sidebar.collapsed .sidebar-sec { justify-content: flex-start; padding: 12px 12px; }
+  /* No inline collapse button on mobile; the hamburger + backdrop drive it. */
+  .sidebar-collapse { display: none; }
+  /* Bigger tap targets in the drawer. */
+  .sidebar-sec { padding: 12px; font-size: 15px; }
+
+  /* Secondary side panels float over the content instead of taking a column. */
+  .chat-layout,
+  .write-layout {
+    position: relative;
+    min-width: 0;
+  }
+  .sidepanel:not(.collapsed) {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(82vw, 300px);
+    z-index: 40;
+    box-shadow: 2px 0 22px rgba(0, 0, 0, 0.28);
+  }
+  /* Collapsed rail stays as a slim strip with the » open button. */
+
+  /* Story Bible panel floats in from the right. Its persistent side "tab" (the
+     book) is hidden on mobile — it only created a dead gap; open it via the 📖
+     button in the write toolbar instead. */
+  .bible-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(86vw, 320px);
+    z-index: 40;
+    box-shadow: -2px 0 22px rgba(0, 0, 0, 0.28);
+  }
+  .bible-tab { display: none; }
+
+  /* Roomier tap targets + less padding for the writing canvas. */
+  .editor-scroll,
+  .write-view .editor-scroll {
+    padding: 18px 16px 90px;
+  }
+  .prose .ProseMirror {
+    font-size: 17.5px;
+    line-height: 1.7;
+  }
+  /* Collapse the writing controls behind a single toggle so the canvas is the
+     focus. One slim row: [⚙ Model & options]  …  [📖]. Tapping the toggle drops
+     the full controls as a stacked panel. */
+  .write-topbar {
+    padding: 8px 12px;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .write-tools-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .bible-open-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    flex: none;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    font-size: 18px;
+  }
+  /* Hidden until the toggle expands it; then a full-width stacked panel. */
+  .write-tools {
+    display: none;
+  }
+  .write-tools.open {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    flex: 1 1 100%;
+    order: 3;
+    width: 100%;
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .write-tools.open .topbar-spacer { display: none; }
+  .write-tools.open .lang-select,
+  .write-tools.open .preset-select { max-width: none; }
+  /* Let the whole flex chain shrink below its content so nothing overflows. */
+  .chat-view,
+  .write-view,
+  .chat-bar,
+  .chat-scroll,
+  .promptbar-wrap,
+  .promptbar,
+  .promptbar-input,
+  .msg,
+  .msg-body {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .chat-scroll {
+    overflow-x: hidden;
+    padding: 16px 12px;
+  }
+  /* Bigger, taller prompt box with a smaller font on mobile — easier to type
+     several lines without it feeling cramped. */
+  .promptbar {
+    align-items: flex-end;
+    padding: 10px 12px;
+    border-radius: 14px;
+  }
+  /* iOS Safari force-zooms any focused field whose font is < 16px, so every
+     text control stays at 16px on mobile — the min that keeps typing zoom-free. */
+  .promptbar-input,
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+  .promptbar-input {
+    line-height: 1.5;
+    min-height: 84px;
+    max-height: 42vh;
+    padding: 6px 0;
+  }
+  /* Long words / code must wrap or scroll inside the bubble, not widen it. */
+  .msg-body {
+    overflow-wrap: anywhere;
+  }
+  .msg-body pre,
+  .tool-detail {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  /* Model picker: stack the select above its buttons instead of one wide row
+     (the desktop select is 260–420px wide and would overflow otherwise). */
+  .chat-bar {
+    flex-wrap: wrap;
+    padding: 8px 12px;
+  }
+  .model-select,
+  .write-topbar .model-select {
+    flex: 1 1 100%;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+  .chat-model,
+  .write-topbar .chat-model {
+    flex: 1 1 100%;
+    min-width: 0;
+    max-width: 100%;
+    width: auto;
+  }
+  .lang-select,
+  .preset-select {
+    max-width: 46vw;
+  }
+
+  /* Images: drop the fixed 3-column grid and stack as a single scrolling column
+     so the generated image shows full-size (the grid's 1fr row squeezed it). */
+  .image-tab {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .image-controls-col,
+  .image-preview-col {
+    flex: none;
+  }
+  /* The generation history now lives in the sidebar drawer (portaled), so it
+     stays a normal vertical list there — no horizontal-strip treatment. */
+  .image-history-empty {
+    white-space: normal;
+  }
+  .image-controls-col {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 14px;
+    overflow: visible;
+  }
+  .image-preview-col {
+    padding: 16px 14px 28px;
+    min-height: 46vh;
+  }
+  .image-preview-col img {
+    max-width: 100%;
+    max-height: 72vh;
+  }
+
+  /* Modals fill more of the screen and stay scrollable. */
+  .modal {
+    width: 94vw;
+    max-width: 94vw;
+    max-height: 88vh;
+  }
+  /* .modal.onboarding's own max-width:560px (higher specificity) otherwise wins
+     here and, with the non-shrinking card row below, overflows the viewport. */
+  .modal.onboarding,
+  .modal.wide {
+    max-width: 94vw;
+  }
+  /* Stack the two provider cards instead of a side-by-side row that can't shrink
+     below its content width on a phone. */
+  .onboard-choices {
+    flex-direction: column;
+  }
+  .remote-qr {
+    flex: 1 1 100%;
+  }
+}
+
+/* ---- Local image setup wizard (ComfySetup) ---- */

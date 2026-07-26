@@ -1,5 +1,6 @@
-// Curated suggestions and the prompt assembly for novel continuation.
+// Curated suggestions and the prompt assembly for AI writing.
 import type { Settings } from "./settings";
+import { personaForMode } from "./writingActions";
 
 // Editable suggestions — OpenRouter model IDs churn, so these populate a
 // datalist but the field stays free-text. Good picks for creative / permissive
@@ -586,13 +587,24 @@ export function buildRewriteMessages(
     ? `Revise it as follows: ${how.trim()}.`
     : "Improve it — sharpen the prose, imagery, and flow — while preserving its meaning, length, and events.";
 
+  // Outside fiction, the literary-editor persona and the Story Bible are noise
+  // at best and actively wrong at worst — an email does not have canon, and
+  // "heighten the imagery" is not what someone asking for a professional tone
+  // wants. Fiction keeps the full novelist context; other modes get an editor
+  // suited to the form and no story scaffolding.
+  const mode = s.writingMode || "fiction";
+  const fiction = mode === "fiction";
+
   const system = [
-    "You are a masterful literary editor revising one passage of a longer story.",
-    presetGuidance(s),
-    buildBibleContext(bible, `${before.slice(-4000)}\n${passage}`),
+    personaForMode(mode),
+    fiction ? presetGuidance(s) : "",
+    fiction ? buildBibleContext(bible, `${before.slice(-4000)}\n${passage}`) : "",
     direction,
     langLine,
-    "Match the surrounding voice, tense, and point of view. Output ONLY the rewritten passage — no quotes, labels, or commentary.",
+    fiction
+      ? "Match the surrounding voice, tense, and point of view."
+      : "Preserve the author's voice and every fact, name, number and commitment in the text.",
+    "Output ONLY the revised passage — no quotes, labels, or commentary.",
     s.systemPrompt.trim(),
   ]
     .filter(Boolean)

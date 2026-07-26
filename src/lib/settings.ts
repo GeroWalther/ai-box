@@ -2,6 +2,7 @@
 import { invokeCmd, isTauri } from "./transport";
 import { readWithLegacy, writeJson } from "./storage";
 import { logError } from "./log";
+import type { WritingMode } from "./writingActions";
 
 export type Provider = "openrouter" | "ollama" | "custom";
 
@@ -37,6 +38,9 @@ export interface Settings {
   systemPrompt: string;
   authorsNote: string;
   language: string; // "auto" | "Japanese" | "English" | ...
+  /** What kind of writing this is. Picks the selection actions AND the editorial
+   *  persona used for rewrites — an email should not be edited by a novelist. */
+  writingMode: WritingMode;
   writingPreset: string; // format preset id (Novel, Short Story, …), or "" for freeform
   writingGenre: string; // genre/tone preset id (Romance, Horror, …), or "" — combines with the format
 
@@ -71,6 +75,14 @@ export interface Settings {
   /** "Away mode" on: auto-start the companion server on launch so the phone can
    *  reach the Mac without toggling it each time. */
   remoteEnabled: boolean;
+
+  // Write tab experience
+  /** Hide every panel but the page while writing (⌘⇧F). */
+  focusMode: boolean;
+  /** Keep the caret vertically centred as you type. */
+  typewriterMode: boolean;
+  /** Daily/session word target shown in the footer; 0 disables it. */
+  wordGoal: number;
 
   // Agentic Chat: start new chats in Agent mode (can run tools) by default.
   agentMode: boolean;
@@ -112,6 +124,7 @@ export const DEFAULT_SETTINGS: Settings = {
   systemPrompt: "",
   authorsNote: "",
   language: "auto",
+  writingMode: "fiction",
   writingPreset: "",
   writingGenre: "",
 
@@ -139,6 +152,10 @@ export const DEFAULT_SETTINGS: Settings = {
   remoteToken: "",
   remoteWakeLock: true,
   remoteEnabled: true,
+
+  focusMode: false,
+  typewriterMode: false,
+  wordGoal: 0,
 
   agentMode: true,
   agentWorkspace: "~",

@@ -17,6 +17,7 @@ import {
 import { resolveTextProvider, type Settings } from "../lib/settings";
 import { isTauri, cancelStream } from "../lib/transport";
 import { remoteStoreMerge } from "../lib/remoteStore";
+import { registerSyncSource } from "../lib/syncBus";
 import { parseSyncList } from "../lib/syncList";
 import { useOpenrouterModels } from "../lib/openrouterModels";
 import { useToast } from "../lib/toast";
@@ -237,15 +238,10 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-sync shared chat history when the user taps Sync (in the nav rail).
-  useEffect(() => {
-    function onSync() {
-      syncSessions();
-    }
-    window.addEventListener("ai-studio-sync", onSync);
-    return () => window.removeEventListener("ai-studio-sync", onSync);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Register as a sync source: every syncAll() (on connect, or when the user taps
+  // Sync) pulls the shared chat history and WAITS for it, so the workspace
+  // pointer is only adopted once the sessions it refers to actually exist.
+  useEffect(() => registerSyncSource("chats", syncSessions), []);
 
   useEffect(() => {
     localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));

@@ -12,6 +12,7 @@ import { cancelStream } from "../lib/transport";
 import { remoteStoreMerge } from "../lib/remoteStore";
 import { SidebarSlot } from "./SidebarList";
 import SidebarList from "./SidebarList";
+import { registerSyncSource } from "../lib/syncBus";
 
 // Base64 <-> bytes (keystrokes go up as base64; output comes down as base64).
 function toB64(s: string): string {
@@ -141,9 +142,7 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
   }
   useEffect(() => {
     syncTabs();
-    const onSync = () => syncTabs();
-    window.addEventListener("ai-studio-sync", onSync);
-    return () => window.removeEventListener("ai-studio-sync", onSync);
+    return registerSyncSource("terminals", syncTabs);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // Mirror local edits to the shared store shortly after they happen.

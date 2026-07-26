@@ -32,6 +32,7 @@ import {
 } from "../lib/imageStore";
 import { useToast } from "../lib/toast";
 import { SidebarSlot } from "./SidebarList";
+import { registerSyncSource } from "../lib/syncBus";
 
 interface Props {
   settings: Settings;
@@ -97,15 +98,12 @@ export default function ImagePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-pull the gallery when the user taps Sync (nav rail).
-  useEffect(() => {
-    function onSync() {
-      loadGallery(!image);
-    }
-    window.addEventListener("ai-studio-sync", onSync);
-    return () => window.removeEventListener("ai-studio-sync", onSync);
+  // Re-pull the gallery on every sync (registered for the lifetime of the tab).
+  useEffect(
+    () => registerSyncSource("images", () => loadGallery(!image)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [image]);
+    [image]
+  );
 
   function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];

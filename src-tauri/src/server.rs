@@ -595,6 +595,30 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             Ok(Value::Null)
         }
         "image_list" => Ok(Value::Array(crate::image_list())),
+        // Document version history — same store, so a draft snapshotted on the
+        // Mac is restorable from the phone and vice versa.
+        "doc_version_put" => {
+            let at = args.get("at").and_then(|v| v.as_i64()).unwrap_or(0);
+            crate::doc_version_put(s("docId"), at, s("record"))?;
+            Ok(Value::Null)
+        }
+        "doc_version_list" => Ok(Value::Array(crate::doc_version_list(s("docId")))),
+        "doc_version_get" => {
+            let at = args.get("at").and_then(|v| v.as_i64()).unwrap_or(0);
+            Ok(crate::doc_version_get(s("docId"), at).map(Value::String).unwrap_or(Value::Null))
+        }
+        "doc_versions_clear" => {
+            crate::doc_versions_clear(s("docId"))?;
+            Ok(Value::Null)
+        }
+        "export_library" => {
+            let files = args
+                .get("files")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            Ok(Value::String(crate::export_library(files)?))
+        }
         "image_get" => Ok(crate::image_get(s("id")).map(Value::String).unwrap_or(Value::Null)),
         "image_delete" => {
             crate::image_delete(s("id"))?;

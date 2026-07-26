@@ -1,0 +1,18 @@
+/* Every stylesheet, in the order the cascade expects.
+ *
+ * App.css was 2,700 lines in one file. Splitting it by feature makes it
+ * navigable, but CSS order is semantic — later rules win ties — so these are
+ * contiguous slices of the original file, imported in the original sequence.
+ * Add new rules to the matching file, not to the end of the last one. */
+
+@import "./tokens.css";
+@import "./layout.css";
+@import "./controls.css";
+@import "./chat.css";
+@import "./write.css";
+@import "./terminal.css";
+@import "./images.css";
+@import "./markdown.css";
+@import "./write-tools.css";
+@import "./panels.css";
+@import "./setup.css";

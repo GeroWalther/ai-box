@@ -1738,18 +1738,88 @@ fn secret_get(name: String) -> Result<Option<String>, String> {
 fn remote_store_path() -> String {
     expand_path("~/.ai-studio/store.json")
 }
+
+/// Append a line to ~/.ai-studio/app.log, capped so it can't grow forever.
+///
+/// Reserved for events worth explaining after the fact — a recovered store, a
+/// refused path — not routine chatter. When a user reports "my documents
+/// vanished", this file is the difference between a guess and an answer.
+fn log_line(message: &str) {
+    let path = expand_path("~/.ai-studio/app.log");
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Rotate at ~256 KB by keeping only the newest half.
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > 256 * 1024 {
+            if let Ok(existing) = std::fs::read_to_string(&path) {
+                let keep = existing.split_at(existing.len() / 2).1;
+                let _ = std::fs::write(&path, keep);
+            }
+        }
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{stamp} {message}");
+    }
+}
 fn remote_store_lock() -> &'static std::sync::Mutex<()> {
     static L: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
     L.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+/// Parse the store file, falling back to the newest usable hourly backup if it
+/// is missing or corrupt.
+///
+/// We were already *taking* backups before every write but never reading them,
+/// so a truncated store (a crash mid-write on an older build, a disk full) read
+/// as "no documents" — and the next save would then happily overwrite the good
+/// backup set with that emptiness. Recovering here closes that loop.
+fn read_store_value() -> Option<serde_json::Value> {
+    let path = remote_store_path();
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+            return Some(v);
+        }
+        log_line(&format!("store at {path} is unreadable — trying backups"));
+    }
+
+    let dir = expand_path("~/.ai-studio/backups");
+    let mut candidates: Vec<(u64, std::path::PathBuf)> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let name = p.file_name()?.to_str()?.to_string();
+            let n = name.strip_prefix("store-")?.strip_suffix(".json")?.parse().ok()?;
+            Some((n, p))
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.0.cmp(&a.0)); // newest bucket first
+    for (_, p) in candidates {
+        if let Ok(content) = std::fs::read_to_string(&p) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                log_line(&format!("recovered store from backup {}", p.display()));
+                return Some(v);
+            }
+        }
+    }
+    None
 }
 
 /// Read one key from the shared store (null if absent).
 #[tauri::command]
 fn remote_store_get(key: String) -> Option<String> {
     let _g = remote_store_lock().lock().ok()?;
-    let content = std::fs::read_to_string(remote_store_path()).ok()?;
-    let map: serde_json::Value = serde_json::from_str(&content).ok()?;
-    map.get(&key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    read_store_value()?
+        .get(&key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Write one key into the shared store (read-modify-write under a lock).
@@ -1760,9 +1830,10 @@ fn remote_store_set(key: String, value: String) -> Result<(), String> {
     if let Some(parent) = std::path::Path::new(&path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let mut map = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+    // Recovering here matters as much as on read: starting from an empty map
+    // because the file was corrupt would merge against nothing and then persist
+    // that emptiness over every good backup.
+    let mut map = read_store_value()
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
     map.insert(key, serde_json::Value::String(value));
@@ -1869,9 +1940,10 @@ fn store_merge_list(key: String, incoming: String) -> Result<String, String> {
     if let Some(parent) = std::path::Path::new(&path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let mut map = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+    // Recovering here matters as much as on read: starting from an empty map
+    // because the file was corrupt would merge against nothing and then persist
+    // that emptiness over every good backup.
+    let mut map = read_store_value()
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
 
@@ -1967,6 +2039,112 @@ fn prune_images(dir: &str, keep: usize) {
     for (_, p) in files.into_iter().skip(keep) {
         let _ = std::fs::remove_file(p);
     }
+}
+
+// ---- Document version history --------------------------------------------
+// A writing tool that can lose a draft is not a writing tool. The shared store
+// already merges and keeps hourly backups, but that protects the *set* of
+// documents, not the history of one manuscript: an accidental select-all-delete,
+// or an AI rewrite the author regrets an hour later, was unrecoverable.
+//
+// Each snapshot is one JSON file under ~/.ai-studio/versions/<doc-id>/<ts>.json,
+// which makes listing cheap (metadata read per file), pruning trivial, and the
+// whole history readable with `cat` if the app itself is broken.
+
+fn versions_dir(doc_id: &str) -> Option<String> {
+    let id = safe_id(doc_id);
+    if id.is_empty() {
+        return None;
+    }
+    Some(expand_path(&format!("~/.ai-studio/versions/{id}")))
+}
+
+/// Snapshots kept per document. At the ~2 minute cadence the frontend uses,
+/// this is roughly the last few days of active writing on one manuscript.
+const VERSION_CAP: usize = 60;
+
+/// Store one snapshot of a document. `record` is the JSON the frontend keeps
+/// (`{id, at, title, html, words}`); `at` doubles as the filename so listings
+/// sort chronologically without opening every file.
+#[tauri::command]
+fn doc_version_put(doc_id: String, at: i64, record: String) -> Result<(), String> {
+    let dir = versions_dir(&doc_id).ok_or("bad document id")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    atomic_write(&format!("{dir}/{at}.json"), &record).map_err(|e| e.to_string())?;
+    prune_numbered(&dir, "", ".json", VERSION_CAP);
+    Ok(())
+}
+
+/// Snapshot metadata for one document, newest first, WITHOUT the `html` body.
+#[tauri::command]
+fn doc_version_list(doc_id: String) -> Vec<serde_json::Value> {
+    let Some(dir) = versions_dir(&doc_id) else {
+        return Vec::new();
+    };
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            if e.path().extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(e.path()) {
+                if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(o) = v.as_object_mut() {
+                        o.remove("html"); // keep the listing light
+                    }
+                    items.push(v);
+                }
+            }
+        }
+    }
+    items.sort_by(|a, b| b["at"].as_i64().unwrap_or(0).cmp(&a["at"].as_i64().unwrap_or(0)));
+    items
+}
+
+/// One full snapshot, including its `html`, for preview or restore.
+#[tauri::command]
+fn doc_version_get(doc_id: String, at: i64) -> Option<String> {
+    let dir = versions_dir(&doc_id)?;
+    std::fs::read_to_string(format!("{dir}/{at}.json")).ok()
+}
+
+/// Drop a document's whole history (called when the document itself is deleted,
+/// so old drafts don't linger on disk after the user thinks they're gone).
+#[tauri::command]
+fn doc_versions_clear(doc_id: String) -> Result<(), String> {
+    if let Some(dir) = versions_dir(&doc_id) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    Ok(())
+}
+
+/// Write every document to a timestamped folder in ~/Downloads and return its
+/// path. The library lives in an app-private store, which is fine until the day
+/// someone wants their manuscripts *out* — this is that escape hatch, and it
+/// works from the phone too (the Mac writes the files).
+#[tauri::command]
+fn export_library(files: Vec<serde_json::Value>) -> Result<String, String> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dir = expand_path(&format!("~/Downloads/AI Studio Export {stamp}"));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create export folder: {e}"))?;
+    for f in &files {
+        let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("untitled");
+        let content = f.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        // Filenames come from user-chosen document titles: strip separators so a
+        // title like "Act 1/2" can't write outside the export folder.
+        let safe: String = name
+            .chars()
+            .map(|c| if c == '/' || c == '\\' || c == ':' { '-' } else { c })
+            .collect();
+        let safe = safe.trim_start_matches('.').trim();
+        let safe = if safe.is_empty() { "untitled" } else { safe };
+        std::fs::write(format!("{dir}/{safe}"), content)
+            .map_err(|e| format!("write {safe}: {e}"))?;
+    }
+    Ok(dir)
 }
 
 // ---- Shared image gallery ------------------------------------------------
@@ -2125,6 +2303,11 @@ pub fn run() {
             image_list,
             image_get,
             image_delete,
+            doc_version_put,
+            doc_version_list,
+            doc_version_get,
+            doc_versions_clear,
+            export_library,
             comfy_status,
             comfy_download_model,
             comfy_installed_models,

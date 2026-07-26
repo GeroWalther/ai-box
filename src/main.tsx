@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { ToastProvider } from "./lib/toast";
 
 // `crypto.randomUUID` only exists in a secure context (HTTPS / localhost). When
@@ -19,8 +20,10 @@ if (typeof crypto !== "undefined" && typeof crypto.randomUUID !== "function") {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <ToastProvider>
-      <App />
-    </ToastProvider>
+    <ErrorBoundary>
+      <ToastProvider>
+        <App />
+      </ToastProvider>
+    </ErrorBoundary>
   </React.StrictMode>,
 );

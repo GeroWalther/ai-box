@@ -3,11 +3,21 @@
 // which works inside the Tauri webview (same pattern as the image Save button).
 import { useEffect, useRef, useState } from "react";
 import { Document, Packer, Paragraph, TextRun } from "docx";
+import { exportLibrary } from "../lib/versionStore";
+
+/** Editor HTML to readable plain text, preserving paragraph breaks. */
+function htmlToText(html: string): string {
+  const el = document.createElement("div");
+  el.innerHTML = html.replace(/<\/(p|div|h[1-6])>/gi, "\n\n").replace(/<br\s*\/?>/gi, "\n");
+  return (el.textContent ?? "").replace(/\n{3,}/g, "\n\n").trim();
+}
 
 interface Props {
   title: string;
   getText: () => string;
   getHTML: () => string;
+  /** The whole library, for "export everything" — see exportAll below. */
+  documents?: { title: string; html: string }[];
 }
 
 function download(blob: Blob, filename: string) {
@@ -24,9 +34,16 @@ function safeName(title: string): string {
   return base || "manuscript";
 }
 
-export default function ExportMenu({ title, getText, getHTML }: Props) {
+export default function ExportMenu({ title, getText, getHTML, documents }: Props) {
   const [open, setOpen] = useState(false);
+  const [status, setStatus] = useState("");
   const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!status) return;
+    const t = setTimeout(() => setStatus(""), 6000);
+    return () => clearTimeout(t);
+  }, [status]);
 
   useEffect(() => {
     function onDoc(e: MouseEvent) {
@@ -59,6 +76,34 @@ export default function ExportMenu({ title, getText, getHTML }: Props) {
     download(blob, `${name}.docx`);
   }
 
+  /**
+   * Write every document to a dated folder in ~/Downloads.
+   *
+   * The library lives in an app-private store, which is convenient right up
+   * until someone wants their manuscripts out of it — or wants a backup they
+   * control. The Mac does the writing, so this works from the phone too.
+   */
+  async function exportAll() {
+    if (!documents?.length) return;
+    const used = new Set<string>();
+    const files = documents.map((d) => {
+      // Two documents called "Untitled" must not overwrite each other.
+      let base = safeName(d.title);
+      let candidate = base;
+      let n = 2;
+      while (used.has(candidate)) candidate = `${base}-${n++}`;
+      used.add(candidate);
+      const text = htmlToText(d.html);
+      return { name: `${candidate}.md`, content: text };
+    });
+    try {
+      const dir = await exportLibrary(files);
+      setStatus(`Exported ${files.length} to ${dir.replace(/^.*\/Downloads\//, "Downloads/")}`);
+    } catch (e) {
+      setStatus(`Export failed: ${String(e)}`);
+    }
+  }
+
   function run(fn: () => void | Promise<void>) {
     setOpen(false);
     fn();
@@ -69,12 +114,25 @@ export default function ExportMenu({ title, getText, getHTML }: Props) {
       <button className="btn ghost" onClick={() => setOpen((v) => !v)} title="Export manuscript">
         Export ▾
       </button>
+      {status && (
+        <span className="export-status" role="status">
+          {status}
+        </span>
+      )}
       {open && (
         <div className="export-pop">
           <button onClick={() => run(exportTxt)}>Plain text (.txt)</button>
           <button onClick={() => run(exportMd)}>Markdown (.md)</button>
           <button onClick={() => run(exportHtml)}>HTML (.html)</button>
           <button onClick={() => run(exportDocx)}>Word (.docx)</button>
+          {documents && documents.length > 1 && (
+            <>
+              <div className="export-sep" />
+              <button onClick={() => run(exportAll)}>
+                All {documents.length} documents → Downloads
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

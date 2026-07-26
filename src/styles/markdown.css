@@ -1,0 +1,155 @@
+/* Rendered markdown and code blocks.
+ *
+ * Part of the former single App.css. Files are imported in their original
+ * order by styles/index.css — the cascade depends on it, so keep them ordered. */
+
+.markdown {
+  font-size: 15px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+.markdown > *:first-child { margin-top: 0; }
+.markdown > *:last-child { margin-bottom: 0; }
+.markdown p { margin: 0 0 10px; }
+.markdown ul, .markdown ol { margin: 0 0 10px; padding-left: 22px; }
+.markdown li { margin: 2px 0; }
+.markdown h1, .markdown h2, .markdown h3 { margin: 16px 0 8px; line-height: 1.3; }
+.markdown h1 { font-size: 1.4em; }
+.markdown h2 { font-size: 1.25em; }
+.markdown h3 { font-size: 1.1em; }
+.markdown a { color: var(--accent-2); }
+.markdown blockquote {
+  margin: 0 0 10px;
+  padding: 2px 12px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+.markdown :not(pre) > code {
+  background: var(--panel-2);
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-size: 0.88em;
+}
+.markdown table { border-collapse: collapse; margin: 0 0 10px; display: block; overflow-x: auto; }
+.markdown th, .markdown td { border: 1px solid var(--border); padding: 5px 9px; }
+
+/* Fenced code blocks with a copy button */
+.code-wrap { position: relative; margin: 0 0 12px; }
+.code-wrap pre {
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.code-wrap pre code { background: none; padding: 0; font-size: inherit; }
+.code-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 9px;
+  font-size: 11px;
+  border: 1px solid #30363d;
+  background: #161b22;
+  color: #c9d1d9;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.code-wrap:hover .code-copy { opacity: 1; }
+.code-copy:hover { background: #21262d; }
+
+/* Message head + copy */
+.msg-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.msg-copy {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+.msg:hover .msg-copy { opacity: 1; }
+.msg-copy:hover { background: var(--panel-2); color: var(--text); }
+
+/* Inline message edit (edit & resend) */
+.msg-edit { display: flex; flex-direction: column; gap: 8px; }
+.msg-edit-input {
+  width: 100%;
+  min-height: 68px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+}
+.msg-edit-input:focus { outline: none; }
+.msg-edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* Toasts */
+.toast-host {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1000;
+  align-items: center;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  min-width: 220px;
+  max-width: 420px;
+  padding: 11px 16px;
+  border-radius: 10px;
+  font-size: 14px;
+  color: #fff;
+  background: #2b2f3a;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  animation: toast-in 0.18s ease;
+}
+.toast-success { background: #1f8b4c; }
+.toast-error { background: #c0392b; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Onboarding */
+.modal.onboarding { max-width: 560px; }
+.onboard-choices { display: flex; gap: 12px; margin: 8px 0 16px; }
+.onboard-card {
+  flex: 1;
+  text-align: left;
+  padding: 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.onboard-card:hover { border-color: var(--accent); }
+.onboard-card.active { border-color: var(--accent); background: var(--accent-soft); }
+.onboard-card-title { font-weight: 600; margin-bottom: 6px; }
+.onboard-card-sub { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.onboard-step { margin-top: 6px; }
+.onboard-step label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+
+/* ---- Phase 1: export menu, bubble actions, story bible ---- */
+
+/* Export dropdown */

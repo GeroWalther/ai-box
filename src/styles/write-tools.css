@@ -1,0 +1,337 @@
+/* Export menu, selection bubble, Story Bible, proofreading.
+ *
+ * Part of the former single App.css. Files are imported in their original
+ * order by styles/index.css — the cascade depends on it, so keep them ordered. */
+
+.export-menu { position: relative; }
+.export-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 5px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+.export-pop button {
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.export-pop button:hover { background: var(--panel-2); }
+
+/* Writing settings popover */
+.write-settings { position: relative; }
+.write-settings-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+.write-settings-pop label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.write-settings-pop input[type="range"] { width: 100%; }
+.write-settings-pop textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Bubble menu: quick actions row + rewrite row */
+.bubble { flex-direction: column; align-items: stretch; gap: 6px; }
+.bubble-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.bubble-quick {
+  padding: 4px 9px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.bubble-quick:hover { border-color: var(--accent); color: var(--accent-2); }
+.bubble-row { display: flex; align-items: center; gap: 6px; }
+
+/* Story Bible panel */
+/* The Story Bible is opened from a toolbar button now (not an edge tab). */
+.bible-tab { display: none; }
+.bible-panel {
+  width: 300px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--bg-2);
+  overflow-y: auto;
+}
+.bible-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+.bible-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+.bible-body > label { font-size: 12px; font-weight: 600; color: var(--muted); margin-top: 8px; }
+.bible-body textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+.bible-chars-head { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+.bible-chars-head label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.btn.small { padding: 2px 8px; font-size: 12px; }
+.bible-char { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.bible-char input {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 12.5px;
+}
+.bible-char-name { width: 30%; min-width: 90px; }
+.bible-char-aka { width: 26%; min-width: 90px; }
+.bible-char-traits { flex: 1; min-width: 120px; }
+.bible-char-del {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.bible-char-del:hover { color: var(--accent-2); }
+.bible-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 4px; }
+.bible-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bible-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
+.bible-chip.fact { border-radius: 8px; white-space: normal; text-align: left; }
+
+/* ---- Phase 2: agent transcript, approvals, attach ---- */
+
+/* ---- Proofreading review ------------------------------------------------- */
+.proofread {
+  margin: 0 auto 12px;
+  max-width: 760px;
+  width: calc(100% - 32px);
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.proofread-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.proofread-title { font-weight: 600; font-size: 13px; }
+.proofread-actions { display: flex; gap: 6px; }
+.proofread-text {
+  margin-top: 10px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  line-height: 1.75;
+  font-size: 15px;
+  white-space: pre-wrap;
+}
+/* One suggestion: struck original + proposed replacement, click to toggle. */
+.pf-change {
+  display: inline;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.pf-change:hover { outline: 2px solid var(--accent-soft); }
+.pf-del {
+  text-decoration: line-through;
+  color: var(--danger);
+  opacity: 0.75;
+}
+.pf-add {
+  background: var(--accent-soft);
+  color: var(--text);
+  border-bottom: 2px solid var(--accent);
+}
+/* Rejected: the original stands, the suggestion is shown as declined. */
+.pf-change.rejected .pf-del { text-decoration: none; color: var(--text); opacity: 1; }
+.pf-change.rejected .pf-add {
+  text-decoration: line-through;
+  opacity: 0.4;
+  background: none;
+  border-bottom: none;
+}
+.bubble-quick.review { border-color: var(--accent); color: var(--accent); }
+
+/* ---- Word goal ----------------------------------------------------------- */
+.wordgoal {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 760px;
+  width: calc(100% - 32px);
+  margin: 0 auto;
+  padding: 4px 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.wordgoal-count { font-variant-numeric: tabular-nums; }
+.wordgoal-bar {
+  flex: 1;
+  height: 4px;
+  min-width: 60px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.wordgoal-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+.wordgoal-fill.done { background: #16a34a; }
+.wordgoal-pct { font-variant-numeric: tabular-nums; }
+.wordgoal-select {
+  border: 1px solid transparent;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+.wordgoal-select:hover { border-color: var(--border); }
+
+/* ---- Find & replace ------------------------------------------------------ */
+.findbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.find-input {
+  width: 150px;
+  padding: 5px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+.find-count {
+  min-width: 44px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.find-btn { padding: 4px 9px; }
+.find-case {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---- Version history ----------------------------------------------------- */
+.modal.versions { max-width: 860px; width: 92vw; }
+.versions-body { display: grid; grid-template-columns: 240px 1fr; gap: 14px; min-height: 320px; }
+.versions-list { max-height: 420px; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
+.version-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.version-row:hover { background: var(--panel); }
+.version-row.active { background: var(--accent-soft); border-color: var(--accent); }
+.version-when { font-size: 13px; font-weight: 500; }
+.version-meta { font-size: 11.5px; color: var(--muted); }
+.versions-preview {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 12px 14px;
+  max-height: 420px;
+  overflow: auto;
+}
+.version-text { white-space: pre-wrap; font-family: inherit; font-size: 14px; line-height: 1.7; margin: 0; }
+.export-sep { height: 1px; background: var(--border); margin: 4px 0; }
+.export-status { font-size: 11.5px; color: var(--muted); margin-left: 8px; }
+
+@media (max-width: 720px) {
+  .versions-body { grid-template-columns: 1fr; }
+  .versions-list { max-height: 180px; }
+}

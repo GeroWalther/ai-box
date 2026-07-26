@@ -1,0 +1,186 @@
+/* Images tab: gallery, history, generation controls.
+ *
+ * Part of the former single App.css. Files are imported in their original
+ * order by styles/index.css — the cascade depends on it, so keep them ordered. */
+
+.image-tab {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  min-height: 0;
+}
+
+/* Image history rail */
+.image-history {
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.image-history-head {
+  padding: 14px 14px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+.image-history-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.image-history-empty {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 8px 2px;
+}
+.history-thumb {
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  border: 2px solid transparent;
+  line-height: 0;
+  transition: border-color 0.15s ease;
+}
+.history-thumb img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  display: block;
+}
+.history-thumb-ph {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: var(--panel-2);
+}
+.history-thumb:hover {
+  border-color: var(--border);
+}
+.history-thumb.active {
+  border-color: var(--accent);
+}
+.history-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  line-height: 1;
+  transition: opacity 0.15s ease;
+}
+.history-thumb:hover .history-del {
+  opacity: 1;
+}
+.image-controls-col {
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  padding: 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.image-controls-col .field {
+  gap: 6px;
+}
+.image-preview-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  overflow: auto;
+}
+.image-preview-col img {
+  max-width: 100%;
+  max-height: 80vh;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+/* Legacy image modal styles (unused by the tab) */
+.image-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.image-controls {
+  display: flex;
+  flex-direction: column;
+}
+.image-controls .btn.big {
+  margin-top: 14px;
+}
+.image-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+}
+.image-preview img {
+  max-width: 100%;
+  max-height: 60vh;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.image-placeholder {
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.6;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 40px 20px;
+  width: 100%;
+}
+
+/* Image generating state */
+.image-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+  max-width: 340px;
+}
+.loading-title {
+  font-size: 16px;
+  color: var(--text);
+}
+.loading-sub {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.spinner {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- Phase 0: markdown, toasts, copy, onboarding ---- */
+
+/* Markdown in chat */

@@ -2,12 +2,32 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <title>AI Studio</title>
+    <meta
+      name="description"
+      content="Your Mac's AI workstation — writing, agentic chat, image generation and a terminal, drivable from your phone."
+    />
+
+    <!-- viewport-fit=cover so the phone client can use the full screen under the
+         notch; the app handles safe-area insets in CSS. -->
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
-    <title>AI Studio</title>
+
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- Installable on the phone: standalone display, no browser chrome, and a
+         theme colour per scheme so the status bar blends into the app. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="AI Studio" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d0e12" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
   </head>
 
   <body>

@@ -1,0 +1,195 @@
+/* Design tokens, resets, and the light/dark theme variables.
+ *
+ * Part of the former single App.css. Files are imported in their original
+ * order by styles/index.css — the cascade depends on it, so keep them ordered. */
+
+:root {
+  --bg: #ffffff;
+  --bg-2: #f4f5f8;
+  --panel: #f8f9fb;
+  --panel-2: #eceef3;
+  --border: #e2e5eb;
+  --text: #1b1d24;
+  --muted: #6c7280;
+  --accent: #6b5cf0;
+  --accent-2: #5646d6;
+  --accent-soft: rgba(107, 92, 240, 0.10);
+  --accent-grad: linear-gradient(135deg, #7b6ef0 0%, #6b5cf0 100%);
+  --danger: #d9434f;
+  --radius: 12px;
+  --shadow: 0 12px 32px rgba(30, 30, 60, 0.12);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  /* Lock the document (no page scroll) so iOS can't pull-to-refresh. Inner
+     containers (terminal, chat, editor) keep their own overflow scrolling. */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  background:
+    radial-gradient(1100px 620px at 82% -8%, rgba(107, 92, 240, 0.08), transparent 60%),
+    radial-gradient(900px 560px at 0% 106%, rgba(107, 92, 240, 0.05), transparent 62%),
+    var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  overflow: hidden;
+}
+
+/* Dark theme (indigo-violet) — toggled via Settings → Appearance */
+:root[data-theme="dark"] {
+  --bg: #0d0e12;
+  --bg-2: #121319;
+  --panel: #16181f;
+  --panel-2: #1e212b;
+  --border: #272b36;
+  --text: #eceef3;
+  --muted: #9096a4;
+  --accent: #7b6ef0;
+  --accent-2: #9d92ff;
+  --accent-soft: rgba(123, 110, 240, 0.14);
+  --accent-grad: linear-gradient(135deg, #7b6ef0 0%, #9d92ff 100%);
+  --danger: #ef5f6b;
+  --shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
+}
+:root[data-theme="dark"] body {
+  background:
+    radial-gradient(1100px 620px at 82% -8%, rgba(123, 110, 240, 0.14), transparent 60%),
+    radial-gradient(900px 560px at 0% 106%, rgba(157, 146, 255, 0.09), transparent 62%),
+    var(--bg);
+}
+:root[data-theme="dark"] .modal-backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+:root[data-theme="dark"] .bubble {
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+
+.app {
+  display: flex;
+  flex-direction: row;
+  height: 100vh;
+  /* Dynamic viewport height: on mobile browsers this excludes the URL/toolbar
+     chrome, so the bottom nav sits in the visible area, not under Safari's bar. */
+  height: 100dvh;
+}
+
+/* Main content area (right of the nav rail) */
+.main {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Left navigation rail — top-level sections (uses the shared .drawer-* item
+   styles so desktop matches the mobile drawer). */
+.navrail {
+  width: 240px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 10px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.navrail-brand {
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.2px;
+  color: var(--text);
+  padding: 8px 10px 12px;
+}
+.navrail-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.navitem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 9px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 13.5px;
+  font-weight: 500;
+  text-align: left;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.navitem:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+.navitem.active {
+  background: var(--accent-soft);
+  color: var(--accent-2);
+  font-weight: 600;
+}
+.navitem-icon { font-size: 15px; line-height: 0; flex: none; display: inline-flex; }
+.navitem-icon svg { width: 17px; height: 17px; }
+.navitem-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.navrail-foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 6px 4px;
+  border-top: 1px solid var(--border);
+}
+.navrail-count { color: var(--muted); font-size: 12px; }
+.sync-spin { display: inline-block; animation: sync-rotate 0.7s linear infinite; }
+@keyframes sync-rotate { to { transform: rotate(360deg); } }
+
+/* Mobile top bar + slide-out nav drawer (hidden on desktop) */
+.mobiletopbar { display: none; }
+.mtb-btn {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.mtb-btn:hover { background: var(--panel-2); }
+.mtb-title { font-weight: 600; font-size: 15px; }
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+}
+.drawer {
+  width: min(80vw, 300px);
+  height: 100%;
+  background: var(--bg-2);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: calc(14px + env(safe-area-inset-top)) 10px calc(12px + env(safe-area-inset-bottom));
+  animation: drawer-in 0.18s ease;
+}
+@keyframes drawer-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
