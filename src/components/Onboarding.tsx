@@ -22,11 +22,11 @@ export default function Onboarding({ settings, onChange, onOpenModels, onClose }
     <div className="modal-backdrop">
       <div className="modal onboarding" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h2>Welcome to AI Studio</h2>
+          <h2>Welcome to AI Box</h2>
         </div>
         <div className="modal-body">
           <p className="hint">
-            AI Studio writes fiction, chats &amp; acts as an agent on your Mac, and
+            AI Box writes fiction, chats &amp; acts as an agent on your Mac, and
             generates images. Pick how you want to run models to get started.
           </p>
 

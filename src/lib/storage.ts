@@ -102,7 +102,8 @@ export function removeLocal(key: string): void {
 
 /**
  * Read `key`, falling back to a pre-rename `legacyKey` and migrating it forward.
- * Used by the Novel Studio → AI Studio rename so nobody loses their settings.
+ * Used by the product renames (Novel Studio → AI Studio → AI Box) so nobody
+ * loses their settings.
  */
 export function readWithLegacy(key: string, legacyKey: string): string | null {
   const current = readLocal(key);

@@ -1,4 +1,4 @@
-// AI Studio — Rust backend.
+// AI Box — Rust backend.
 // All network calls live here so the webview never sees CORS issues and the
 // API key is passed per-request rather than embedded in the frontend bundle.
 
@@ -131,7 +131,7 @@ pub(crate) async fn generate_text_core(
                 .post(&url)
                 .header("Content-Type", "application/json")
                 // OpenRouter asks for these; harmless for other providers.
-                .header("HTTP-Referer", "https://ai-studio.local")
+                .header("HTTP-Referer", "https://ai-box.local")
                 .header("X-Title", "AI Studio")
                 .json(&body);
             if !params.api_key.is_empty() {
@@ -253,7 +253,7 @@ async fn list_openrouter_models(api_key: Option<String>) -> Result<Vec<Openroute
     let client = reqwest::Client::new();
     let mut req = client
         .get("https://openrouter.ai/api/v1/models")
-        .header("HTTP-Referer", "https://ai-studio.local")
+        .header("HTTP-Referer", "https://ai-box.local")
         .header("X-Title", "AI Studio");
     if let Some(key) = api_key {
         if !key.is_empty() {
@@ -479,7 +479,7 @@ async fn generate_image_comfy(params: ComfyParams) -> Result<String, String> {
         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": params.prompt, "clip": ["4", 1]}},
         "7": {"class_type": "CLIPTextEncode", "inputs": {"text": params.negative_prompt, "clip": ["4", 1]}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
-        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "AIStudio", "images": ["8", 0]}}
+        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "AIBox", "images": ["8", 0]}}
     });
 
     run_comfy_workflow(&client, &root, workflow).await
@@ -491,7 +491,7 @@ async fn run_comfy_workflow(
     root: &str,
     workflow: serde_json::Value,
 ) -> Result<String, String> {
-    let body = serde_json::json!({ "prompt": workflow, "client_id": "ai-studio" });
+    let body = serde_json::json!({ "prompt": workflow, "client_id": "ai-box" });
     let resp = client
         .post(format!("{root}/prompt"))
         .json(&body)
@@ -593,7 +593,7 @@ async fn generate_img2img_comfy(params: Img2ImgParams) -> Result<String, String>
         .decode(params.image_base64.trim())
         .map_err(|e| format!("Bad image data: {e}"))?;
     let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name("aistudio_input.png")
+        .file_name("aibox_input.png")
         .mime_str("image/png")
         .map_err(|e| e.to_string())?;
     let form = reqwest::multipart::Form::new()
@@ -633,7 +633,7 @@ async fn generate_img2img_comfy(params: Img2ImgParams) -> Result<String, String>
         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": params.prompt, "clip": ["4", 1]}},
         "7": {"class_type": "CLIPTextEncode", "inputs": {"text": params.negative_prompt, "clip": ["4", 1]}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
-        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "AIStudio", "images": ["8", 0]}},
+        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "AIBox", "images": ["8", 0]}},
         "10": {"class_type": "VAEEncode", "inputs": {"pixels": ["11", 0], "vae": ["4", 2]}},
         "11": {"class_type": "LoadImage", "inputs": {"image": image_ref}}
     });
@@ -665,7 +665,7 @@ async fn generate_image_openrouter(params: OpenrouterImageParams) -> Result<Stri
     let resp = client
         .post("https://openrouter.ai/api/v1/images")
         .header("Authorization", format!("Bearer {}", params.api_key.trim()))
-        .header("HTTP-Referer", "https://ai-studio.local")
+        .header("HTTP-Referer", "https://ai-box.local")
         .header("X-Title", "AI Studio")
         .json(&body)
         .send()
@@ -721,7 +721,7 @@ async fn edit_image_openrouter(params: OpenrouterEditParams) -> Result<String, S
     let resp = client
         .post("https://openrouter.ai/api/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", params.api_key.trim()))
-        .header("HTTP-Referer", "https://ai-studio.local")
+        .header("HTTP-Referer", "https://ai-box.local")
         .header("X-Title", "AI Studio")
         .json(&body)
         .send()
@@ -886,7 +886,7 @@ async fn chat_completion(params: ChatCompletionParams) -> Result<serde_json::Val
         attempt += 1;
         let mut req = client
             .post(&url)
-            .header("HTTP-Referer", "https://ai-studio.local")
+            .header("HTTP-Referer", "https://ai-box.local")
             .header("X-Title", "AI Studio")
             .json(&body);
         if !params.api_key.is_empty() {
@@ -917,6 +917,43 @@ async fn chat_completion(params: ChatCompletionParams) -> Result<serde_json::Val
 }
 
 /// Expand a leading ~ to the user's home directory.
+/// The app's data directory (`~/.ai-box`), migrating a previous install's
+/// directory to it on first use.
+///
+/// Everything the user would hate to lose lives here — the document store, its
+/// hourly backups, version snapshots, the image gallery. Renaming the product
+/// must not strand that data, and it must not copy it either: a directory rename
+/// is atomic on one filesystem, so the data is either at the old path or the new
+/// one, never half-written across both. If the rename fails for any reason we
+/// keep using the old directory rather than starting empty.
+pub(crate) fn app_dir() -> String {
+    use std::sync::OnceLock;
+    static DIR: OnceLock<String> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let current = expand_path("~/.ai-box");
+        if std::path::Path::new(&current).exists() {
+            return current;
+        }
+        // Previous names, newest first.
+        for legacy in ["~/.ai-studio", "~/.novel-studio"] {
+            let old = expand_path(legacy);
+            if std::path::Path::new(&old).exists() {
+                return match std::fs::rename(&old, &current) {
+                    Ok(()) => current,
+                    Err(_) => old, // couldn't move it — keep reading where it is
+                };
+            }
+        }
+        current
+    })
+    .clone()
+}
+
+/// A path inside the app data directory, e.g. `app_path("store.json")`.
+pub(crate) fn app_path(rel: &str) -> String {
+    format!("{}/{rel}", app_dir())
+}
+
 pub(crate) fn expand_path(p: &str) -> String {
     if p == "~" {
         return std::env::var("HOME").unwrap_or_else(|_| p.to_string());
@@ -985,7 +1022,7 @@ fn save_png(base64: String, name: Option<String>) -> Result<String, String> {
         .chars()
         .map(|c| if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_') { c } else { '-' })
         .collect();
-    let stem = if stem.trim().is_empty() { "ai-studio-image".to_string() } else { stem.trim().to_string() };
+    let stem = if stem.trim().is_empty() { "ai-box-image".to_string() } else { stem.trim().to_string() };
     let mut path = std::path::Path::new(&dir).join(format!("{stem}.png"));
     let mut n = 2;
     while path.exists() {
@@ -1632,13 +1669,16 @@ fn cancel_generation(registry: tauri::State<'_, server::CancelRegistry>, request
 
 // Only referenced by the release-build keychain path; dev builds use a 0600 file.
 #[cfg_attr(debug_assertions, allow(dead_code))]
-const KEYCHAIN_SERVICE: &str = "com.gwintech.aistudio";
+const KEYCHAIN_SERVICE: &str = "com.gwintech.aibox";
 
-/// The pre-rename bundle identifier. Keys stored by an older install live under
-/// this service name, so `secret_get` falls back to it (and migrates the value
-/// forward) rather than making the user re-enter an API key after updating.
+/// Bundle identifiers this app has used before, newest first.
+///
+/// The identifier is the keychain service name, so every rename orphans the
+/// stored API key. `secret_get` walks this list and migrates the first hit
+/// forward — a list rather than a single value because the project has now been
+/// renamed twice, and "one rename" is clearly not a safe assumption.
 #[cfg(not(debug_assertions))]
-const LEGACY_KEYCHAIN_SERVICE: &str = "com.novelstudio.app";
+const LEGACY_KEYCHAIN_SERVICES: &[&str] = &["com.gwintech.aistudio", "com.novelstudio.app"];
 
 // In DEBUG (dev) builds the binary is unsigned and its identity changes on every
 // rebuild, so macOS re-prompts for the login-keychain password on every key read.
@@ -1647,7 +1687,7 @@ const LEGACY_KEYCHAIN_SERVICE: &str = "com.novelstudio.app";
 // where access is silent and stable.
 #[cfg(debug_assertions)]
 fn dev_secret_file() -> String {
-    expand_path("~/.ai-studio/dev-secrets.json")
+    app_path("dev-secrets.json")
 }
 
 #[cfg(debug_assertions)]
@@ -1711,13 +1751,15 @@ fn secret_get(name: String) -> Result<Option<String>, String> {
         let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &name).map_err(|e| e.to_string())?;
         match entry.get_password() {
             Ok(v) => Ok(Some(v)),
-            // Nothing under the current service — look for a key left by the
-            // pre-rename install and migrate it forward, so updating the app
-            // never silently loses the user's API key.
+            // Nothing under the current service — look for a key left by an
+            // earlier install and migrate it forward, so updating the app never
+            // silently loses the user's API key.
             Err(keyring::Error::NoEntry) => {
-                let legacy = keyring::Entry::new(LEGACY_KEYCHAIN_SERVICE, &name)
-                    .ok()
-                    .and_then(|e| e.get_password().ok());
+                let legacy = LEGACY_KEYCHAIN_SERVICES.iter().find_map(|service| {
+                    keyring::Entry::new(service, &name)
+                        .ok()
+                        .and_then(|e| e.get_password().ok())
+                });
                 match legacy {
                     Some(v) => {
                         let _ = entry.set_password(&v);
@@ -1736,16 +1778,16 @@ fn secret_get(name: String) -> Result<Option<String>, String> {
 // a paired phone (through the server), so history is the same on every device.
 
 fn remote_store_path() -> String {
-    expand_path("~/.ai-studio/store.json")
+    app_path("store.json")
 }
 
-/// Append a line to ~/.ai-studio/app.log, capped so it can't grow forever.
+/// Append a line to ~/.ai-box/app.log, capped so it can't grow forever.
 ///
 /// Reserved for events worth explaining after the fact — a recovered store, a
 /// refused path — not routine chatter. When a user reports "my documents
 /// vanished", this file is the difference between a guess and an answer.
 fn log_line(message: &str) {
-    let path = expand_path("~/.ai-studio/app.log");
+    let path = app_path("app.log");
     if let Some(parent) = std::path::Path::new(&path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -1788,7 +1830,7 @@ fn read_store_value() -> Option<serde_json::Value> {
         log_line(&format!("store at {path} is unreadable — trying backups"));
     }
 
-    let dir = expand_path("~/.ai-studio/backups");
+    let dir = app_path("backups");
     let mut candidates: Vec<(u64, std::path::PathBuf)> = std::fs::read_dir(&dir)
         .into_iter()
         .flatten()
@@ -1969,14 +2011,14 @@ fn atomic_write(path: &str, contents: &str) -> std::io::Result<()> {
 const STORE_BACKUPS: usize = 48;
 
 /// Before overwriting the shared store, keep an hourly snapshot in
-/// ~/.ai-studio/backups so a bad write or accidental mass-delete is recoverable.
+/// ~/.ai-box/backups so a bad write or accidental mass-delete is recoverable.
 /// One snapshot per hour bucket (bounded I/O), pruned to the newest N.
 fn snapshot_store(path: &str) {
     let src = std::path::Path::new(path);
     if !src.exists() {
         return;
     }
-    let dir = expand_path("~/.ai-studio/backups");
+    let dir = app_path("backups");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
@@ -2047,7 +2089,7 @@ fn prune_images(dir: &str, keep: usize) {
 // documents, not the history of one manuscript: an accidental select-all-delete,
 // or an AI rewrite the author regrets an hour later, was unrecoverable.
 //
-// Each snapshot is one JSON file under ~/.ai-studio/versions/<doc-id>/<ts>.json,
+// Each snapshot is one JSON file under ~/.ai-box/versions/<doc-id>/<ts>.json,
 // which makes listing cheap (metadata read per file), pruning trivial, and the
 // whole history readable with `cat` if the app itself is broken.
 
@@ -2056,7 +2098,7 @@ fn versions_dir(doc_id: &str) -> Option<String> {
     if id.is_empty() {
         return None;
     }
-    Some(expand_path(&format!("~/.ai-studio/versions/{id}")))
+    Some(app_path(&format!("versions/{id}")))
 }
 
 /// Snapshots kept per document. At the ~2 minute cadence the frontend uses,
@@ -2169,7 +2211,7 @@ fn export_library(files: Vec<serde_json::Value>) -> Result<String, String> {
 // metadata only (no image bytes); thumbnails are fetched per-image on demand.
 
 fn images_dir() -> String {
-    expand_path("~/.ai-studio/images")
+    app_path("images")
 }
 /// Keep ids filesystem-safe (they're UUIDs, but guard against traversal).
 fn safe_id(id: &str) -> String {

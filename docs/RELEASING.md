@@ -29,7 +29,7 @@ GitHub only serves the bytes.
 |---|---|---|
 | Apple Developer ID certificate | login keychain | [SIGNING.md](SIGNING.md) |
 | App-specific password | Apple ID account | [SIGNING.md](SIGNING.md) |
-| Updater keypair | `~/.tauri/aistudio-updater.key` | [UPDATES.md](UPDATES.md) |
+| Updater keypair | `~/.tauri/aibox-updater.key` | [UPDATES.md](UPDATES.md) |
 
 Environment the script requires:
 
@@ -38,11 +38,11 @@ export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 export APPLE_ID="you@example.com"
 export APPLE_PASSWORD="abcd-efgh-ijkl-mnop"
 export APPLE_TEAM_ID="TEAMID"
-export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/aistudio-updater.key)"
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/aibox-updater.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 ```
 
-Put those in a file you don't commit (e.g. `~/.config/ai-studio-release.env`)
+Put those in a file you don't commit (e.g. `~/.config/ai-box-release.env`)
 and `source` it before releasing.
 
 > **Back up the updater private key.** Lose it and you can never ship an update
@@ -54,14 +54,14 @@ and `source` it before releasing.
 Point the button at the stable "latest" URL, which never changes:
 
 ```
-https://github.com/GeroWalther/ai-studio/releases/latest/download/AI-Studio_0.2.0_universal.dmg
+https://github.com/GeroWalther/ai-box/releases/latest/download/AI-Box_0.2.0_universal.dmg
 ```
 
 Since the filename carries the version, resolve it at page load instead of
 hard-coding it — the same call gives you the download count:
 
 ```js
-const res = await fetch("https://api.github.com/repos/GeroWalther/ai-studio/releases/latest");
+const res = await fetch("https://api.github.com/repos/GeroWalther/ai-box/releases/latest");
 const release = await res.json();
 const dmg = release.assets.find((a) => a.name.endsWith(".dmg"));
 

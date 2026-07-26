@@ -33,7 +33,7 @@ export default class ErrorBoundary extends Component<Props, State> {
 
     return (
       <div className="crash" role="alert">
-        <h1>AI Studio hit an unexpected error</h1>
+        <h1>AI Box hit an unexpected error</h1>
         <p>
           Your documents are safe — they're stored on this Mac, not in the window that
           crashed. Reloading usually clears it.

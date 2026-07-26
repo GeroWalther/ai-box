@@ -94,7 +94,9 @@ const PROTECTED_DIRS: &[&str] = &[
     ".docker",
     ".config/gh",
     ".password-store",
-    ".ai-studio", // the app's own store, backups and dev secrets
+    ".ai-box", // the app's own store, backups and dev secrets
+    ".ai-studio", // ...and the same under previous product names
+    ".novel-studio",
     "library/keychains",
     "library/launchagents",
     "library/launchdaemons",
@@ -251,6 +253,9 @@ mod tests {
         assert!(is_protected(Path::new("/Users/x/.zshrc")));
         assert!(is_protected(Path::new("/Users/x/Library/LaunchAgents/evil.plist")));
         assert!(is_protected(Path::new("/etc/hosts")));
+        assert!(is_protected(Path::new("/Users/x/.ai-box/store.json")));
+        // Directories from previous names stay protected too — an old install's
+        // store may still hold the user's documents.
         assert!(is_protected(Path::new("/Users/x/.ai-studio/store.json")));
         // Case-insensitive: macOS treats these as the same file.
         assert!(is_protected(Path::new("/Users/x/.SSH/id_rsa")));

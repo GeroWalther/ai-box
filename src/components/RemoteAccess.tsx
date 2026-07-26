@@ -126,7 +126,7 @@ export default function RemoteAccess({ settings, onChange }: Props) {
       <section>
         <h3>Phone access</h3>
         <p className="hint">
-          You're viewing AI Studio over the network — it's already served from your Mac.
+          You're viewing AI Box over the network — it's already served from your Mac.
           Manage phone access from the desktop app's Settings.
         </p>
       </section>

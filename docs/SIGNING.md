@@ -49,11 +49,11 @@ Release when you push a tag (`git tag v0.2.0 && git push --tags`). Add these rep
 Without the secrets the workflow still builds, but the artifact is unsigned.
 
 ## Decisions still open (see docs/PRODUCTION.md, Phase 1)
-- **Bundle identifier** is now `com.gwintech.aistudio` (was a personal-machine name).
-  It is now `com.gwintech.aistudio`, under a domain you control. It is the app's
+- **Bundle identifier** is now `com.gwintech.aibox` (was a personal-machine name).
+  It is now `com.gwintech.aibox`, under a domain you control. It is the app's
   permanent identity — changing it again would make macOS treat the app as new
   (and orphan the existing keychain entry, though `secret_get` migrates the old
   `com.novelstudio.app` one forward).
-- **Product name / trademark**: everything now says "AI Studio" consistently. Note
-  it collides with Google's "AI Studio", so it is not really ownable as a mark —
+- **Product name / trademark**: everything now says "AI Box" consistently. Note
+  it collides with Google's "AI Box", so it is not really ownable as a mark —
   see the naming note in `docs/UPDATES.md` before any paid launch.

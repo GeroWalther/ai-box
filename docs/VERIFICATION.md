@@ -24,7 +24,7 @@ npm run tauri dev        # launches the desktop app
    # The key should NO LONGER be in the localStorage-backed settings on disk:
    grep -o 'openrouterKey' ~/Library/WebKit/*/WebsiteData/LocalStorage/* 2>/dev/null; echo "---"
    # And it SHOULD be in the keychain:
-   security find-generic-password -s com.gwintech.aistudio -a openrouterKey -w 2>/dev/null | head -c 6; echo "…"
+   security find-generic-password -s com.gwintech.aibox -a openrouterKey -w 2>/dev/null | head -c 6; echo "…"
    ```
 3. Expect: the real `sk-…` value is in the keychain, not in localStorage. Generation
    still works (key hydrated from keychain on startup).
@@ -47,4 +47,4 @@ npm run tauri dev        # launches the desktop app
 3. Tap **Sync** on each device.
 4. Expect: **both** edits survive on both devices — neither clobbers the other.
 5. Delete a document on one device, Sync the other → it stays deleted (not
-   resurrected). Recovery snapshots accumulate in `~/.ai-studio/backups/`.
+   resurrected). Recovery snapshots accumulate in `~/.ai-box/backups/`.

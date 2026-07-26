@@ -3,11 +3,11 @@
 // release, build a venv with its deps (PyTorch ships MPS-capable wheels on macOS),
 // download a curated checkpoint, then start/stop ComfyUI as a child process.
 //
-// Everything lives under ~/.ai-studio/comfy so it's isolated from any hand-rolled
+// Everything lives under ~/.ai-box/comfy so it's isolated from any hand-rolled
 // ComfyUI the user may already have. These commands are desktop-only (never
 // exposed over the companion server) — a phone can't drive a Mac subprocess.
 
-use crate::{expand_path, EventSink};
+use crate::EventSink;
 use serde::Serialize;
 use std::path::Path;
 use std::sync::Mutex;
@@ -19,7 +19,7 @@ const COMFY_TAG: &str = "v0.27.1";
 pub const COMFY_PORT: u16 = 8188;
 
 fn base_dir() -> String {
-    expand_path("~/.ai-studio/comfy")
+    crate::app_path("comfy")
 }
 fn src_dir() -> String {
     format!("{}/ComfyUI", base_dir())
@@ -292,7 +292,7 @@ async fn run_streamed(
 }
 
 const DOWNLOAD_UA: &str =
-    "AIStudio/0.1 (+https://github.com/GeroWalther/ai-studio)";
+    "AIBox/0.1 (+https://github.com/GeroWalther/ai-box)";
 const MAX_DL_ATTEMPTS: u32 = 5;
 
 /// Transient HTTP statuses worth retrying. 403 is included because Hugging Face's

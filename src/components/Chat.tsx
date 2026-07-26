@@ -58,7 +58,7 @@ const SESSIONS_KEY = "ai-studio.sessions";
 const SESSIONS_DEL_KEY = "ai-studio.sessions.deleted";
 
 const AGENT_SYSTEM =
-  "You are AI Studio, an agentic coworker running on the user's Mac (macOS, Apple Silicon). " +
+  "You are AI Box, an agentic coworker running on the user's Mac (macOS, Apple Silicon). " +
   "You CAN and SHOULD use your tools to actually do the work, not just describe it. " +
   "Tools: read_file, write_file, edit_file (targeted unique-match replace — prefer for small changes), " +
   "list_dir, search_files (grep/find), move_file, delete_file, run_command (shell), and web_fetch. " +
@@ -71,7 +71,7 @@ const AGENT_SYSTEM =
   "When the task is complete, reply normally with a short summary and no JSON.";
 
 const CHAT_SYSTEM =
-  "You are AI Studio, a capable, friendly assistant. Help with coding, writing, analysis, and general questions. Write correct, well-explained code. Be clear and concise.";
+  "You are AI Box, a capable, friendly assistant. Help with coding, writing, analysis, and general questions. Write correct, well-explained code. Be clear and concise.";
 
 function splitThink(raw: string): { think: string; answer: string } {
   if (!raw.includes("<think>")) return { think: "", answer: raw };
@@ -707,7 +707,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
             return (
               <div key={i} className={`msg ${m.role}`}>
                 <div className="msg-head">
-                  <div className="msg-role">{m.role === "user" ? "You" : "AI Studio"}</div>
+                  <div className="msg-role">{m.role === "user" ? "You" : "AI Box"}</div>
                   {!editing && m.role === "user" && !generating && (
                     <button className="msg-copy" title="Edit & resend" onClick={() => startEdit(i)}>
                       Edit
@@ -771,7 +771,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
               messages[messages.length - 1].role !== "assistant" ||
               messages[messages.length - 1].content === "") && (
               <div className="msg assistant">
-                <div className="msg-role">AI Studio</div>
+                <div className="msg-role">AI Box</div>
                 <div className="typing">
                   <span></span>
                   <span></span>
@@ -839,7 +839,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
               placeholder={
                 agentMode
                   ? "Ask the agent to build, edit files, install, run things…"
-                  : "Message AI Studio…  (Enter to send, Shift+Enter for newline)"
+                  : "Message AI Box…  (Enter to send, Shift+Enter for newline)"
               }
               value={input}
               onChange={(e) => setInput(e.target.value)}

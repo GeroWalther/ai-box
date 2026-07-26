@@ -1,4 +1,4 @@
-# AI Studio — Production-Readiness Plan
+# AI Box — Production-Readiness Plan
 
 Vision: **an OpenHands/Claude-Code-style agent for novelists** — writes and edits
 prose, acts as an agent on your Mac, works with **local (Ollama) and cloud
@@ -9,7 +9,7 @@ Status legend: ✅ done · 🔨 in progress · ⬜ todo
 
 ## North star — why this beats "LM Studio + a writing tool"
 Running uncensored local models is commodity (LM Studio, Ollama). The reason to
-choose AI Studio is the **combination no runtime offers**, carried by three
+choose AI Box is the **combination no runtime offers**, carried by three
 pillars:
 1. **Continuity-aware Story Bible** — keeps characters/world/canon consistent across
    a whole novel, not just the last few pages. *(v1 shipped — see Phase 0.)*
@@ -99,13 +99,13 @@ Everything else (signing, sync, packaging) makes it *shippable*; these three mak
      + settings ref) via the Tauri dialog + fs plugin — not just download-export
      (`ExportMenu.tsx` is download-only today). Makes work portable and removes the
      "localStorage got cleared → everything gone" risk.
-   - **Atomic writes** for `~/.ai-studio/store.json` (temp file + rename) and
+   - **Atomic writes** for `~/.ai-box/store.json` (temp file + rename) and
      **rolling backups** (keep last N) so one bad/concurrent write can't corrupt
      everything.
    - **Settings to disk**: settings (and thus keys, once in Keychain) currently have
      no disk mirror — mirror non-secret settings to disk so a cleared webview store
      isn't fatal.
-   - **Prune the image gallery**: `~/.ai-studio/images` grows unbounded — add a
+   - **Prune the image gallery**: `~/.ai-box/images` grows unbounded — add a
      size cap / LRU prune.
    - **Export formats**: Markdown / EPUB / DOCX for finished manuscripts.
 6. ✅ **Error UX + retries** — `friendly_http_error` (lib.rs) maps 401/403/404/402/

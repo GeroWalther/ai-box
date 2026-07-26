@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-studio"
+name = "ai-box"
 version = "0.1.0"
 dependencies = [
  "axum",

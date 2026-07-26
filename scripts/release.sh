@@ -15,7 +15,7 @@
 # One-time setup: docs/SIGNING.md (Apple certificate) and docs/UPDATES.md
 # (updater keypair). Required environment:
 #   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
-#   TAURI_SIGNING_PRIVATE_KEY (contents of ~/.tauri/aistudio-updater.key)
+#   TAURI_SIGNING_PRIVATE_KEY (contents of ~/.tauri/aibox-updater.key)
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD (empty if the key has no password)
 
 set -euo pipefail
@@ -23,7 +23,7 @@ cd "$(dirname "$0")/.."
 
 VERSION="${1:-}"
 PUBLISH="${2:-}"
-REPO="GeroWalther/ai-studio"
+REPO="GeroWalther/ai-box"
 OUT="dist-release"
 
 if [[ -z "$VERSION" ]]; then
@@ -79,8 +79,8 @@ SIG=$(find "$BUNDLE/macos" -name "*.app.tar.gz.sig" -maxdepth 1 | head -1)
 # GitHub rewrites spaces in asset names to dots, which would break the URLs
 # baked into latest.json. Give everything explicit, stable, space-free names.
 rm -rf "$OUT" && mkdir -p "$OUT"
-DMG_NAME="AI-Studio_${VERSION}_universal.dmg"
-TAR_NAME="AI-Studio_${VERSION}_universal.app.tar.gz"
+DMG_NAME="AI-Box_${VERSION}_universal.dmg"
+TAR_NAME="AI-Box_${VERSION}_universal.app.tar.gz"
 cp "$DMG" "$OUT/$DMG_NAME"
 cp "$TARBALL" "$OUT/$TAR_NAME"
 
@@ -119,7 +119,7 @@ DRAFT_FLAG="--draft"
 gh release create "v$VERSION" \
   "$OUT/$DMG_NAME" "$OUT/$TAR_NAME" "$OUT/latest.json" \
   --repo "$REPO" \
-  --title "AI Studio $VERSION" \
+  --title "AI Box $VERSION" \
   --generate-notes \
   $DRAFT_FLAG
 

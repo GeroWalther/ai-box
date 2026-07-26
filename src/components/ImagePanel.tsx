@@ -264,7 +264,7 @@ export default function ImagePanel({
   // A friendly file name from the first few words of the prompt.
   function fileName() {
     const slug = prompt.trim().split(/\s+/).slice(0, 6).join(" ").replace(/[^\w \-]/g, "").trim();
-    return slug ? slug : "ai-studio-image";
+    return slug ? slug : "ai-box-image";
   }
 
   // Save to the current device (the desktop webview, or the phone's own storage).
@@ -723,7 +723,7 @@ export default function ImagePanel({
                 Save PNG
               </button>
               {!isTauri() && (
-                <button className="btn" onClick={saveToMac} title="Save this image into the Downloads folder on the Mac/PC running AI Studio">
+                <button className="btn" onClick={saveToMac} title="Save this image into the Downloads folder on the Mac/PC running AI Box">
                   Save to Mac
                 </button>
               )}

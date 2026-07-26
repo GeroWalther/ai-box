@@ -21,6 +21,11 @@ import {
 } from "../lib/versionStore";
 import { EMPTY_BIBLE, type StoryBibleData } from "../lib/presets";
 
+// NOTE: the "ai-studio." prefix on these keys is deliberate and stays put across
+// the rename to AI Box. It is not just a localStorage key — it is also the key
+// this list is stored under in the shared store on the Mac, so changing it would
+// orphan every existing document and chat rather than rename them. Users never
+// see these strings; their data is worth more than the tidiness.
 export const DOCS_KEY = "ai-studio.documents";
 const DOCS_DEL_KEY = "ai-studio.documents.deleted";
 const LEGACY_DOC_KEY = "novel-studio.document";

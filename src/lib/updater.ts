@@ -13,7 +13,7 @@ export async function checkForUpdate(
     if (!update) return;
     onStatus(`Downloading update ${update.version}…`, "info");
     await update.downloadAndInstall();
-    onStatus(`Update ${update.version} installed — restart AI Studio to apply.`, "ready");
+    onStatus(`Update ${update.version} installed — restart AI Box to apply.`, "ready");
   } catch {
     /* offline, no release yet, or unsigned — silently skip */
   }

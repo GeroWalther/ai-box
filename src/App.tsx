@@ -359,7 +359,7 @@ export default function App() {
         aria-label="Main navigation"
       >
         <div className="sidebar-head">
-          <span className="sidebar-brand">AI Studio</span>
+          <span className="sidebar-brand">AI Box</span>
           <button
             className="sidebar-collapse"
             title={settings.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}

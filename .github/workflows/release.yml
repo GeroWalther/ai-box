@@ -57,6 +57,6 @@ jobs:
           # Universal binary so one .dmg runs on Apple Silicon AND Intel Macs.
           args: --target universal-apple-darwin
           tagName: ${{ github.ref_name }}
-          releaseName: "AI Studio ${{ github.ref_name }}"
+          releaseName: "AI Box ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false

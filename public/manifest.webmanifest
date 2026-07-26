@@ -1,6 +1,6 @@
 {
-  "name": "AI Studio",
-  "short_name": "AI Studio",
+  "name": "AI Box",
+  "short_name": "AI Box",
   "description": "Your Mac's AI workstation — writing, agentic chat, images and a terminal, from your phone.",
   "start_url": "/",
   "scope": "/",

@@ -1,4 +1,4 @@
-# AI Studio
+# AI Box
 
 **Your Mac's AI workstation — and a remote control for it from your phone.**
 
@@ -69,7 +69,7 @@ or Tailscale and drives the machine. The engineering that makes it safe:
 ## Install
 
 Download the signed `.dmg` from
-[Releases](https://github.com/GeroWalther/ai-studio/releases/latest).
+[Releases](https://github.com/GeroWalther/ai-box/releases/latest).
 Universal binary — Apple Silicon and Intel. The app updates itself from then on.
 
 ## Run it from source
