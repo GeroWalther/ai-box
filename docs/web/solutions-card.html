@@ -1,0 +1,45 @@
+<!--
+  Card for the Solutions grid on gw-intech.com.
+
+  Every other card ends in a mailto. This one is the exception on purpose: it's
+  a product people can have right now, so the primary action is the page, not an
+  email. "Contact" stays as the secondary action so the card still behaves like
+  its neighbours.
+
+  Adapt the class names to whatever the grid already uses — the markup below is
+  deliberately plain so it can inherit your existing card styles.
+-->
+
+<a class="solution-card solution-card--product" href="/solutions/ai-box">
+  <!-- Reuse the app icon at public/icon.svg from the repo, or a screenshot of
+       the Write tab, whichever matches the other cards' imagery. -->
+  <img src="/images/solutions/ai-box.png" alt="AI Box running on a Mac beside a phone showing the same session" />
+
+  <span class="solution-card__eyebrow">Product · macOS app · Free</span>
+
+  <h3>AI Box: Your Mac's AI Workstation, Controlled From Your Phone</h3>
+
+  <p>
+    Agentic chat, a writing studio, local image generation and a real terminal in
+    one native app — then the same app on your phone, driving the Mac while it
+    keeps your keys and does the work. Built with Tauri&nbsp;2, Rust and React.
+  </p>
+
+  <span class="solution-card__cta">See how it works &rarr;</span>
+</a>
+
+<style>
+  /* Only the bits that differ from your existing card styling. */
+  .solution-card--product { position: relative; }
+  .solution-card__eyebrow {
+    display: inline-block;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #6b5cf0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    margin-bottom: 0.5rem;
+  }
+  .solution-card__cta { font-weight: 600; color: #6b5cf0; }
+  .solution-card--product:hover .solution-card__cta { text-decoration: underline; }
+</style>

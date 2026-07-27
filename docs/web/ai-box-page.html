@@ -1,0 +1,672 @@
+<style>
+  /* ---------------------------------------------------------------------
+     AI Box — product page for gw-intech.com/solutions/ai-box
+
+     Self-contained: no external fonts, scripts or images, so it drops into a
+     Next.js page, an MDX file, or a plain static host unchanged.
+
+     Palette and type are lifted from the app's own tokens (src/styles/tokens.css)
+     so the page and the product read as one thing. Display face is monospace on
+     purpose — the subject is a machine you type at.
+     --------------------------------------------------------------------- */
+
+  .aib {
+    /* light ground */
+    --paper: #ffffff;
+    --panel: #f8f9fb;
+    --hairline: #e2e5eb;
+    --ink: #1b1d24;
+    --muted: #6c7280;
+    --accent: #6b5cf0;
+    --accent-deep: #5a48e8;
+    --accent-soft: rgba(107, 92, 240, 0.09);
+    --terminal-bg: #0e0e13;
+    --terminal-fg: #e6e6ea;
+    --good: #16a34a;
+
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+    --measure: 62ch;
+    --gutter: clamp(1.25rem, 4vw, 3rem);
+
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .aib {
+      --paper: #0d0e12;
+      --panel: #16181f;
+      --hairline: #272b36;
+      --ink: #eceef3;
+      --muted: #9096a4;
+      --accent: #8b7cf6;
+      --accent-deep: #7b6ef0;
+      --accent-soft: rgba(139, 124, 246, 0.14);
+      --terminal-bg: #08080c;
+    }
+  }
+  /* The viewer's explicit toggle must beat the OS preference, both ways. */
+  :root[data-theme="dark"] .aib {
+    --paper: #0d0e12;
+    --panel: #16181f;
+    --hairline: #272b36;
+    --ink: #eceef3;
+    --muted: #9096a4;
+    --accent: #8b7cf6;
+    --accent-deep: #7b6ef0;
+    --accent-soft: rgba(139, 124, 246, 0.14);
+    --terminal-bg: #08080c;
+  }
+  :root[data-theme="light"] .aib {
+    --paper: #ffffff;
+    --panel: #f8f9fb;
+    --hairline: #e2e5eb;
+    --ink: #1b1d24;
+    --muted: #6c7280;
+    --accent: #6b5cf0;
+    --accent-deep: #5a48e8;
+    --accent-soft: rgba(107, 92, 240, 0.09);
+    --terminal-bg: #0e0e13;
+  }
+
+  .aib *,
+  .aib *::before,
+  .aib *::after { box-sizing: border-box; }
+
+  .aib-wrap {
+    max-width: 68rem;
+    margin: 0 auto;
+    padding: 0 var(--gutter);
+  }
+
+  /* --- shared type ----------------------------------------------------- */
+  .aib-label {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: block;
+    margin-bottom: 1rem;
+  }
+  .aib h1, .aib h2, .aib h3 { text-wrap: balance; margin: 0; }
+  .aib h1 {
+    font-family: var(--mono);
+    font-size: clamp(2rem, 5.2vw, 3.4rem);
+    line-height: 1.04;
+    letter-spacing: -0.035em;
+    font-weight: 600;
+  }
+  .aib h2 {
+    font-family: var(--mono);
+    font-size: clamp(1.35rem, 2.6vw, 1.9rem);
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+    font-weight: 600;
+  }
+  .aib h3 {
+    font-size: 1.02rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+  .aib p { margin: 0; max-width: var(--measure); }
+  .aib strong { font-weight: 650; }
+  .aib code {
+    font-family: var(--mono);
+    font-size: 0.87em;
+    background: var(--accent-soft);
+    padding: 0.1em 0.38em;
+    border-radius: 3px;
+  }
+
+  /* --- hero ------------------------------------------------------------ */
+  .aib-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+    gap: clamp(2rem, 5vw, 4.5rem);
+    align-items: center;
+    padding: clamp(3rem, 8vw, 6rem) 0 clamp(2.5rem, 6vw, 4.5rem);
+  }
+  @media (max-width: 860px) {
+    .aib-hero { grid-template-columns: 1fr; }
+  }
+  .aib-hero-copy { display: flex; flex-direction: column; gap: 1.5rem; align-items: flex-start; }
+  .aib-lede { font-size: 1.1rem; color: var(--muted); }
+
+  .aib-cta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+  .aib-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.8rem 1.5rem;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.95rem;
+    text-decoration: none;
+    border: 1px solid transparent;
+    transition: background 0.15s ease, transform 0.15s ease;
+  }
+  .aib-btn:hover { background: var(--accent-deep); transform: translateY(-1px); }
+  .aib-btn-ghost {
+    background: transparent;
+    color: var(--ink);
+    border-color: var(--hairline);
+  }
+  .aib-btn-ghost:hover { background: var(--panel); border-color: var(--accent); }
+  .aib a:focus-visible, .aib button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+  .aib-fineprint {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+    letter-spacing: 0.01em;
+  }
+  .aib-fineprint span:not(:last-child)::after { content: " · "; }
+
+  /* --- terminal panel -------------------------------------------------- */
+  .aib-term {
+    background: var(--terminal-bg);
+    border-radius: 10px;
+    border: 1px solid var(--hairline);
+    box-shadow: 0 24px 60px rgba(20, 18, 45, 0.18);
+    overflow: hidden;
+    font-family: var(--mono);
+  }
+  .aib-term-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.7rem 0.9rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .aib-dot { width: 10px; height: 10px; border-radius: 50%; background: #3a3a46; }
+  .aib-term-title {
+    margin-left: 0.5rem;
+    font-size: 0.7rem;
+    color: #8a8a99;
+    letter-spacing: 0.06em;
+  }
+  .aib-term-body {
+    padding: 1.1rem 1.15rem 1.35rem;
+    font-size: 0.82rem;
+    line-height: 1.75;
+    color: var(--terminal-fg);
+    min-height: 17.5rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .aib-prompt { color: #8b7cf6; }
+  .aib-dim { color: #7e7e8f; }
+  .aib-ok { color: #5ddc9a; }
+  .aib-caret {
+    display: inline-block;
+    width: 0.5em;
+    height: 1em;
+    background: #8b7cf6;
+    vertical-align: -0.15em;
+    animation: aib-blink 1.1s steps(2, start) infinite;
+  }
+  @keyframes aib-blink { to { visibility: hidden; } }
+  @media (prefers-reduced-motion: reduce) {
+    .aib-caret { animation: none; }
+    .aib-btn:hover { transform: none; }
+  }
+
+  /* --- sections -------------------------------------------------------- */
+  .aib-section {
+    padding: clamp(2.75rem, 7vw, 5rem) 0;
+    border-top: 1px solid var(--hairline);
+  }
+  .aib-section-head { display: flex; flex-direction: column; gap: 0.9rem; margin-bottom: 2.5rem; }
+
+  /* problem / answer pair */
+  .aib-pair {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+    gap: clamp(1.25rem, 3vw, 2.5rem);
+  }
+  .aib-card {
+    padding: 1.5rem 1.6rem;
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+  .aib-card p { color: var(--muted); font-size: 0.95rem; }
+  .aib-card-accent { border-color: var(--accent); background: var(--accent-soft); }
+  .aib-card-accent p { color: var(--ink); }
+
+  /* setup — a real sequence, so the numbering carries meaning */
+  .aib-steps { display: grid; gap: 1.5rem; counter-reset: aib-step; }
+  .aib-step {
+    display: grid;
+    grid-template-columns: 2.6rem minmax(0, 1fr);
+    gap: 1.1rem;
+    align-items: start;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .aib-step:last-child { border-bottom: none; padding-bottom: 0; }
+  .aib-step::before {
+    counter-increment: aib-step;
+    content: counter(aib-step, decimal-leading-zero);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    padding-top: 0.22rem;
+  }
+  .aib-step-body { display: flex; flex-direction: column; gap: 0.4rem; }
+  .aib-step-body p { color: var(--muted); font-size: 0.95rem; }
+
+  /* spec table */
+  .aib-table-scroll { overflow-x: auto; }
+  .aib-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+    min-width: 34rem;
+  }
+  .aib-table th, .aib-table td {
+    text-align: left;
+    padding: 0.75rem 1rem 0.75rem 0;
+    border-bottom: 1px solid var(--hairline);
+    vertical-align: top;
+  }
+  .aib-table th {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    white-space: nowrap;
+    width: 12rem;
+  }
+  .aib-table td { color: var(--ink); }
+  .aib-table tr:last-child th, .aib-table tr:last-child td { border-bottom: none; }
+
+  /* security list */
+  .aib-guards { display: grid; gap: 0.85rem; padding: 0; margin: 0; list-style: none; }
+  .aib-guards li {
+    display: grid;
+    grid-template-columns: 1.3rem minmax(0, 1fr);
+    gap: 0.7rem;
+    align-items: start;
+    font-size: 0.95rem;
+    color: var(--muted);
+    max-width: var(--measure);
+  }
+  .aib-guards li::before {
+    content: "";
+    width: 7px; height: 7px;
+    border-radius: 2px;
+    background: var(--accent);
+    margin-top: 0.6rem;
+  }
+  .aib-guards b { color: var(--ink); font-weight: 620; }
+
+  /* closing download */
+  .aib-close {
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.25rem;
+  }
+  .aib-close p { margin-inline: auto; }
+</style>
+
+<div class="aib">
+  <div class="aib-wrap">
+
+    <!-- ============ hero: the thesis, and the thing itself ============ -->
+    <header class="aib-hero">
+      <div class="aib-hero-copy">
+        <span class="aib-label">Solution — macOS desktop application</span>
+        <h1>Your Mac does the&nbsp;work. You just aren't&nbsp;there.</h1>
+        <p class="aib-lede">
+          AI Box turns the Mac on your desk into an AI workstation — agentic chat,
+          a writing studio, image generation and a real terminal — then hands you
+          the controls on your phone. The machine does the work. The keys never
+          leave it.
+        </p>
+        <div class="aib-cta-row">
+          <a class="aib-btn" id="aib-download"
+             href="https://github.com/GeroWalther/ai-box/releases/latest" rel="noopener">
+            Download for macOS
+          </a>
+          <a class="aib-btn aib-btn-ghost"
+             href="https://github.com/GeroWalther/ai-box" rel="noopener">
+            Read the source
+          </a>
+        </div>
+        <p class="aib-fineprint">
+          <span id="aib-version">Free</span><span id="aib-count"></span><span>Universal — Apple Silicon &amp; Intel</span><span>Signed &amp; notarized</span>
+        </p>
+      </div>
+
+      <!-- The most characteristic thing in this product's world: a phone typing
+           into a shell that is running on a Mac somewhere else. -->
+      <div class="aib-term" role="img"
+           aria-label="A terminal session on the Mac, driven from a phone: a command is typed, the Mac asks for approval, and the result comes back.">
+        <div class="aib-term-bar">
+          <span class="aib-dot"></span><span class="aib-dot"></span><span class="aib-dot"></span>
+          <span class="aib-term-title">iPhone → MacBook Pro · ai-box</span>
+        </div>
+        <div class="aib-term-body" id="aib-term-body"></div>
+      </div>
+    </header>
+
+    <!-- ============ the problem ============ -->
+    <section class="aib-section">
+      <div class="aib-section-head">
+        <span class="aib-label">The problem</span>
+        <h2>Powerful AI is either in someone else's cloud, or chained to your desk.</h2>
+      </div>
+      <div class="aib-pair">
+        <div class="aib-card">
+          <h3>Cloud tools see everything</h3>
+          <p>
+            Your manuscript, your client's codebase, your API keys. You accept
+            someone else's content policy and someone else's retention terms to
+            get work done.
+          </p>
+        </div>
+        <div class="aib-card">
+          <h3>Local tools stop at the desk</h3>
+          <p>
+            Running models on your own hardware fixes the privacy problem and
+            creates a new one: the moment you stand up, the most capable computer
+            you own goes idle.
+          </p>
+        </div>
+        <div class="aib-card aib-card-accent">
+          <h3>AI Box does both</h3>
+          <p>
+            The Mac stays the source of truth and the only holder of secrets. Your
+            phone is a window onto it — same app, same documents, over your own
+            network. Nothing is hosted for you, because nothing needs to be.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ what's inside ============ -->
+    <section class="aib-section">
+      <div class="aib-section-head">
+        <span class="aib-label">What's inside</span>
+        <h2>Four tools that already know about each other.</h2>
+      </div>
+      <div class="aib-pair">
+        <div class="aib-card">
+          <h3>Agentic chat</h3>
+          <p>
+            Reads and edits files, searches a codebase, runs shell commands,
+            fetches pages. Every destructive step shows a diff and asks first.
+          </p>
+        </div>
+        <div class="aib-card">
+          <h3>Writing studio</h3>
+          <p>
+            Continue a passage mid-sentence, or proofread a selection and accept
+            the corrections one at a time. Modes for fiction, business, marketing
+            and academic work. Version history on disk.
+          </p>
+        </div>
+        <div class="aib-card">
+          <h3>Image generation</h3>
+          <p>
+            A managed ComfyUI the app installs for you — no Python setup — running
+            on your own GPU. Illustrate a scene straight from your manuscript.
+          </p>
+        </div>
+        <div class="aib-card">
+          <h3>A real terminal</h3>
+          <p>
+            An actual PTY, not a command box. <code>vim</code>, <code>top</code>,
+            <code>claude</code> — from the sofa, or from a train.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ setup: a genuine sequence ============ -->
+    <section class="aib-section">
+      <div class="aib-section-head">
+        <span class="aib-label">Setup — about five minutes</span>
+        <h2>Three steps, and one of them is optional.</h2>
+      </div>
+      <div class="aib-steps">
+        <div class="aib-step">
+          <div class="aib-step-body">
+            <h3>Install it</h3>
+            <p>
+              Download the <code>.dmg</code> and drag it across. It's signed and
+              notarized by Apple, so it opens like any other app — no
+              right-click-to-open dance. It updates itself from then on.
+            </p>
+          </div>
+        </div>
+        <div class="aib-step">
+          <div class="aib-step-body">
+            <h3>Point it at a model</h3>
+            <p>
+              Paste an OpenRouter key to use frontier models, or install a local
+              one through Ollama from inside the app and run entirely offline. Any
+              OpenAI-compatible endpoint works too. Keys go into the macOS
+              Keychain, never a config file.
+            </p>
+          </div>
+        </div>
+        <div class="aib-step">
+          <div class="aib-step-body">
+            <h3>Pair your phone <span class="aib-fineprint">— optional</span></h3>
+            <p>
+              Scan a QR code. Your phone opens the same app over your home network
+              and installs to the home screen. Add Tailscale on both devices and it
+              works from anywhere, still without touching the public internet.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ how it's built ============ -->
+    <section class="aib-section">
+      <div class="aib-section-head">
+        <span class="aib-label">How it's built</span>
+        <h2>One codebase, two transports.</h2>
+        <p>
+          Every capability is written once against a transport layer that resolves
+          at runtime to either Tauri IPC or an HTTP + WebSocket connection. That is
+          why the phone isn't a cut-down companion app — it is the same app.
+        </p>
+      </div>
+      <div class="aib-table-scroll">
+        <table class="aib-table">
+          <tbody>
+            <tr>
+              <th scope="row">Shell</th>
+              <td>Tauri 2 — a Rust backend with the system WebView. ~17 MB installed, not a bundled browser.</td>
+            </tr>
+            <tr>
+              <th scope="row">Interface</th>
+              <td>React 19 + TypeScript. TipTap/ProseMirror for the editor, xterm.js for the terminal.</td>
+            </tr>
+            <tr>
+              <th scope="row">Backend</th>
+              <td>Rust: provider streaming with server-side cancellation, PTY sessions, filesystem tools behind a path guard.</td>
+            </tr>
+            <tr>
+              <th scope="row">Remote</th>
+              <td>An axum HTTP + WebSocket server on the Mac, serving the same bundle to the phone. Bearer auth, constant-time comparison, fails closed.</td>
+            </tr>
+            <tr>
+              <th scope="row">Sync</th>
+              <td>Item-level merge with tombstones. Edit the same document on both devices and neither side loses work.</td>
+            </tr>
+            <tr>
+              <th scope="row">Images</th>
+              <td>A managed ComfyUI runtime the app installs and supervises, or Automatic1111, or cloud models.</td>
+            </tr>
+            <tr>
+              <th scope="row">Distribution</th>
+              <td>Universal binary, Developer ID signed, Apple-notarized, with minisign-verified auto-updates.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ the guardrails ============ -->
+    <section class="aib-section">
+      <div class="aib-section-head">
+        <span class="aib-label">Because it can touch your machine</span>
+        <h2>An agent with real access needs real limits.</h2>
+      </div>
+      <ul class="aib-guards">
+        <li><span><b>Your API key never leaves the Mac.</b> The phone gets a placeholder so its interface knows a key exists; the Mac injects the real one when the request goes out.</span></li>
+        <li><span><b>File access is jailed</b> to a workspace folder you choose, with <code>..</code> traversal and symlink escapes rejected in Rust, not in the interface.</span></li>
+        <li><span><b>Credentials are off-limits, always.</b> <code>~/.ssh</code>, <code>~/.aws</code>, keychains, shell startup files and LaunchAgents are refused outright — and turning off approval prompts does not turn this off.</span></li>
+        <li><span><b>The Mac approves, not the phone.</b> A remote request to write a file or run a command raises a prompt with a diff on the desktop. Working away from your desk? One toggle, and only that toggle, changes it.</span></li>
+        <li><span><b>Your words stay yours.</b> Drafts are snapshotted to disk continuously, restorable, and exportable to a folder you own. With a local model, nothing leaves the machine at all.</span></li>
+      </ul>
+    </section>
+
+    <!-- ============ close ============ -->
+    <section class="aib-section">
+      <div class="aib-close">
+        <span class="aib-label">Free — bring your own key</span>
+        <h2>Take it for a run.</h2>
+        <p style="color: var(--muted);">
+          AI Box is free and never hosts your content or pays for inference — you
+          choose the model and the account it bills to. Built and maintained by
+          Gero Walther.
+        </p>
+        <div class="aib-cta-row" style="justify-content: center;">
+          <a class="aib-btn" id="aib-download-2"
+             href="https://github.com/GeroWalther/ai-box/releases/latest" rel="noopener">
+            Download for macOS
+          </a>
+          <a class="aib-btn aib-btn-ghost" href="mailto:office@gw-intech.com">
+            Talk to me about it
+          </a>
+        </div>
+        <p class="aib-fineprint">macOS 10.15 or later · Apple Silicon &amp; Intel</p>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script>
+  (function () {
+    /* ---- live release data ------------------------------------------------
+       Resolves the current download URL from the GitHub API rather than
+       hard-coding it, so cutting a release updates this page with no edit. The
+       same response carries the download count. Cached for an hour because
+       unauthenticated calls are limited to 60/hour per IP, and the buttons keep
+       a working fallback href so a failed call is never a dead end.        */
+    var REPO = "GeroWalther/ai-box";
+    var CACHE_KEY = "aibox-release-cache";
+    var CACHE_MS = 3600000;
+
+    function render(d) {
+      if (!d || !d.url) return;
+      ["aib-download", "aib-download-2"].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.href = d.url;
+      });
+      var v = document.getElementById("aib-version");
+      if (v && d.version) v.textContent = "Free · " + d.version;
+      var c = document.getElementById("aib-count");
+      if (c && d.downloads > 0) c.textContent = d.downloads.toLocaleString() + " downloads";
+    }
+
+    try {
+      var hit = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+      if (hit && Date.now() - hit.at < CACHE_MS) { render(hit); }
+      else { throw new Error("stale"); }
+    } catch (e) {
+      fetch("https://api.github.com/repos/" + REPO + "/releases/latest")
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(function (rel) {
+          var dmg = (rel.assets || []).filter(function (a) { return /\.dmg$/.test(a.name); })[0];
+          if (!dmg) return;
+          var d = { at: Date.now(), url: dmg.browser_download_url, version: rel.tag_name, downloads: dmg.download_count };
+          try { localStorage.setItem(CACHE_KEY, JSON.stringify(d)); } catch (_) {}
+          render(d);
+        })
+        .catch(function () { /* fallback hrefs already point at the releases page */ });
+    }
+
+    /* ---- the hero terminal -------------------------------------------------
+       Types a real interaction: a command sent from the phone, the approval the
+       Mac raises for it, and the result. Static for anyone who prefers reduced
+       motion — the content is identical, it just arrives at once.           */
+    var body = document.getElementById("aib-term-body");
+    if (!body) return;
+
+    var LINES = [
+      { t: 'ssh — you are on the sofa\n', c: "aib-dim" },
+      { t: "$ ", c: "aib-prompt" },
+      { t: "claude 'why is the build failing?'\n", type: true },
+      { t: "\n· reading vite.config.ts\n· reading package.json\n", c: "aib-dim", delay: 420 },
+      { t: "\n⧉ approve on your Mac: run `npm ci`\n", c: "aib-prompt", delay: 380 },
+      { t: "  approved from the desktop\n", c: "aib-ok", delay: 700 },
+      { t: "\nThe lockfile drifted after the rename.\nReinstalled — build passes.\n", delay: 420 },
+      { t: "\n$ ", c: "aib-prompt" }
+    ];
+
+    var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    function span(text, cls) {
+      var s = document.createElement("span");
+      if (cls) s.className = cls;
+      s.textContent = text;
+      return s;
+    }
+
+    if (reduced) {
+      LINES.forEach(function (l) { body.appendChild(span(l.t, l.c)); });
+      body.appendChild(span("", "aib-caret"));
+      return;
+    }
+
+    var i = 0;
+    function next() {
+      if (i >= LINES.length) {
+        body.appendChild(span("", "aib-caret"));
+        return;
+      }
+      var line = LINES[i++];
+      if (!line.type) {
+        body.appendChild(span(line.t, line.c));
+        setTimeout(next, line.delay || 140);
+        return;
+      }
+      // Typed character by character, at a speed a person could plausibly reach.
+      var el = span("", line.c);
+      body.appendChild(el);
+      var n = 0;
+      (function tick() {
+        el.textContent += line.t.charAt(n++);
+        if (n < line.t.length) setTimeout(tick, 34);
+        else setTimeout(next, line.delay || 200);
+      })();
+    }
+    setTimeout(next, 500);
+  })();
+</script>
