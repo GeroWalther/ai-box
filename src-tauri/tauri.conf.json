@@ -38,7 +38,12 @@
     "macOS": {
       "entitlements": "entitlements.plist",
       "minimumSystemVersion": "10.15"
-    }
+    },
+    "category": "Productivity",
+    "copyright": "\u00a9 2026 Gero Walther",
+    "shortDescription": "Your Mac's AI workstation, drivable from your phone.",
+    "longDescription": "AI Box puts agentic chat, a writing studio, local image generation and a real terminal behind one window \u2014 and lets you drive all of it from your phone while the Mac does the work and keeps the keys.",
+    "publisher": "Gero Walther"
   },
   "plugins": {
     "updater": {

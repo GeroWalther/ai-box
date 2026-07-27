@@ -1,4 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="AI Box">
+  <!-- Browser tab / PWA icon. Same mark as the native app icon
+       (src-tauri/app-icon.svg), drawn full-bleed since the web has no dock
+       padding convention. -->
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#7b6ef0"/>
@@ -6,12 +9,12 @@
     </linearGradient>
   </defs>
   <rect width="512" height="512" rx="114" fill="url(#g)"/>
-  <!-- A nib: the writing surface and the machine driving it, in one mark. -->
-  <path d="M168 344 L344 168" stroke="#fff" stroke-width="26" stroke-linecap="round" opacity="0.95"/>
-  <path d="M150 362 L124 388 L162 380 Z" fill="#fff" opacity="0.95"/>
-  <circle cx="352" cy="160" r="30" fill="#fff" opacity="0.95"/>
-  <!-- Three dots: the remote device listening to it. -->
-  <circle cx="176" cy="176" r="13" fill="#fff" opacity="0.55"/>
-  <circle cx="176" cy="228" r="13" fill="#fff" opacity="0.35"/>
-  <circle cx="228" cy="176" r="13" fill="#fff" opacity="0.35"/>
+  <g fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M140 232 L256 181 L372 232 L256 283 Z" opacity="0.95"/>
+    <path d="M140 232 L140 338 L256 389 L372 338 L372 232" opacity="0.95"/>
+    <path d="M256 283 L256 389" opacity="0.6"/>
+  </g>
+  <circle cx="256" cy="131" r="15" fill="#ffffff" opacity="0.95"/>
+  <circle cx="306" cy="144" r="10" fill="#ffffff" opacity="0.6"/>
+  <circle cx="206" cy="144" r="10" fill="#ffffff" opacity="0.6"/>
 </svg>
