@@ -1,0 +1,39 @@
+Copyright © 2026 Gero Walther. All rights reserved.
+
+AI Box is source-available, not open source.
+
+WHAT YOU MAY DO
+
+  - View, read, and study this source code.
+  - Clone and build it for your own personal, non-commercial use.
+  - Submit contributions, on the understanding that doing so grants the copyright
+    holder an unrestricted, perpetual licence to use them in this project,
+    including in versions distributed for a fee.
+
+WHAT YOU MAY NOT DO WITHOUT WRITTEN PERMISSION
+
+  - Redistribute this software, modified or unmodified, in source or binary form.
+  - Sell it, host it as a service, or otherwise use it commercially.
+  - Publish a derivative work or a fork intended for distribution.
+
+NO WARRANTY
+
+  This software is provided "as is", without warranty of any kind, express or
+  implied, including but not limited to the warranties of merchantability,
+  fitness for a particular purpose, and non-infringement. In no event shall the
+  copyright holder be liable for any claim, damages, or other liability, whether
+  in an action of contract, tort, or otherwise, arising from, out of, or in
+  connection with the software or its use.
+
+  AI Box runs commands and modifies files on your machine at the direction of a
+  language model, and generates content using third-party AI providers you
+  choose and pay for. You are responsible for what it does on your machine and
+  for the content you generate with it.
+
+TRADEMARKS AND THIRD-PARTY COMPONENTS
+
+  This licence covers the source code of AI Box only. It grants no rights to any
+  name, logo, or mark. Third-party dependencies remain under their own licences.
+
+For any other use, or to discuss licensing, contact the copyright holder via
+https://gw-intech.com.

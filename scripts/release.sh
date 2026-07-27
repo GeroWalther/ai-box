@@ -109,7 +109,13 @@ echo "==> Verifying signature & notarization"
 
 echo "==> Committing the version bump and tagging"
 git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
-git commit -m "Release v$VERSION"
+# The version may already have been bumped by hand, leaving nothing to commit —
+# which would abort the whole release under `set -e`. Only commit if it changed.
+if git diff --cached --quiet; then
+  echo "    (version already committed — nothing to bump)"
+else
+  git commit -m "Release v$VERSION"
+fi
 git tag "v$VERSION"
 git push origin HEAD --tags
 
