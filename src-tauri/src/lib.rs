@@ -1678,7 +1678,14 @@ const KEYCHAIN_SERVICE: &str = "com.gwintech.aibox";
 /// forward — a list rather than a single value because the project has now been
 /// renamed twice, and "one rename" is clearly not a safe assumption.
 #[cfg(not(debug_assertions))]
-const LEGACY_KEYCHAIN_SERVICES: &[&str] = &["com.gwintech.aistudio", "com.novelstudio.app"];
+const LEGACY_KEYCHAIN_SERVICES: &[&str] = &[
+    "com.gwintech.aistudio",
+    "com.novelstudio.app",
+    // The identifier the first public builds actually shipped with. Easy to
+    // forget because it was only ever a placeholder, but installs from July 2026
+    // store their API key under it.
+    "com.gerosmacbookpro.novel-studio",
+];
 
 // In DEBUG (dev) builds the binary is unsigned and its identity changes on every
 // rebuild, so macOS re-prompts for the login-keychain password on every key read.
