@@ -90,16 +90,32 @@ SIGNATURE=$(cat "$SIG")
 NOTES="See the release page for what changed."
 # One universal binary serves both architectures, so every darwin key points at
 # the same artifact — the updater looks itself up by arch and must find an entry.
-node -e "
+# The env assignments MUST precede `node`. Written after it they become
+# positional arguments, process.env.SIGNATURE is undefined, and JSON.stringify
+# silently drops the key — producing a manifest that looks fine and that every
+# updater rejects for having no signature.
+SIGNATURE="$SIGNATURE" NOTES="$NOTES" node -e "
 const fs=require('fs');
-const entry={signature:process.env.SIGNATURE,url:'$BASE/$TAR_NAME'};
+const sig=process.env.SIGNATURE;
+if (!sig) { console.error('empty updater signature'); process.exit(1); }
+const entry={signature:sig,url:'$BASE/$TAR_NAME'};
 fs.writeFileSync('$OUT/latest.json', JSON.stringify({
   version:'$VERSION',
   notes:process.env.NOTES,
   pub_date:new Date().toISOString(),
   platforms:{'darwin-universal':entry,'darwin-aarch64':entry,'darwin-x86_64':entry},
 },null,2)+'\n');
-" SIGNATURE="$SIGNATURE" NOTES="$NOTES"
+"
+
+# Fail loudly rather than shipping an unusable manifest.
+node -e "
+const j=require('./$OUT/latest.json');
+for (const [k,v] of Object.entries(j.platforms)) {
+  if (!v.signature) { console.error('latest.json: no signature for '+k); process.exit(1); }
+  if (!v.url) { console.error('latest.json: no url for '+k); process.exit(1); }
+}
+console.log('    latest.json: signature present for all platforms');
+"
 
 echo "==> Verifying signature & notarization"
 ./scripts/verify-signing.sh "$(find "$BUNDLE/macos" -maxdepth 1 -name '*.app' | head -1)" || {

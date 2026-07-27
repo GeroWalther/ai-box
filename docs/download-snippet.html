@@ -1,0 +1,122 @@
+<!--
+  Drop-in download section for gw-intech.com.
+
+  It resolves the current release from the GitHub API at page load rather than
+  hard-coding a URL, so cutting a new release updates the site with no edit. The
+  same call returns download counts, which is why GitHub Releases is the origin:
+  the counter needs no tracking of its own.
+
+  Unauthenticated API calls are limited to 60/hour per IP, so the result is
+  cached in localStorage for an hour, and the button always has a working
+  fallback href in case the call fails or the visitor blocks it.
+
+  No dependencies. Style it to match your site — the CSS here is a starting point.
+-->
+
+<section class="aibox-download">
+  <h2>AI Box</h2>
+  <p class="aibox-tagline">
+    Your Mac's AI workstation — agentic chat, a writing studio, local image
+    generation and a real terminal. Drive all of it from your phone while the Mac
+    does the work and keeps the keys.
+  </p>
+
+  <a
+    class="aibox-btn"
+    id="aibox-download"
+    href="https://github.com/GeroWalther/ai-box/releases/latest"
+    rel="noopener"
+  >
+    Download for macOS
+  </a>
+
+  <p class="aibox-meta">
+    <span id="aibox-version"></span>
+    <span id="aibox-count"></span>
+    Universal — Apple Silicon &amp; Intel · macOS 10.15+ · free, bring your own API key
+  </p>
+</section>
+
+<style>
+  .aibox-download { max-width: 44rem; margin: 4rem auto; text-align: center; }
+  .aibox-tagline { color: #555; line-height: 1.6; margin-bottom: 2rem; }
+  .aibox-btn {
+    display: inline-block;
+    padding: 0.9rem 2rem;
+    border-radius: 999px;
+    background: #6b5cf0;
+    color: #fff;
+    font-weight: 600;
+    text-decoration: none;
+    transition: transform 0.15s ease, background 0.15s ease;
+  }
+  .aibox-btn:hover { background: #5a48e8; transform: translateY(-1px); }
+  .aibox-meta { margin-top: 1rem; font-size: 0.85rem; color: #777; }
+  .aibox-meta span:not(:empty)::after { content: " · "; }
+  @media (prefers-color-scheme: dark) {
+    .aibox-tagline { color: #aaa; }
+    .aibox-meta { color: #888; }
+  }
+</style>
+
+<script>
+  (function () {
+    var REPO = "GeroWalther/ai-box";
+    var CACHE_KEY = "aibox-release-cache";
+    var CACHE_MS = 60 * 60 * 1000; // one hour — well inside the rate limit
+
+    function render(data) {
+      if (!data || !data.url) return;
+      document.getElementById("aibox-download").href = data.url;
+      document.getElementById("aibox-version").textContent = data.version || "";
+      if (data.downloads > 0) {
+        document.getElementById("aibox-count").textContent =
+          data.downloads.toLocaleString() + " downloads";
+      }
+    }
+
+    function cached() {
+      try {
+        var raw = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+        if (raw && Date.now() - raw.at < CACHE_MS) return raw;
+      } catch (e) {
+        /* ignore corrupt cache */
+      }
+      return null;
+    }
+
+    var hit = cached();
+    if (hit) {
+      render(hit);
+      return;
+    }
+
+    fetch("https://api.github.com/repos/" + REPO + "/releases/latest")
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (release) {
+        var dmg = (release.assets || []).filter(function (a) {
+          return /\.dmg$/.test(a.name);
+        })[0];
+        if (!dmg) return;
+        var data = {
+          at: Date.now(),
+          url: dmg.browser_download_url,
+          version: release.tag_name,
+          downloads: dmg.download_count,
+        };
+        try {
+          localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+        } catch (e) {
+          /* private mode — fine, we just refetch next time */
+        }
+        render(data);
+      })
+      .catch(function () {
+        /* Rate-limited, offline, or blocked — the button's fallback href still
+           points at the releases page, so the visitor can always download. */
+      });
+  })();
+</script>
