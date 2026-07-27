@@ -102,7 +102,7 @@ fs.writeFileSync('$OUT/latest.json', JSON.stringify({
 " SIGNATURE="$SIGNATURE" NOTES="$NOTES"
 
 echo "==> Verifying signature & notarization"
-./scripts/verify-signing.sh || {
+./scripts/verify-signing.sh "$(find "$BUNDLE/macos" -maxdepth 1 -name '*.app' | head -1)" || {
   echo "signing verification failed — not uploading" >&2
   exit 1
 }
