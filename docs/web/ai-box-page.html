@@ -172,6 +172,29 @@
   }
   .aib-fineprint span:not(:last-child)::after { content: " · "; }
 
+  .aib-beta {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.62rem;
+    letter-spacing: 0.1em;
+    vertical-align: 0.06em;
+  }
+  .aib-note {
+    font-size: 0.9rem;
+    color: var(--muted);
+    padding: 0.9rem 1.1rem;
+    border-left: 2px solid var(--accent);
+    background: var(--accent-soft);
+    border-radius: 0 8px 8px 0;
+  }
+  .aib-note b { color: var(--ink); }
+  .aib a { color: var(--accent); }
+  .aib-note a { text-decoration: underline; text-underline-offset: 2px; }
+
   /* --- terminal panel -------------------------------------------------- */
   .aib-term {
     background: var(--terminal-bg);
@@ -334,7 +357,7 @@
     <!-- ============ hero: the thesis, and the thing itself ============ -->
     <header class="aib-hero">
       <div class="aib-hero-copy">
-        <span class="aib-label">Solution — macOS desktop application</span>
+        <span class="aib-label">Solution — macOS desktop application <span class="aib-beta">Beta</span></span>
         <h1>Your Mac does the&nbsp;work. You just aren't&nbsp;there.</h1>
         <p class="aib-lede">
           AI Box turns the Mac on your desk into an AI workstation — agentic chat,
@@ -354,6 +377,13 @@
         </div>
         <p class="aib-fineprint">
           <span id="aib-version">Free</span><span id="aib-count"></span><span>Universal — Apple Silicon &amp; Intel</span><span>Signed &amp; notarized</span>
+        </p>
+        <p class="aib-note">
+          <b>This is a public beta.</b> It's stable enough that I use it for my own
+          work every day, and free while it's in testing. What I want back is what
+          broke, what confused you, and what you wish it did —
+          <a href="https://github.com/GeroWalther/ai-box/issues/new" rel="noopener">open an issue</a>
+          or <a href="mailto:office@gw-intech.com?subject=AI%20Box%20beta%20feedback">email me</a>.
         </p>
       </div>
 
@@ -548,23 +578,24 @@
     <!-- ============ close ============ -->
     <section class="aib-section">
       <div class="aib-close">
-        <span class="aib-label">Free — bring your own key</span>
-        <h2>Take it for a run.</h2>
+        <span class="aib-label">Free during beta — bring your own key</span>
+        <h2>Take it for a run, then tell me what broke.</h2>
         <p style="color: var(--muted);">
           AI Box is free and never hosts your content or pays for inference — you
           choose the model and the account it bills to. Built and maintained by
-          Gero Walther.
+          GW-InTech.
         </p>
         <div class="aib-cta-row" style="justify-content: center;">
           <a class="aib-btn" id="aib-download-2"
              href="https://github.com/GeroWalther/ai-box/releases/latest" rel="noopener">
             Download for macOS
           </a>
-          <a class="aib-btn aib-btn-ghost" href="mailto:office@gw-intech.com">
-            Talk to me about it
+          <a class="aib-btn aib-btn-ghost"
+             href="https://github.com/GeroWalther/ai-box/issues/new" rel="noopener">
+            Send feedback
           </a>
         </div>
-        <p class="aib-fineprint">macOS 10.15 or later · Apple Silicon &amp; Intel</p>
+        <p class="aib-fineprint">macOS 10.15 or later · Apple Silicon &amp; Intel · Beta — expect rough edges, and please report them</p>
       </div>
     </section>
 
