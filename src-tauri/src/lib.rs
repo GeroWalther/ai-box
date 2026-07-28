@@ -2446,7 +2446,9 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 use tauri::Manager;
                 app.state::<comfy::ManagedComfy>().kill();
-                app.state::<pty::PtyRegistry>().kill_all();
+                // Save each terminal's screen + cwd before the shells die, so the
+                // next launch reopens them where you left off.
+                app.state::<pty::PtyRegistry>().shutdown();
             }
         });
 }

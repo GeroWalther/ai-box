@@ -1,8 +1,12 @@
 // Interactive terminals: real shells on the Mac rendered with xterm.js over a PTY
 // (see src-tauri/src/pty.rs). Multiple named terminals live side by side like chat
 // sessions — each keeps its own shell alive across tab switches, so a long-running
-// command in one keeps going while you work in another. The tab list persists; the
-// shells themselves are fresh each app launch (PTYs don't survive a restart).
+// command in one keeps going while you work in another.
+//
+// Across an app restart the tab list persists, and so does what each tab was
+// showing: the backend replays the saved transcript (ending in a "previous
+// session" divider) and starts the fresh shell in the same directory. The shell
+// process itself cannot survive — anything that was running is not still running.
 import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";

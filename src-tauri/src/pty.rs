@@ -3,15 +3,24 @@
 // WebSocket (phone sleep, Wi-Fi↔cellular, Tailscale reconnect): the client simply
 // re-attaches to the same id and the recent output is replayed. Serves the desktop
 // webview (Tauri Channel) and a paired phone (companion WebSocket) identically.
+//
+// A shell cannot outlive the app — its PTY master fd belongs to this process — so
+// quitting really does end every shell. What we can carry across a restart is what
+// you were LOOKING at and where you were: each session's recent output and its
+// working directory are snapshotted to ~/.ai-box/terminals, and a tab reopened
+// after a restart replays that screen before its fresh shell starts, in the same
+// directory. Running processes are gone; the transcript and your place aren't.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::{emit_ev, EventSink};
@@ -19,15 +28,183 @@ use crate::{emit_ev, EventSink};
 /// How much recent output to keep per session for replay on re-attach.
 const BUFFER_CAP: usize = 512 * 1024;
 
+/// How often a live session writes its screen to disk. Quitting snapshots
+/// everything anyway; this exists so a crash or a force-quit costs you at most
+/// this much of the transcript.
+const SNAPSHOT_EVERY: Duration = Duration::from_secs(20);
+
+/// Saved screens older than this are dropped at shutdown, so tabs closed on
+/// another device don't leave records behind forever.
+const RECORD_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+/// Escape sequences that put the emulator back in a sane state before we print
+/// the divider: the saved tail may have ended inside a full-screen TUI (claude,
+/// vim, top), which would otherwise swallow everything after it.
+const RESTORE_RESET: &str = "\x1b[?1049l\x1b[?25h\x1b[?7h\x1b[0m";
+const RESTORE_BANNER: &str = "\r\n\x1b[90m── previous session (restored) ──\x1b[0m\r\n";
+
+/// What we keep on disk for one terminal tab between app runs.
+#[derive(Serialize, Deserialize, Default)]
+struct SavedTerm {
+    /// The shell's working directory when we last looked.
+    #[serde(default)]
+    cwd: Option<String>,
+    /// Unix ms, for TTL pruning.
+    #[serde(default)]
+    saved_at: u64,
+    /// Recent raw terminal output, base64.
+    #[serde(default)]
+    screen: String,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Session ids come from the client — including a paired phone — so they are
+/// untrusted input on a path. Reduce to an unmistakably safe filename stem, and
+/// refuse (`None`) rather than guess if nothing usable is left.
+fn record_stem(id: &str) -> Option<String> {
+    let stem: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(64)
+        .collect();
+    if stem.is_empty() {
+        None
+    } else {
+        Some(stem)
+    }
+}
+
+fn record_path(id: &str) -> Option<String> {
+    record_stem(id).map(|s| crate::app_path(&format!("terminals/{s}.json")))
+}
+
+fn load_record(id: &str) -> Option<SavedTerm> {
+    let path = record_path(id)?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn write_record(id: &str, rec: &SavedTerm) {
+    let Some(path) = record_path(id) else { return };
+    if let Some(parent) = Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let Ok(json) = serde_json::to_string(rec) else { return };
+    // Temp file + rename, so a quit mid-write can't leave a truncated record
+    // that would replay as garbage on the next launch.
+    let tmp = format!("{path}.tmp");
+    if std::fs::write(&tmp, json).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+fn delete_record(id: &str) {
+    if let Some(path) = record_path(id) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Drop saved screens nobody has re-opened in a month.
+fn prune_records() {
+    let dir = crate::app_path("terminals");
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    let cutoff = now_ms().saturating_sub(RECORD_TTL_MS);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let stale = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<SavedTerm>(&raw).ok())
+            .map(|rec| rec.saved_at < cutoff)
+            .unwrap_or(true); // unreadable → not worth keeping
+        if stale {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// The working directory of a running process. Used to reopen a restored tab
+/// where you left it instead of dumping you back in $HOME.
+#[cfg(target_os = "macos")]
+fn process_cwd(pid: u32) -> Option<String> {
+    // `lsof -a -d cwd -Fn -p PID` prints machine-readable fields, one per line;
+    // the cwd path is the line beginning with 'n'.
+    let out = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-a", "-d", "cwd", "-Fn", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix('n').map(str::to_string))
+        .filter(|p| !p.is_empty())
+}
+
+#[cfg(target_os = "linux")]
+fn process_cwd(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_cwd(_pid: u32) -> Option<String> {
+    None
+}
+
 /// One live shell + its PTY, its output fanned out to a replay buffer and a
 /// broadcast so multiple/rotating clients can attach over the session's lifetime.
 struct PtySession {
+    /// The tab id this shell belongs to — also the name of its saved screen.
+    id: String,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     tx: broadcast::Sender<Vec<u8>>,
     buffer: Mutex<VecDeque<u8>>,
     dead: AtomicBool,
+    /// Last directory we saw the shell in, kept so a snapshot still has one if
+    /// the lookup fails (e.g. the shell is exiting as we ask).
+    last_cwd: Mutex<Option<String>>,
+    last_snapshot: Mutex<Instant>,
+}
+
+impl PtySession {
+    /// Write this session's screen + cwd to disk so the next launch can restore it.
+    fn snapshot(&self) {
+        let screen: Vec<u8> = self.buffer.lock().unwrap().iter().copied().collect();
+        let pid = self.child.lock().unwrap().process_id();
+        let cwd = pid.and_then(process_cwd);
+        let mut last = self.last_cwd.lock().unwrap();
+        if cwd.is_some() {
+            *last = cwd.clone();
+        }
+        write_record(
+            &self.id,
+            &SavedTerm {
+                cwd: cwd.or_else(|| last.clone()),
+                saved_at: now_ms(),
+                screen: b64(&screen),
+            },
+        );
+        *self.last_snapshot.lock().unwrap() = Instant::now();
+    }
+
+    /// Snapshot only if it's been a while — called from the output reader, which
+    /// runs on every chunk a busy build produces.
+    fn snapshot_if_due(&self) {
+        let due = self.last_snapshot.lock().unwrap().elapsed() >= SNAPSHOT_EVERY;
+        if due {
+            self.snapshot();
+        }
+    }
 }
 
 /// App-global registry of open PTY sessions, keyed by a stable client id (the
@@ -47,11 +224,15 @@ impl PtyRegistry {
         self.0.lock().unwrap().remove(id)
     }
 
-    /// Kill every session — used on app shutdown so no shell is orphaned.
-    pub fn kill_all(&self) {
+    /// App shutdown: save each session's screen and cwd, then kill it so no shell
+    /// is orphaned. The save has to happen first — once the child is gone we can
+    /// no longer ask the OS what directory it was in.
+    pub fn shutdown(&self) {
         for (_, s) in self.0.lock().unwrap().drain() {
+            s.snapshot();
             let _ = s.child.lock().unwrap().kill();
         }
+        prune_records();
     }
 
     /// Attach to a live session (returning its replay buffer) or spawn a fresh
@@ -81,7 +262,11 @@ impl PtyRegistry {
             map.remove(id); // dead → recreate below
         }
 
-        // Spawn a new login shell in the home directory.
+        // No live shell for this tab: spawn one. If we saved a screen for this id
+        // on a previous run, pick up where it left off — same directory, and the
+        // old transcript seeded into the replay buffer below.
+        let saved = load_record(id);
+
         let pair = native_pty_system()
             .openpty(size)
             .map_err(|e| format!("openpty: {e}"))?;
@@ -91,8 +276,16 @@ impl PtyRegistry {
         // Suppress zsh's reverse-video "%" end-of-line marker (shown for output
         // without a trailing newline) — it looks like stray junk in the UI.
         cmd.env("PROMPT_EOL_MARK", "");
-        if let Ok(home) = std::env::var("HOME") {
-            cmd.cwd(home);
+        // The saved directory may since have been renamed or deleted; fall back
+        // to $HOME rather than failing to spawn.
+        let start_dir = saved
+            .as_ref()
+            .and_then(|r| r.cwd.as_deref())
+            .filter(|p| Path::new(p).is_dir())
+            .map(str::to_string)
+            .or_else(|| std::env::var("HOME").ok());
+        if let Some(dir) = start_dir {
+            cmd.cwd(dir);
         }
         let child = pair
             .slave
@@ -107,14 +300,33 @@ impl PtyRegistry {
             .take_writer()
             .map_err(|e| format!("pty writer: {e}"))?;
 
+        // Seed the replay buffer with the restored transcript, so both this client
+        // and any later re-attach see the same continuous history. The divider
+        // marks where the old session stopped and the new shell begins.
+        let mut seed: Vec<u8> = Vec::new();
+        if let Some(screen) = saved
+            .as_ref()
+            .map(|r| r.screen.as_str())
+            .filter(|s| !s.is_empty())
+            .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
+            .filter(|b| !b.is_empty())
+        {
+            seed.extend(screen);
+            seed.extend(RESTORE_RESET.as_bytes());
+            seed.extend(RESTORE_BANNER.as_bytes());
+        }
+
         let (tx, rx) = broadcast::channel::<Vec<u8>>(2048);
         let session = Arc::new(PtySession {
+            id: id.to_string(),
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
             child: Mutex::new(child),
             tx,
-            buffer: Mutex::new(VecDeque::new()),
+            buffer: Mutex::new(seed.iter().copied().collect()),
             dead: AtomicBool::new(false),
+            last_cwd: Mutex::new(saved.and_then(|r| r.cwd)),
+            last_snapshot: Mutex::new(Instant::now()),
         });
         map.insert(id.to_string(), session.clone());
 
@@ -136,14 +348,18 @@ impl PtyRegistry {
                             }
                         }
                         let _ = s2.tx.send(chunk); // Err when no subscribers — fine
+                        s2.snapshot_if_due();
                     }
                 }
             }
+            // The shell exited. Snapshot the final screen so "Restart shell" — and
+            // the next app launch — still show what it left behind.
+            s2.snapshot();
             s2.dead.store(true, Ordering::Relaxed);
             let _ = s2.tx.send(Vec::new()); // wake any subscriber so it emits Exit
         });
 
-        Ok((session, rx, Vec::new()))
+        Ok((session, rx, seed))
     }
 }
 
@@ -236,9 +452,101 @@ pub fn pty_resize_core(id: &str, rows: u16, cols: u16, reg: &PtyRegistry) -> Res
     res.map_err(|e| format!("resize: {e}"))
 }
 
-/// Kill a session's shell and forget it (user closed the tab).
+/// Kill a session's shell and forget it (user closed the tab). Closing a tab is
+/// deliberate, so the saved screen goes too — otherwise a new tab that happened
+/// to reuse the id would come back haunted.
 pub fn pty_kill_core(id: &str, reg: &PtyRegistry) {
     if let Some(s) = reg.remove(id) {
         let _ = s.child.lock().unwrap().kill();
+    }
+    delete_record(id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A session id is untrusted (it can come from a paired phone), so it must
+    /// never be able to steer the write outside the terminals directory.
+    #[test]
+    fn record_stem_strips_path_traversal() {
+        assert_eq!(record_stem("../../etc/passwd").as_deref(), Some("etcpasswd"));
+        assert_eq!(record_stem("a/b").as_deref(), Some("ab"));
+        assert_eq!(record_stem("../.."), None);
+        assert_eq!(record_stem(""), None);
+        assert_eq!(record_stem("7846e931-8c63-4979").as_deref(), Some("7846e931-8c63-4979"));
+        assert!(record_stem(&"x".repeat(500)).unwrap().len() <= 64);
+    }
+
+    /// The whole point of the feature: quit, relaunch, and the tab shows what it
+    /// showed before, in the directory it was in.
+    #[test]
+    fn a_restarted_tab_replays_its_screen_and_keeps_its_directory() {
+        let reg = PtyRegistry::default();
+        let id = "test-restore-roundtrip";
+        delete_record(id);
+
+        let tmp = std::env::temp_dir().join("ai-box-pty-test");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let dir = tmp.canonicalize().unwrap().to_string_lossy().into_owned();
+
+        // A first run: the shell cds somewhere and prints something.
+        let (session, _rx, replay) = reg.attach(id, 24, 80).unwrap();
+        assert!(replay.is_empty(), "nothing saved yet, so nothing to replay");
+        pty_write_core(
+            id,
+            &b64(format!("cd {dir} && echo MARKER_FROM_LAST_RUN\n").as_bytes()),
+            &reg,
+        )
+        .unwrap();
+        // Wait for the command to actually RUN, not merely be echoed back: the
+        // marker appears twice (once in the echoed command line, once as output)
+        // and the shell has really moved directory.
+        let pid = session.child.lock().unwrap().process_id().unwrap();
+        for _ in 0..100 {
+            std::thread::sleep(Duration::from_millis(50));
+            let screen = String::from_utf8_lossy(&drain(&session)).into_owned();
+            if screen.matches("MARKER_FROM_LAST_RUN").count() >= 2 && same_dir(process_cwd(pid), &dir)
+            {
+                break;
+            }
+        }
+
+        // Quitting the app.
+        reg.shutdown();
+
+        // Relaunching: same tab id attaches to a brand-new shell.
+        let (session2, _rx2, replay2) = reg.attach(id, 24, 80).unwrap();
+        let restored = String::from_utf8_lossy(&replay2).into_owned();
+        assert!(
+            restored.contains("MARKER_FROM_LAST_RUN"),
+            "previous screen should be replayed, got: {restored:?}"
+        );
+        assert!(
+            restored.contains("previous session"),
+            "the divider should mark where the old session ended"
+        );
+
+        // …and the new shell starts in the directory the old one was left in.
+        let pid2 = session2.child.lock().unwrap().process_id().unwrap();
+        assert!(
+            same_dir(process_cwd(pid2), &dir),
+            "should reopen where we left off, got {:?}",
+            process_cwd(pid2)
+        );
+
+        pty_kill_core(id, &reg);
+        assert!(load_record(id).is_none(), "closing a tab discards its saved screen");
+    }
+
+    fn drain(session: &Arc<PtySession>) -> Vec<u8> {
+        session.buffer.lock().unwrap().iter().copied().collect()
+    }
+
+    /// Compare paths through the filesystem, since /var and /private/var are the
+    /// same directory on macOS.
+    fn same_dir(got: Option<String>, want: &str) -> bool {
+        let real = |p: &str| std::path::Path::new(p).canonicalize().ok();
+        got.and_then(|p| real(&p)) == real(want)
     }
 }
