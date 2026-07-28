@@ -192,7 +192,19 @@
     border-radius: 0 8px 8px 0;
   }
   .aib-note b { color: var(--ink); }
-  .aib a { color: var(--accent); }
+  .aib-colophon {
+    margin-top: 2.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--hairline);
+    width: 100%;
+    max-width: 26rem;
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+  /* Scoped with :not() on purpose. `.aib a` is (0,1,1) and `.aib-btn` is
+     (0,1,0), so an unscoped link colour silently repaints button labels —
+     which made "Download for macOS" accent-on-accent and unreadable. */
+  .aib a:not(.aib-btn) { color: var(--accent); }
   .aib-note a { text-decoration: underline; text-underline-offset: 2px; }
 
   /* --- terminal panel -------------------------------------------------- */
@@ -513,6 +525,48 @@
       </div>
     </section>
 
+    <!-- ============ remote access, in detail ============ -->
+    <section class="aib-section">
+      <div class="aib-section-head">
+        <span class="aib-label">Reaching your Mac</span>
+        <h2>At home it just works. Away from home takes one more app.</h2>
+        <p>
+          AI Box never puts your Mac on the public internet, so how you reach it
+          depends on where you are. Both routes carry the same pairing token, and
+          neither opens a port to the world.
+        </p>
+      </div>
+      <div class="aib-pair">
+        <div class="aib-card">
+          <h3>On your own network — nothing to install</h3>
+          <p>
+            The Mac serves the app to your Wi‑Fi. Scan the QR code in
+            Settings → Phone access and your phone is paired. This is the whole
+            setup, and it covers the sofa, the kitchen table and the garden.
+          </p>
+        </div>
+        <div class="aib-card">
+          <h3>Anywhere else — add Tailscale</h3>
+          <p>
+            Install <a href="https://tailscale.com/download" rel="noopener">Tailscale</a>
+            on the Mac and on your phone, sign both into the same account, and they
+            join one private network of your own. Scan the QR code again and the
+            Mac is reachable from a train, an office, another country — over an
+            encrypted link between your two devices, with nothing exposed publicly.
+            Free for personal use.
+          </p>
+        </div>
+        <div class="aib-card">
+          <h3>Leave the Mac awake</h3>
+          <p>
+            A sleeping Mac answers nothing. Turn on <b>Away mode</b> before you
+            leave and AI Box holds the machine awake — display off, work
+            continuing — for as long as it's serving.
+          </p>
+        </div>
+      </div>
+    </section>
+
     <!-- ============ how it's built ============ -->
     <section class="aib-section">
       <div class="aib-section-head">
@@ -596,6 +650,9 @@
           </a>
         </div>
         <p class="aib-fineprint">macOS 10.15 or later · Apple Silicon &amp; Intel · Beta — expect rough edges, and please report them</p>
+        <p class="aib-colophon">
+          Designed and built by <a href="/">GW-InTech</a> — available for work.
+        </p>
       </div>
     </section>
 
