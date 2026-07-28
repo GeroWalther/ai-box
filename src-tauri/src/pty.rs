@@ -14,9 +14,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
@@ -28,10 +28,11 @@ use crate::{emit_ev, EventSink};
 /// How much recent output to keep per session for replay on re-attach.
 const BUFFER_CAP: usize = 512 * 1024;
 
-/// How often a live session writes its screen to disk. Quitting snapshots
-/// everything anyway; this exists so a crash or a force-quit costs you at most
-/// this much of the transcript.
-const SNAPSHOT_EVERY: Duration = Duration::from_secs(20);
+/// How often the ticker writes changed screens to disk. This is the primary
+/// save path, not a backstop — short enough that quitting seconds after a
+/// command still keeps its output, and free for idle terminals, which skip the
+/// write entirely.
+const SNAPSHOT_EVERY: Duration = Duration::from_secs(3);
 
 /// Saved screens older than this are dropped at shutdown, so tabs closed on
 /// another device don't leave records behind forever.
@@ -177,7 +178,10 @@ struct PtySession {
     /// Last directory we saw the shell in, kept so a snapshot still has one if
     /// the lookup fails (e.g. the shell is exiting as we ask).
     last_cwd: Mutex<Option<String>>,
-    last_snapshot: Mutex<Instant>,
+    /// Total bytes the shell has produced, and how many were on disk as of the
+    /// last save. Unequal means there is something new worth writing.
+    bytes_seen: AtomicU64,
+    bytes_saved: AtomicU64,
 }
 
 impl PtySession {
@@ -186,6 +190,7 @@ impl PtySession {
         if self.closed.load(Ordering::Relaxed) {
             return; // tab is gone; its record has been deleted on purpose
         }
+        let seen = self.bytes_seen.load(Ordering::Relaxed);
         let screen: Vec<u8> = self.buffer.lock().unwrap().iter().copied().collect();
         let pid = self.child.lock().unwrap().process_id();
         let cwd = pid.and_then(process_cwd);
@@ -201,14 +206,13 @@ impl PtySession {
                 screen: b64(&screen),
             },
         );
-        *self.last_snapshot.lock().unwrap() = Instant::now();
+        self.bytes_saved.store(seen, Ordering::Relaxed);
     }
 
-    /// Snapshot only if it's been a while — called from the output reader, which
-    /// runs on every chunk a busy build produces.
-    fn snapshot_if_due(&self) {
-        let due = self.last_snapshot.lock().unwrap().elapsed() >= SNAPSHOT_EVERY;
-        if due {
+    /// Save only if the shell has produced something since the last save, so an
+    /// idle terminal costs nothing on every tick.
+    fn snapshot_if_dirty(&self) {
+        if self.bytes_seen.load(Ordering::Relaxed) != self.bytes_saved.load(Ordering::Relaxed) {
             self.snapshot();
         }
     }
@@ -216,8 +220,21 @@ impl PtySession {
 
 /// App-global registry of open PTY sessions, keyed by a stable client id (the
 /// terminal tab's id), so a re-attach finds the same shell.
-#[derive(Default)]
-pub struct PtyRegistry(Mutex<HashMap<String, Arc<PtySession>>>);
+pub struct PtyRegistry {
+    sessions: Arc<Mutex<HashMap<String, Arc<PtySession>>>>,
+    /// Guards the one-time start of the snapshot ticker.
+    ticker: std::sync::Once,
+}
+
+// Hand-written because `Once` has no Default.
+impl Default for PtyRegistry {
+    fn default() -> Self {
+        Self {
+            sessions: Arc::default(),
+            ticker: std::sync::Once::new(),
+        }
+    }
+}
 
 fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -225,17 +242,41 @@ fn b64(bytes: &[u8]) -> String {
 
 impl PtyRegistry {
     fn get(&self, id: &str) -> Option<Arc<PtySession>> {
-        self.0.lock().unwrap().get(id).cloned()
+        self.sessions.lock().unwrap().get(id).cloned()
     }
     fn remove(&self, id: &str) -> Option<Arc<PtySession>> {
-        self.0.lock().unwrap().remove(id)
+        self.sessions.lock().unwrap().remove(id)
+    }
+
+    /// Save on a timer, not on shell output.
+    ///
+    /// Snapshotting from the output reader looks equivalent and is not: after
+    /// `ls` finishes, no further chunks arrive, so the reader never runs again
+    /// and the final screen — the thing you actually want back — is never
+    /// written. A timer sees the terminal as it rests. It also means an exit
+    /// hook that fails to fire costs seconds of transcript, not all of it.
+    fn start_ticker(&self) {
+        let sessions = self.sessions.clone();
+        self.ticker.call_once(move || {
+            std::thread::spawn(move || loop {
+                std::thread::sleep(SNAPSHOT_EVERY);
+                let live: Vec<Arc<PtySession>> =
+                    sessions.lock().unwrap().values().cloned().collect();
+                for s in live {
+                    s.snapshot_if_dirty();
+                }
+            });
+        });
     }
 
     /// App shutdown: save each session's screen and cwd, then kill it so no shell
     /// is orphaned. The save has to happen first — once the child is gone we can
     /// no longer ask the OS what directory it was in.
+    ///
+    /// Safe to call more than once: macOS delivers quit as `Exit` and a window
+    /// close as `ExitRequested`, and we listen for both rather than bet on which.
     pub fn shutdown(&self) {
-        for (_, s) in self.0.lock().unwrap().drain() {
+        for (_, s) in self.sessions.lock().unwrap().drain() {
             s.snapshot();
             let _ = s.child.lock().unwrap().kill();
         }
@@ -256,7 +297,8 @@ impl PtyRegistry {
             pixel_width: 0,
             pixel_height: 0,
         };
-        let mut map = self.0.lock().unwrap();
+        self.start_ticker();
+        let mut map = self.sessions.lock().unwrap();
 
         // Re-attach to an existing, still-running shell (multiple viewers allowed).
         if let Some(s) = map.get(id) {
@@ -334,7 +376,9 @@ impl PtyRegistry {
             dead: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             last_cwd: Mutex::new(saved.and_then(|r| r.cwd)),
-            last_snapshot: Mutex::new(Instant::now()),
+            // The restored seed is already on disk, so it is not "unsaved".
+            bytes_seen: AtomicU64::new(seed.len() as u64),
+            bytes_saved: AtomicU64::new(seed.len() as u64),
         });
         map.insert(id.to_string(), session.clone());
 
@@ -355,8 +399,8 @@ impl PtyRegistry {
                                 b.pop_front();
                             }
                         }
+                        s2.bytes_seen.fetch_add(n as u64, Ordering::Relaxed);
                         let _ = s2.tx.send(chunk); // Err when no subscribers — fine
-                        s2.snapshot_if_due();
                     }
                 }
             }
@@ -568,6 +612,38 @@ mod tests {
         assert!(
             load_record(id).is_none(),
             "a closed tab must not leave a saved screen behind"
+        );
+    }
+
+    /// The reported bug: run `ls`, quit, and the output was gone. Snapshotting
+    /// from the output reader missed it — once a command finishes no more chunks
+    /// arrive, so nothing ever saved the resting screen — and Cmd+Q never
+    /// reached the exit hook. The ticker must save a settled terminal on its own,
+    /// with no shutdown() and no kill anywhere in this test.
+    #[test]
+    fn the_ticker_saves_a_resting_terminal_with_no_quit_hook() {
+        let reg = PtyRegistry::default();
+        let id = "test-ticker-saves-at-rest";
+        delete_record(id);
+
+        let _open = reg.attach(id, 24, 80).unwrap();
+        pty_write_core(id, &b64(b"echo TICKER_MARKER\n"), &reg).unwrap();
+
+        let saved = (0..40).find_map(|_| {
+            std::thread::sleep(Duration::from_millis(250));
+            let rec = load_record(id)?;
+            let screen = base64::engine::general_purpose::STANDARD
+                .decode(&rec.screen)
+                .ok()?;
+            let text = String::from_utf8_lossy(&screen).into_owned();
+            // Twice: the echoed command line, and the line the shell printed.
+            (text.matches("TICKER_MARKER").count() >= 2).then_some(text)
+        });
+
+        pty_kill_core(id, &reg);
+        assert!(
+            saved.is_some(),
+            "the ticker must persist a resting terminal without any quit hook"
         );
     }
 

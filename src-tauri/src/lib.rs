@@ -2441,13 +2441,22 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| {
-            // Reap the managed ComfyUI child on quit so we don't orphan a Python
-            // process holding gigabytes of model in memory.
-            if let tauri::RunEvent::ExitRequested { .. } = event {
+            // Shutdown work: reap the managed ComfyUI child so we don't orphan a
+            // Python process holding gigabytes of model in memory, and save each
+            // terminal's screen + cwd before its shell dies.
+            //
+            // Listen for BOTH events. On macOS, closing the last window raises
+            // ExitRequested, but Cmd+Q — how people actually quit — tears the
+            // event loop down and raises only Exit. Handling ExitRequested alone
+            // meant neither the ComfyUI reap nor the terminal save ran on a real
+            // quit. Both handlers are idempotent, so a path that fires twice is
+            // harmless; a path that fires never is not.
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
                 use tauri::Manager;
                 app.state::<comfy::ManagedComfy>().kill();
-                // Save each terminal's screen + cwd before the shells die, so the
-                // next launch reopens them where you left off.
                 app.state::<pty::PtyRegistry>().shutdown();
             }
         });
