@@ -15,7 +15,10 @@ background (a toast says "restart to apply"). See `src/lib/updater.ts` and the
 
 ## The updater keypair (already generated)
 - **Public key** is in `tauri.conf.json` → `plugins.updater.pubkey`.
-- **Private key** is at `~/.tauri/aibox-updater.key` (password: *empty*).
+- **Private key** is at `~/.tauri/aistudio-updater.key` (password: *empty*).
+  The filename still says "aistudio" — it predates the rename to AI Box. Do not
+  rename or regenerate it: the matching public key is baked into every shipped
+  build, so a different key means existing installs reject every future update.
   **Keep it secret and back it up** — if lost, you can't publish updates that existing
   installs will accept (users would have to re-download manually).
 
@@ -24,12 +27,12 @@ Actions):
 
 | Secret | Value |
 |---|---|
-| `TAURI_SIGNING_PRIVATE_KEY` | the full contents of `~/.tauri/aibox-updater.key` |
+| `TAURI_SIGNING_PRIVATE_KEY` | the full contents of `~/.tauri/aistudio-updater.key` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | empty (the key has no password) |
 
 ```bash
 # copy the private key to your clipboard for the GitHub secret:
-cat ~/.tauri/aibox-updater.key | pbcopy
+cat ~/.tauri/aistudio-updater.key | pbcopy
 ```
 
 ## Cutting a release (auto-signed + auto-updatable)

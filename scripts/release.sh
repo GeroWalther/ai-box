@@ -15,7 +15,7 @@
 # One-time setup: docs/SIGNING.md (Apple certificate) and docs/UPDATES.md
 # (updater keypair). Required environment:
 #   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
-#   TAURI_SIGNING_PRIVATE_KEY (contents of ~/.tauri/aibox-updater.key)
+#   TAURI_SIGNING_PRIVATE_KEY (contents of ~/.tauri/aistudio-updater.key)
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD (empty if the key has no password)
 
 set -euo pipefail

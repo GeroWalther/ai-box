@@ -29,7 +29,7 @@ GitHub only serves the bytes.
 |---|---|---|
 | Apple Developer ID certificate | login keychain | [SIGNING.md](SIGNING.md) |
 | App-specific password | Apple ID account | [SIGNING.md](SIGNING.md) |
-| Updater keypair | `~/.tauri/aibox-updater.key` | [UPDATES.md](UPDATES.md) |
+| Updater keypair | `~/.tauri/aistudio-updater.key` | [UPDATES.md](UPDATES.md) |
 
 Environment the script requires:
 
@@ -38,7 +38,7 @@ export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 export APPLE_ID="you@example.com"
 export APPLE_PASSWORD="abcd-efgh-ijkl-mnop"
 export APPLE_TEAM_ID="TEAMID"
-export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/aibox-updater.key)"
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/aistudio-updater.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 ```
 
