@@ -170,6 +170,10 @@ struct PtySession {
     tx: broadcast::Sender<Vec<u8>>,
     buffer: Mutex<VecDeque<u8>>,
     dead: AtomicBool,
+    /// The user closed this tab: stop saving. Killing the shell makes the reader
+    /// hit EOF, and its exit snapshot would otherwise write the record back
+    /// moments after the close deleted it.
+    closed: AtomicBool,
     /// Last directory we saw the shell in, kept so a snapshot still has one if
     /// the lookup fails (e.g. the shell is exiting as we ask).
     last_cwd: Mutex<Option<String>>,
@@ -179,6 +183,9 @@ struct PtySession {
 impl PtySession {
     /// Write this session's screen + cwd to disk so the next launch can restore it.
     fn snapshot(&self) {
+        if self.closed.load(Ordering::Relaxed) {
+            return; // tab is gone; its record has been deleted on purpose
+        }
         let screen: Vec<u8> = self.buffer.lock().unwrap().iter().copied().collect();
         let pid = self.child.lock().unwrap().process_id();
         let cwd = pid.and_then(process_cwd);
@@ -325,6 +332,7 @@ impl PtyRegistry {
             tx,
             buffer: Mutex::new(seed.iter().copied().collect()),
             dead: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
             last_cwd: Mutex::new(saved.and_then(|r| r.cwd)),
             last_snapshot: Mutex::new(Instant::now()),
         });
@@ -457,6 +465,10 @@ pub fn pty_resize_core(id: &str, rows: u16, cols: u16, reg: &PtyRegistry) -> Res
 /// to reuse the id would come back haunted.
 pub fn pty_kill_core(id: &str, reg: &PtyRegistry) {
     if let Some(s) = reg.remove(id) {
+        // Order matters: mark closed BEFORE killing. The kill lands as EOF in the
+        // reader thread, whose exit snapshot would otherwise recreate the record
+        // just after we delete it.
+        s.closed.store(true, Ordering::Relaxed);
         let _ = s.child.lock().unwrap().kill();
     }
     delete_record(id);
@@ -537,6 +549,26 @@ mod tests {
 
         pty_kill_core(id, &reg);
         assert!(load_record(id).is_none(), "closing a tab discards its saved screen");
+    }
+
+    /// Killing the shell makes the output reader hit EOF, and the EOF path
+    /// snapshots. Nothing may write the record back after the close deleted it.
+    #[test]
+    fn closing_a_tab_leaves_no_saved_screen_behind() {
+        let reg = PtyRegistry::default();
+        let id = "test-close-no-resurrect";
+        delete_record(id);
+
+        let _open = reg.attach(id, 24, 80).unwrap();
+        std::thread::sleep(Duration::from_millis(400)); // let the shell print a prompt
+
+        pty_kill_core(id, &reg);
+        std::thread::sleep(Duration::from_millis(600)); // room for the reader to misbehave
+
+        assert!(
+            load_record(id).is_none(),
+            "a closed tab must not leave a saved screen behind"
+        );
     }
 
     fn drain(session: &Arc<PtySession>) -> Vec<u8> {
