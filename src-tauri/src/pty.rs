@@ -46,7 +46,15 @@ const RECORD_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 /// the history it was announcing. Rendering already resolves alt-screen state
 /// into plain rows, so nothing needs escaping — only attributes reset.
 const RESTORE_RESET: &str = "\x1b[?25h\x1b[?7h\x1b[0m";
-const RESTORE_BANNER: &str = "\r\n\x1b[90m── previous session (restored) ──\x1b[0m\r\n";
+
+/// Marks BOTH ends of the restored block. A footer alone was not enough: what
+/// you meet first is a screenful of a session that looks live — a half-finished
+/// claude conversation, a build mid-flight — and you only learn it is a
+/// photograph after scrolling past it. Anything above the header is a picture,
+/// nothing in it is running, and the shell below the footer is brand new.
+const RESTORE_HEADER: &str =
+    "\x1b[90m─── restored from your last session · nothing below is still running ───\x1b[0m\r\n";
+const RESTORE_BANNER: &str = "\r\n\x1b[90m─── end of restored session · this shell is new ───\x1b[0m\r\n";
 
 /// Records written before rendering existed hold a raw output stream, which
 /// replays as a self-erasing mess. Restore only formats we know are pictures.
@@ -483,6 +491,7 @@ impl PtyRegistry {
             .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
             .filter(|b| !b.is_empty())
         {
+            seed.extend(RESTORE_HEADER.as_bytes());
             seed.extend_from_slice(&screen);
             seed.extend(RESTORE_RESET.as_bytes());
             seed.extend(RESTORE_BANNER.as_bytes());
@@ -729,10 +738,13 @@ mod tests {
             restored.contains("MARKER_FROM_LAST_RUN"),
             "previous screen should be replayed, got: {restored:?}"
         );
-        assert!(
-            restored.contains("previous session"),
-            "the divider should mark where the old session ended"
-        );
+        // Both ends must be marked, and in the right order — the header has to
+        // arrive before the history it is warning you about.
+        let header = restored.find("restored from your last session");
+        let footer = restored.find("end of restored session");
+        assert!(header.is_some(), "restored history needs a header marking it as a picture");
+        assert!(footer.is_some(), "restored history needs a footer marking where it ends");
+        assert!(header < footer, "the header must precede the restored screen");
         // The replay must be a picture, not instructions — otherwise the fresh
         // shell's own prompt redraw erases everything restored above it.
         assert!(

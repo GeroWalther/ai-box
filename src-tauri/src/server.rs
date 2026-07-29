@@ -240,12 +240,43 @@ fn tailscale_bin() -> Option<&'static str> {
 
 /// Best-effort Tailscale IPv4 lookup.
 fn tailscale_ip() -> Option<String> {
+    // Ask the machine, not the CLI. The macOS `tailscale` binary is a shim that
+    // talks to the GUI app, and it cannot reach it from the environment a
+    // Finder-launched app runs in — it prints "The Tailscale GUI failed to
+    // start" and exits 0 no matter which variables you hand it. Meanwhile the
+    // address is sitting on a utun interface where anyone can read it.
+    if let Some(ip) = tailscale_ip_from_interfaces() {
+        return Some(ip);
+    }
+    // Fall back to the CLI, which does work when the app inherits a terminal's
+    // environment (`npm run tauri dev`), and on any platform without the shim.
     let bin = tailscale_bin()?;
     let out = std::process::Command::new(bin).args(["ip", "-4"]).output().ok()?;
     if !out.status.success() {
         return None;
     }
     first_ipv4(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Tailscale hands every node an address in the carrier-grade NAT range
+/// 100.64.0.0/10 and puts it on a `utun` tunnel. Requiring the tunnel matters:
+/// a Mac whose own ISP uses CGNAT can hold a 100.64/10 address on `en0`, and
+/// offering that as a remote-access link would be quietly wrong.
+fn tailscale_ip_from_interfaces() -> Option<String> {
+    local_ip_address::list_afinet_netifas()
+        .ok()?
+        .into_iter()
+        .find_map(|(name, ip)| match ip {
+            std::net::IpAddr::V4(v4) if name.starts_with("utun") && is_cgnat(v4) => {
+                Some(v4.to_string())
+            }
+            _ => None,
+        })
+}
+
+fn is_cgnat(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    a == 100 && (64..=127).contains(&b)
 }
 
 /// The first line that is genuinely an IPv4 address.
@@ -983,6 +1014,20 @@ mod tests {
         assert_eq!(first_ipv4("100.94.156.10\n"), Some("100.94.156.10".to_string()));
         // IPv6 also appears in some outputs; we asked for -4.
         assert_eq!(first_ipv4("fd7a:115c:a1e0::1\n100.94.156.10\n"), Some("100.94.156.10".to_string()));
+    }
+
+    /// Only the Tailscale range counts. An ordinary LAN or public address on a
+    /// tunnel must not be offered as a remote-access link.
+    #[test]
+    fn only_the_tailscale_cgnat_range_counts() {
+        let ip = |s: &str| s.parse::<std::net::Ipv4Addr>().unwrap();
+        assert!(is_cgnat(ip("100.94.156.10"))); // a real tailnet address
+        assert!(is_cgnat(ip("100.64.0.0"))); // first in range
+        assert!(is_cgnat(ip("100.127.255.255"))); // last in range
+        assert!(!is_cgnat(ip("100.63.255.255"))); // just below
+        assert!(!is_cgnat(ip("100.128.0.0"))); // just above
+        assert!(!is_cgnat(ip("192.168.0.26"))); // the LAN address
+        assert!(!is_cgnat(ip("10.0.0.1")));
     }
 
     #[test]
