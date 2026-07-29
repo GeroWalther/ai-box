@@ -4,9 +4,12 @@
 // command in one keeps going while you work in another.
 //
 // Across an app restart the tab list persists, and so does what each tab was
-// showing: the backend replays the saved transcript (ending in a "previous
-// session" divider) and starts the fresh shell in the same directory. The shell
-// process itself cannot survive — anything that was running is not still running.
+// showing: the backend replays the saved screen AND its scrollback (ending in a
+// "previous session" divider) and starts the fresh shell in the same directory.
+// What it replays is a rendered picture, not the original byte stream — see
+// render_screen in pty.rs for why that distinction is the whole feature. The
+// shell process itself cannot survive: anything that was running is not still
+// running.
 import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";

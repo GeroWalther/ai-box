@@ -6,10 +6,11 @@
 //
 // A shell cannot outlive the app — its PTY master fd belongs to this process — so
 // quitting really does end every shell. What we can carry across a restart is what
-// you were LOOKING at and where you were: each session's recent output and its
-// working directory are snapshotted to ~/.ai-box/terminals, and a tab reopened
-// after a restart replays that screen before its fresh shell starts, in the same
-// directory. Running processes are gone; the transcript and your place aren't.
+// you were LOOKING at and where you were: each session's screen and scrollback are
+// rendered (see `render_screen`) and snapshotted to ~/.ai-box/terminals with its
+// working directory, and a tab reopened after a restart replays that history before
+// its fresh shell starts, in the same directory. Running processes are gone; the
+// transcript and your place aren't.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -139,8 +140,13 @@ fn prune_records() {
     }
 }
 
-/// Render a terminal's CURRENT SCREEN as inert bytes: text plus colour, with no
-/// cursor movement and no erases.
+/// How much history the parser keeps above the visible screen. This is what you
+/// get back after a restart, so it should feel like scrolling up in a terminal
+/// you never closed.
+const SCROLLBACK_ROWS: usize = 1000;
+
+/// Render a terminal's SCROLLBACK AND CURRENT SCREEN as inert bytes: text plus
+/// colour, with no cursor movement and no erases.
 ///
 /// This is the whole reason restore works. Saving the raw output stream and
 /// replaying it looks obvious and is wrong — the stream is a set of *drawing
@@ -154,15 +160,44 @@ fn prune_records() {
 ///
 /// Trailing blank rows are dropped so the divider follows the last real line
 /// instead of a screenful of padding.
-fn render_screen(parser: &vt100::Parser) -> Vec<u8> {
-    let screen = parser.screen();
-    let (_, cols) = screen.size();
-    let mut rows: Vec<Vec<u8>> = screen.rows_formatted(0, cols).collect();
-    while rows.last().is_some_and(|r| is_blank(r)) {
-        rows.pop();
+fn render_screen(parser: &mut vt100::Parser) -> Vec<u8> {
+    let (rows_high, cols) = parser.screen().size();
+    let window = rows_high as usize;
+
+    // The parser only ever exposes one screenful at a time, positioned by a
+    // scrollback offset. Asking for more than exists clamps, so the clamped
+    // value IS the amount of history — no separate length query needed.
+    parser.screen_mut().set_scrollback(usize::MAX);
+    let oldest = parser.screen().scrollback();
+
+    // Walk the window from the top of history down, keeping only rows we have
+    // not already taken, so the overlapping final step doesn't duplicate lines.
+    let mut lines: Vec<Vec<u8>> = Vec::new();
+    let mut offset = oldest;
+    loop {
+        parser.screen_mut().set_scrollback(offset);
+        let first_line = oldest - offset; // index of this window's top row
+        for (i, row) in parser.screen().rows_formatted(0, cols).enumerate() {
+            if first_line + i >= lines.len() {
+                lines.push(row);
+            }
+        }
+        if offset == 0 {
+            break;
+        }
+        offset = offset.saturating_sub(window);
     }
+    parser.screen_mut().set_scrollback(0); // leave the live view where it was
+
+    while lines.last().is_some_and(|r| is_blank(r)) {
+        lines.pop();
+    }
+    // Blank leading rows are just an unused screen, not history worth restoring.
+    let first_used = lines.iter().position(|r| !is_blank(r)).unwrap_or(lines.len());
+    lines.drain(..first_used);
+
     let mut out = Vec::new();
-    for (i, row) in rows.iter().enumerate() {
+    for (i, row) in lines.iter().enumerate() {
         if i > 0 {
             out.extend_from_slice(b"\r\n");
         }
@@ -170,6 +205,17 @@ fn render_screen(parser: &vt100::Parser) -> Vec<u8> {
     }
     if !out.is_empty() {
         out.extend_from_slice(b"\x1b[0m");
+    }
+    // Very long histories get trimmed from the oldest end, like a terminal
+    // dropping the top of its scrollback.
+    if out.len() > BUFFER_CAP {
+        let cut = out.len() - BUFFER_CAP;
+        let start = out[cut..]
+            .iter()
+            .position(|b| *b == b'\n')
+            .map(|i| cut + i + 1)
+            .unwrap_or(cut);
+        out.drain(..start);
     }
     out
 }
@@ -263,7 +309,7 @@ impl PtySession {
             return;
         }
         let seen = self.bytes_seen.load(Ordering::Relaxed);
-        let screen = render_screen(&self.vt.lock().unwrap());
+        let screen = render_screen(&mut self.vt.lock().unwrap());
         let pid = self.child.lock().unwrap().process_id();
         let cwd = pid.and_then(process_cwd);
         let mut last = self.last_cwd.lock().unwrap();
@@ -450,7 +496,7 @@ impl PtyRegistry {
             vt: Mutex::new({
                 // Seed the parser too, so the first save after a restore still
                 // contains the restored history rather than only the new prompt.
-                let mut p = vt100::Parser::new(size.rows, size.cols, 0);
+                let mut p = vt100::Parser::new(size.rows, size.cols, SCROLLBACK_ROWS);
                 p.process(&seed);
                 p
             }),
@@ -746,7 +792,7 @@ mod tests {
         p.process(b"\r\x1b[K\x1b[J");
         p.process("❯ \x1b[0m".as_bytes());
 
-        let rendered = String::from_utf8_lossy(&render_screen(&p)).into_owned();
+        let rendered = String::from_utf8_lossy(&render_screen(&mut p)).into_owned();
         assert!(
             rendered.contains("Applications"),
             "command output must survive rendering, got: {rendered:?}"
@@ -758,11 +804,40 @@ mod tests {
         );
     }
 
+    /// History that has scrolled off the visible screen must come back too —
+    /// otherwise a long build leaves you only its last few lines.
+    #[test]
+    fn scrollback_above_the_visible_screen_is_restored() {
+        let mut p = vt100::Parser::new(10, 80, SCROLLBACK_ROWS);
+        for i in 0..200 {
+            p.process(format!("line{i}\r\n").as_bytes());
+        }
+        let rendered = String::from_utf8_lossy(&render_screen(&mut p)).into_owned();
+
+        assert!(rendered.contains("line0"), "oldest scrollback line was dropped");
+        assert!(rendered.contains("line150"), "middle of scrollback was dropped");
+        assert!(rendered.contains("line199"), "the visible screen was dropped");
+        // Every line exactly once — the windowing walk must not duplicate rows.
+        assert_eq!(rendered.matches("line42\r\n").count(), 1, "duplicated scrollback rows");
+        assert_eq!(rendered.matches("line199").count(), 1, "duplicated visible rows");
+    }
+
+    /// A parser with no scrollback configured must still render its screen.
+    #[test]
+    fn rendering_works_without_any_scrollback() {
+        let mut p = vt100::Parser::new(10, 80, 0);
+        for i in 0..50 {
+            p.process(format!("line{i}\r\n").as_bytes());
+        }
+        let rendered = String::from_utf8_lossy(&render_screen(&mut p)).into_owned();
+        assert!(rendered.contains("line49"), "visible screen lost");
+    }
+
     #[test]
     fn blank_trailing_rows_are_not_padded_into_the_restore() {
         let mut p = vt100::Parser::new(24, 80, 0);
         p.process(b"one line\r\n");
-        let rendered = render_screen(&p);
+        let rendered = render_screen(&mut p);
         // 24 rows exist; only the used one should be emitted.
         assert!(
             rendered.windows(2).filter(|w| *w == b"\r\n").count() <= 1,
