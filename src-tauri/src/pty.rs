@@ -39,10 +39,13 @@ const SNAPSHOT_EVERY: Duration = Duration::from_secs(3);
 /// another device don't leave records behind forever.
 const RECORD_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
-/// Escape sequences that put the emulator back in a sane state before we print
-/// the divider: the saved tail may have ended inside a full-screen TUI (claude,
-/// vim, top), which would otherwise swallow everything after it.
-const RESTORE_RESET: &str = "\x1b[?1049l\x1b[?25h\x1b[?7h\x1b[0m";
+/// Put the emulator in a sane state before printing the divider — but move
+/// nothing. An earlier version led with `\x1b[?1049l` to escape a raw stream
+/// that ended inside a full-screen TUI; that also RESTORES THE SAVED CURSOR
+/// POSITION, so the divider printed at row 1 and overwrote the second line of
+/// the history it was announcing. Rendering already resolves alt-screen state
+/// into plain rows, so nothing needs escaping — only attributes reset.
+const RESTORE_RESET: &str = "\x1b[?25h\x1b[?7h\x1b[0m";
 const RESTORE_BANNER: &str = "\r\n\x1b[90m── previous session (restored) ──\x1b[0m\r\n";
 
 /// Records written before rendering existed hold a raw output stream, which
@@ -773,10 +776,15 @@ mod tests {
     /// Escape sequences a restored screen must never contain, because a terminal
     /// would obey them against whatever is on screen when it is replayed.
     fn destructive_sequences(text: &str) -> Vec<&'static str> {
-        ["\x1b[J", "\x1b[0J", "\x1b[2J", "\x1b[K", "\x1b[A", "\x1b[1A", "\x1b[2A", "\x1b[H"]
-            .into_iter()
-            .filter(|seq| text.contains(seq))
-            .collect()
+        [
+            "\x1b[J", "\x1b[0J", "\x1b[2J", "\x1b[K", "\x1b[A", "\x1b[1A", "\x1b[2A", "\x1b[H",
+            // Restoring the cursor is just as bad: it sent the divider back to
+            // row 1, where it overwrote the second line of restored history.
+            "\x1b[?1049l", "\x1b[u", "\x1b8",
+        ]
+        .into_iter()
+        .filter(|seq| text.contains(seq))
+        .collect()
     }
 
     /// The bug behind "it just says restored": the saved stream was a set of
