@@ -245,11 +245,24 @@ fn tailscale_ip() -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let s = String::from_utf8_lossy(&out.stdout);
-    s.lines()
-        .next()
-        .map(|l| l.trim().to_string())
-        .filter(|s| !s.is_empty())
+    first_ipv4(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The first line that is genuinely an IPv4 address.
+///
+/// Not the first line, whatever it says. When the Tailscale GUI is not running,
+/// the macOS CLI prints "The Tailscale GUI failed to start: …" to STDOUT and
+/// still exits 0, so a success check passes and the message itself was handed
+/// back as the address. It reached the UI as
+/// `http://The Tailscale GUI failed to start: …:8787` and was encoded into the
+/// QR code, which phones then refused as unreadable. Parsing instead of trusting
+/// turns any such output into "not detected", which the panel already handles.
+fn first_ipv4(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|l| l.parse::<std::net::Ipv4Addr>().is_ok())
+        .map(str::to_string)
 }
 
 /// This node's MagicDNS name (e.g. `machine.tailnet.ts.net`), used for the HTTPS URL.
@@ -955,6 +968,22 @@ fn mime_for(path: &std::path::Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The CLI prints failures to stdout and exits 0, so anything that is not an
+    /// address must be refused rather than pasted into a URL and a QR code.
+    #[test]
+    fn tailscale_output_that_is_not_an_address_is_refused() {
+        // Verbatim from a real failure, which shipped into the QR as a hostname.
+        assert_eq!(
+            first_ipv4("The Tailscale GUI failed to start: The operation couldn't be completed. (Tailscale.CLIError error 3.)"),
+            None
+        );
+        assert_eq!(first_ipv4(""), None);
+        assert_eq!(first_ipv4("Logged out."), None);
+        assert_eq!(first_ipv4("100.94.156.10\n"), Some("100.94.156.10".to_string()));
+        // IPv6 also appears in some outputs; we asked for -4.
+        assert_eq!(first_ipv4("fd7a:115c:a1e0::1\n100.94.156.10\n"), Some("100.94.156.10".to_string()));
+    }
 
     #[test]
     fn strip_secrets_masks_keys_and_removes_token() {
