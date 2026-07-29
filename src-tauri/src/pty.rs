@@ -44,9 +44,16 @@ const RECORD_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 const RESTORE_RESET: &str = "\x1b[?1049l\x1b[?25h\x1b[?7h\x1b[0m";
 const RESTORE_BANNER: &str = "\r\n\x1b[90m── previous session (restored) ──\x1b[0m\r\n";
 
+/// Records written before rendering existed hold a raw output stream, which
+/// replays as a self-erasing mess. Restore only formats we know are pictures.
+const RECORD_FORMAT: u32 = 2;
+
 /// What we keep on disk for one terminal tab between app runs.
 #[derive(Serialize, Deserialize, Default)]
 struct SavedTerm {
+    /// Format of `screen`. Absent (0) means a legacy raw stream — do not replay.
+    #[serde(default)]
+    v: u32,
     /// The shell's working directory when we last looked.
     #[serde(default)]
     cwd: Option<String>,
@@ -132,36 +139,54 @@ fn prune_records() {
     }
 }
 
-/// A saved screen can stop in the middle of an escape sequence — the buffer cap
-/// cuts wherever it lands, and a prompt like powerlevel10k emits long OSC runs.
-/// Appending the divider straight after such a fragment leaves the terminal
-/// parsing a sequence that never ends, so it prints the remainder as literal
-/// junk ("ñ8", a stray file:// URL). Drop an unterminated trailing sequence.
-fn trim_partial_escape(bytes: &[u8]) -> &[u8] {
-    const LOOKBACK: usize = 512; // no real sequence is longer
-    let from = bytes.len().saturating_sub(LOOKBACK);
-    let Some(esc) = bytes[from..]
-        .iter()
-        .rposition(|b| *b == 0x1b)
-        .map(|i| from + i)
-    else {
-        return bytes;
-    };
-    let rest = &bytes[esc + 1..];
-    let complete = match rest.first() {
-        None => false,
-        // OSC — runs until BEL or ST (ESC \).
-        Some(b']') => rest.contains(&0x07) || rest.windows(2).any(|w| w == [0x1b, b'\\']),
-        // CSI — runs until a final byte in @..~.
-        Some(b'[') => rest[1..].iter().any(|b| (0x40..=0x7e).contains(b)),
-        // Everything else is a two-byte escape, already whole.
-        Some(_) => true,
-    };
-    if complete {
-        bytes
-    } else {
-        &bytes[..esc]
+/// Render a terminal's CURRENT SCREEN as inert bytes: text plus colour, with no
+/// cursor movement and no erases.
+///
+/// This is the whole reason restore works. Saving the raw output stream and
+/// replaying it looks obvious and is wrong — the stream is a set of *drawing
+/// instructions*, not a picture. A prompt like powerlevel10k redraws itself with
+/// erase-in-display and cursor-up, so replaying it re-runs those erases against
+/// whatever is on screen at the time and wipes the very history being restored.
+/// (Measured on a real session: 17 erase-in-display, 17 cursor-up, 27
+/// erase-in-line — the restored screen destroyed itself, leaving only a stack of
+/// dividers.) Feeding the stream through a VT parser and emitting the resulting
+/// grid gives something that reproduces the same picture wherever it is written.
+///
+/// Trailing blank rows are dropped so the divider follows the last real line
+/// instead of a screenful of padding.
+fn render_screen(parser: &vt100::Parser) -> Vec<u8> {
+    let screen = parser.screen();
+    let (_, cols) = screen.size();
+    let mut rows: Vec<Vec<u8>> = screen.rows_formatted(0, cols).collect();
+    while rows.last().is_some_and(|r| is_blank(r)) {
+        rows.pop();
     }
+    let mut out = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 {
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(row);
+    }
+    if !out.is_empty() {
+        out.extend_from_slice(b"\x1b[0m");
+    }
+    out
+}
+
+/// A row carrying no visible character — only spaces and escape sequences.
+fn is_blank(row: &[u8]) -> bool {
+    let mut in_escape = false;
+    for &b in row {
+        match b {
+            0x1b => in_escape = true,
+            b'@'..=b'~' if in_escape => in_escape = false,
+            b' ' | b'\r' | b'\n' | 0 => {}
+            _ if !in_escape => return false,
+            _ => {}
+        }
+    }
+    true
 }
 
 /// The working directory of a running process. Used to reopen a restored tab
@@ -202,6 +227,11 @@ struct PtySession {
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     tx: broadcast::Sender<Vec<u8>>,
     buffer: Mutex<VecDeque<u8>>,
+    /// The same output, parsed into a screen. The raw buffer above still drives
+    /// live re-attach (a client resets first, so the stream replays coherently);
+    /// this drives restore across a restart, where a fresh shell would otherwise
+    /// redraw over the replay. See `render_screen`.
+    vt: Mutex<vt100::Parser>,
     dead: AtomicBool,
     /// The user closed this tab: stop saving. Killing the shell makes the reader
     /// hit EOF, and its exit snapshot would otherwise write the record back
@@ -233,7 +263,7 @@ impl PtySession {
             return;
         }
         let seen = self.bytes_seen.load(Ordering::Relaxed);
-        let screen: Vec<u8> = self.buffer.lock().unwrap().iter().copied().collect();
+        let screen = render_screen(&self.vt.lock().unwrap());
         let pid = self.child.lock().unwrap().process_id();
         let cwd = pid.and_then(process_cwd);
         let mut last = self.last_cwd.lock().unwrap();
@@ -243,6 +273,7 @@ impl PtySession {
         write_record(
             &self.id,
             &SavedTerm {
+                v: RECORD_FORMAT,
                 cwd: cwd.or_else(|| last.clone()),
                 saved_at: now_ms(),
                 screen: b64(&screen),
@@ -397,29 +428,15 @@ impl PtyRegistry {
         let mut seed: Vec<u8> = Vec::new();
         if let Some(screen) = saved
             .as_ref()
+            .filter(|r| r.v >= RECORD_FORMAT) // legacy raw streams would erase themselves
             .map(|r| r.screen.as_str())
             .filter(|s| !s.is_empty())
             .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
             .filter(|b| !b.is_empty())
         {
-            // A capped screen was cut at an arbitrary byte at BOTH ends. Start at
-            // a line boundary and stop before any half-written sequence, so the
-            // replay is something a terminal can actually parse.
-            let head_trimmed = if screen.len() >= BUFFER_CAP {
-                screen
-                    .iter()
-                    .position(|b| *b == b'\n')
-                    .map(|i| &screen[i + 1..])
-                    .unwrap_or(&screen)
-            } else {
-                &screen[..]
-            };
-            let usable = trim_partial_escape(head_trimmed);
-            if !usable.is_empty() {
-                seed.extend_from_slice(usable);
-                seed.extend(RESTORE_RESET.as_bytes());
-                seed.extend(RESTORE_BANNER.as_bytes());
-            }
+            seed.extend_from_slice(&screen);
+            seed.extend(RESTORE_RESET.as_bytes());
+            seed.extend(RESTORE_BANNER.as_bytes());
         }
 
         let (tx, rx) = broadcast::channel::<Vec<u8>>(2048);
@@ -430,6 +447,13 @@ impl PtyRegistry {
             child: Mutex::new(child),
             tx,
             buffer: Mutex::new(seed.iter().copied().collect()),
+            vt: Mutex::new({
+                // Seed the parser too, so the first save after a restore still
+                // contains the restored history rather than only the new prompt.
+                let mut p = vt100::Parser::new(size.rows, size.cols, 0);
+                p.process(&seed);
+                p
+            }),
             dead: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             last_cwd: Mutex::new(saved.and_then(|r| r.cwd)),
@@ -457,6 +481,7 @@ impl PtyRegistry {
                                 b.pop_front();
                             }
                         }
+                        s2.vt.lock().unwrap().process(&chunk);
                         s2.bytes_seen.fetch_add(n as u64, Ordering::Relaxed);
                         let _ = s2.tx.send(chunk); // Err when no subscribers — fine
                     }
@@ -544,7 +569,17 @@ pub fn pty_write_core(id: &str, data_b64: &str, reg: &PtyRegistry) -> Result<(),
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data_b64.trim())
         .map_err(|e| format!("decode input: {e}"))?;
-    session.saw_input.store(true, Ordering::Relaxed);
+    // "Did a person do something here?" — not "did bytes arrive". The terminal
+    // answers the shell's own queries (cursor position, device attributes)
+    // through this very call, so treating any write as input marked every
+    // untouched session as worth saving. Replies never carry Enter or Ctrl-C;
+    // real work always ends in one.
+    if bytes
+        .iter()
+        .any(|b| matches!(b, b'\r' | b'\n' | 0x03 | 0x04))
+    {
+        session.saw_input.store(true, Ordering::Relaxed);
+    }
     let mut w = session.writer.lock().unwrap();
     w.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
     let _ = w.flush();
@@ -554,6 +589,14 @@ pub fn pty_write_core(id: &str, data_b64: &str, reg: &PtyRegistry) -> Result<(),
 /// Resize a session's PTY (rows/cols) when the UI viewport changes.
 pub fn pty_resize_core(id: &str, rows: u16, cols: u16, reg: &PtyRegistry) -> Result<(), String> {
     let session = reg.get(id).ok_or("no such terminal session")?;
+    // Keep the parser the same shape as the real terminal, or the saved picture
+    // comes back wrapped at the wrong width.
+    session
+        .vt
+        .lock()
+        .unwrap()
+        .screen_mut()
+        .set_size(rows.max(1), cols.max(1));
     let res = session.master.lock().unwrap().resize(PtySize {
         rows: rows.max(1),
         cols: cols.max(1),
@@ -641,6 +684,13 @@ mod tests {
             restored.contains("previous session"),
             "the divider should mark where the old session ended"
         );
+        // The replay must be a picture, not instructions — otherwise the fresh
+        // shell's own prompt redraw erases everything restored above it.
+        assert!(
+            destructive_sequences(&restored).is_empty(),
+            "restored screen carries {:?}, which will erase it on replay",
+            destructive_sequences(&restored)
+        );
 
         // …and the new shell starts in the directory the old one was left in.
         let pid2 = session2.child.lock().unwrap().process_id().unwrap();
@@ -674,16 +724,50 @@ mod tests {
         );
     }
 
+    /// Escape sequences a restored screen must never contain, because a terminal
+    /// would obey them against whatever is on screen when it is replayed.
+    fn destructive_sequences(text: &str) -> Vec<&'static str> {
+        ["\x1b[J", "\x1b[0J", "\x1b[2J", "\x1b[K", "\x1b[A", "\x1b[1A", "\x1b[2A", "\x1b[H"]
+            .into_iter()
+            .filter(|seq| text.contains(seq))
+            .collect()
+    }
+
+    /// The bug behind "it just says restored": the saved stream was a set of
+    /// drawing instructions, so replaying a self-redrawing prompt erased the
+    /// history above it. Rendering keeps the picture and drops the instructions.
     #[test]
-    fn partial_escape_sequences_are_trimmed_off_the_tail() {
-        // Complete sequences survive untouched.
-        assert_eq!(trim_partial_escape(b"hi\x1b[0m"), b"hi\x1b[0m");
-        assert_eq!(trim_partial_escape(b"hi\x1b]7;file://x\x07"), b"hi\x1b]7;file://x\x07");
-        assert_eq!(trim_partial_escape(b"plain text"), b"plain text");
-        // Half-written ones are cut back to the last parseable byte.
-        assert_eq!(trim_partial_escape(b"hi\x1b[38;5"), b"hi");
-        assert_eq!(trim_partial_escape(b"hi\x1b]7;file://Geros-MacBook"), b"hi");
-        assert_eq!(trim_partial_escape(b"hi\x1b"), b"hi");
+    fn rendering_keeps_the_output_and_drops_the_drawing_instructions() {
+        let mut p = vt100::Parser::new(24, 80, 0);
+        p.process("❯ ls\r\nApplications  Documents  Downloads\r\n".as_bytes());
+        // A powerlevel10k-style redraw of its own prompt line: return to column
+        // one, erase the line, erase to end of screen, reprint. Harmless when
+        // executed live; catastrophic when replayed over restored history.
+        p.process(b"\r\x1b[K\x1b[J");
+        p.process("❯ \x1b[0m".as_bytes());
+
+        let rendered = String::from_utf8_lossy(&render_screen(&p)).into_owned();
+        assert!(
+            rendered.contains("Applications"),
+            "command output must survive rendering, got: {rendered:?}"
+        );
+        assert!(
+            destructive_sequences(&rendered).is_empty(),
+            "restored screen still carries {:?}",
+            destructive_sequences(&rendered)
+        );
+    }
+
+    #[test]
+    fn blank_trailing_rows_are_not_padded_into_the_restore() {
+        let mut p = vt100::Parser::new(24, 80, 0);
+        p.process(b"one line\r\n");
+        let rendered = render_screen(&p);
+        // 24 rows exist; only the used one should be emitted.
+        assert!(
+            rendered.windows(2).filter(|w| *w == b"\r\n").count() <= 1,
+            "trailing blank rows leaked into the restore"
+        );
     }
 
     /// Launching and quitting without typing must leave the record alone —

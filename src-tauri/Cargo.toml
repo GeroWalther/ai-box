@@ -39,4 +39,5 @@ portable-pty = "0.8"
 # In-app auto-updates (checks GitHub Releases, applies signed updates).
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+vt100 = "0.16.2"
 
