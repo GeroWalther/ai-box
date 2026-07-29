@@ -132,6 +132,38 @@ fn prune_records() {
     }
 }
 
+/// A saved screen can stop in the middle of an escape sequence — the buffer cap
+/// cuts wherever it lands, and a prompt like powerlevel10k emits long OSC runs.
+/// Appending the divider straight after such a fragment leaves the terminal
+/// parsing a sequence that never ends, so it prints the remainder as literal
+/// junk ("ñ8", a stray file:// URL). Drop an unterminated trailing sequence.
+fn trim_partial_escape(bytes: &[u8]) -> &[u8] {
+    const LOOKBACK: usize = 512; // no real sequence is longer
+    let from = bytes.len().saturating_sub(LOOKBACK);
+    let Some(esc) = bytes[from..]
+        .iter()
+        .rposition(|b| *b == 0x1b)
+        .map(|i| from + i)
+    else {
+        return bytes;
+    };
+    let rest = &bytes[esc + 1..];
+    let complete = match rest.first() {
+        None => false,
+        // OSC — runs until BEL or ST (ESC \).
+        Some(b']') => rest.contains(&0x07) || rest.windows(2).any(|w| w == [0x1b, b'\\']),
+        // CSI — runs until a final byte in @..~.
+        Some(b'[') => rest[1..].iter().any(|b| (0x40..=0x7e).contains(b)),
+        // Everything else is a two-byte escape, already whole.
+        Some(_) => true,
+    };
+    if complete {
+        bytes
+    } else {
+        &bytes[..esc]
+    }
+}
+
 /// The working directory of a running process. Used to reopen a restored tab
 /// where you left it instead of dumping you back in $HOME.
 #[cfg(target_os = "macos")]
@@ -182,6 +214,9 @@ struct PtySession {
     /// last save. Unequal means there is something new worth writing.
     bytes_seen: AtomicU64,
     bytes_saved: AtomicU64,
+    /// Whether anyone has typed into this shell. A session nobody touched has
+    /// nothing worth remembering — see `snapshot`.
+    saw_input: AtomicBool,
 }
 
 impl PtySession {
@@ -189,6 +224,13 @@ impl PtySession {
     fn snapshot(&self) {
         if self.closed.load(Ordering::Relaxed) {
             return; // tab is gone; its record has been deleted on purpose
+        }
+        // Launching and quitting without typing must not overwrite the session
+        // you actually worked in. Otherwise every such cycle replaces real
+        // history with a bare prompt and stamps another "restored" divider,
+        // until the tab is a wall of dividers with nothing between them.
+        if !self.saw_input.load(Ordering::Relaxed) {
+            return;
         }
         let seen = self.bytes_seen.load(Ordering::Relaxed);
         let screen: Vec<u8> = self.buffer.lock().unwrap().iter().copied().collect();
@@ -360,9 +402,24 @@ impl PtyRegistry {
             .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
             .filter(|b| !b.is_empty())
         {
-            seed.extend(screen);
-            seed.extend(RESTORE_RESET.as_bytes());
-            seed.extend(RESTORE_BANNER.as_bytes());
+            // A capped screen was cut at an arbitrary byte at BOTH ends. Start at
+            // a line boundary and stop before any half-written sequence, so the
+            // replay is something a terminal can actually parse.
+            let head_trimmed = if screen.len() >= BUFFER_CAP {
+                screen
+                    .iter()
+                    .position(|b| *b == b'\n')
+                    .map(|i| &screen[i + 1..])
+                    .unwrap_or(&screen)
+            } else {
+                &screen[..]
+            };
+            let usable = trim_partial_escape(head_trimmed);
+            if !usable.is_empty() {
+                seed.extend_from_slice(usable);
+                seed.extend(RESTORE_RESET.as_bytes());
+                seed.extend(RESTORE_BANNER.as_bytes());
+            }
         }
 
         let (tx, rx) = broadcast::channel::<Vec<u8>>(2048);
@@ -379,6 +436,7 @@ impl PtyRegistry {
             // The restored seed is already on disk, so it is not "unsaved".
             bytes_seen: AtomicU64::new(seed.len() as u64),
             bytes_saved: AtomicU64::new(seed.len() as u64),
+            saw_input: AtomicBool::new(false),
         });
         map.insert(id.to_string(), session.clone());
 
@@ -486,6 +544,7 @@ pub fn pty_write_core(id: &str, data_b64: &str, reg: &PtyRegistry) -> Result<(),
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data_b64.trim())
         .map_err(|e| format!("decode input: {e}"))?;
+    session.saw_input.store(true, Ordering::Relaxed);
     let mut w = session.writer.lock().unwrap();
     w.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
     let _ = w.flush();
@@ -613,6 +672,63 @@ mod tests {
             load_record(id).is_none(),
             "a closed tab must not leave a saved screen behind"
         );
+    }
+
+    #[test]
+    fn partial_escape_sequences_are_trimmed_off_the_tail() {
+        // Complete sequences survive untouched.
+        assert_eq!(trim_partial_escape(b"hi\x1b[0m"), b"hi\x1b[0m");
+        assert_eq!(trim_partial_escape(b"hi\x1b]7;file://x\x07"), b"hi\x1b]7;file://x\x07");
+        assert_eq!(trim_partial_escape(b"plain text"), b"plain text");
+        // Half-written ones are cut back to the last parseable byte.
+        assert_eq!(trim_partial_escape(b"hi\x1b[38;5"), b"hi");
+        assert_eq!(trim_partial_escape(b"hi\x1b]7;file://Geros-MacBook"), b"hi");
+        assert_eq!(trim_partial_escape(b"hi\x1b"), b"hi");
+    }
+
+    /// Launching and quitting without typing must leave the record alone —
+    /// otherwise real history is replaced by a bare prompt and each cycle adds
+    /// another divider, which is what made the feature look broken.
+    #[test]
+    fn an_untouched_session_does_not_overwrite_real_history() {
+        let reg = PtyRegistry::default();
+        let id = "test-untouched-keeps-history";
+        delete_record(id);
+
+        // A session with actual work in it.
+        let _first = reg.attach(id, 24, 80).unwrap();
+        pty_write_core(id, &b64(b"echo REAL_WORK\n"), &reg).unwrap();
+        let worked = (0..40).find_map(|_| {
+            std::thread::sleep(Duration::from_millis(250));
+            let rec = load_record(id)?;
+            let text = String::from_utf8_lossy(
+                &base64::engine::general_purpose::STANDARD.decode(&rec.screen).ok()?,
+            )
+            .into_owned();
+            (text.matches("REAL_WORK").count() >= 2).then_some(text)
+        });
+        assert!(worked.is_some(), "the working session should have been saved");
+        reg.shutdown();
+
+        // Now a launch nobody touches, then quit.
+        let reg2 = PtyRegistry::default();
+        let _second = reg2.attach(id, 24, 80).unwrap();
+        std::thread::sleep(Duration::from_millis(4000)); // past a ticker cycle
+        reg2.shutdown();
+
+        let after = load_record(id).expect("record must survive an untouched session");
+        let text = String::from_utf8_lossy(
+            &base64::engine::general_purpose::STANDARD.decode(&after.screen).unwrap(),
+        )
+        .into_owned();
+        assert!(text.contains("REAL_WORK"), "untouched session clobbered real history");
+        assert_eq!(
+            text.matches("previous session (restored)").count(),
+            0,
+            "an untouched session must not stamp a divider into the record"
+        );
+
+        delete_record(id);
     }
 
     /// The reported bug: run `ls`, quit, and the output was gone. Snapshotting
