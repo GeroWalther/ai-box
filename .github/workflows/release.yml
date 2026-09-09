@@ -1,14 +1,20 @@
 name: release
 
-# Build, sign, and notarize a macOS .dmg on every version tag (e.g. `git tag v0.2.0
-# && git push --tags`). Requires the Apple secrets below to be set in the repo
-# (Settings → Secrets and variables → Actions). Without them the build still runs
-# but the artifact is unsigned. See docs/SIGNING.md.
+# Build, sign, and notarize a macOS .dmg in CI. MANUAL ONLY.
+#
+# Releases are cut locally with scripts/release.sh, which signs and notarizes on
+# the machine that already holds the Developer ID certificate. This workflow is
+# the CI alternative, and it cannot run until the Apple secrets below are set in
+# the repo (Settings → Secrets and variables → Actions) — none of them are.
+# Without APPLE_CERTIFICATE the build compiles for four minutes and then dies on
+# `security import`, which is what it did on every tag from v0.2.4 to v0.3.0
+# while the real release published fine beside it.
+#
+# So it no longer runs on tags: a workflow that has never once succeeded should
+# not email a failure on every release. Run it by hand if CI signing is ever set
+# up properly. See docs/SIGNING.md.
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch: {}
 
 jobs:
