@@ -678,3 +678,109 @@ const UNCENSORED_RE =
 export function isUncensoredModel(text: string): boolean {
   return UNCENSORED_RE.test(text);
 }
+
+// ---- Video: brief → prompt, and brief → storyboard --------------------------
+// A video model is directed, not asked. These two builders turn what a person
+// actually has — "30s ad for my espresso machine, premium, warm" — into the
+// shot language these models respond to: subject, camera, lens, motion,
+// lighting, palette, pacing.
+
+/** Fixed vocabulary offered in the Video tab's brief form. */
+export const AD_TONES = [
+  "Premium & cinematic",
+  "Warm & human",
+  "Bold & energetic",
+  "Clean & minimal",
+  "Playful & bright",
+  "Moody & dramatic",
+  "Documentary & real",
+] as const;
+
+export interface AdBrief {
+  product: string;
+  audience: string;
+  message: string;
+  tone: string;
+  /** Free-form: brand colours, must-appear props, things to avoid. */
+  notes: string;
+}
+
+function briefLines(b: AdBrief): string[] {
+  return [
+    b.product.trim() ? `Product / subject: ${b.product.trim()}` : "",
+    b.audience.trim() ? `Audience: ${b.audience.trim()}` : "",
+    b.message.trim() ? `Message to land: ${b.message.trim()}` : "",
+    b.tone.trim() ? `Tone: ${b.tone.trim()}` : "",
+    b.notes.trim() ? `Brand notes / constraints: ${b.notes.trim()}` : "",
+  ].filter(Boolean);
+}
+
+const SHOT_CRAFT =
+  "Write in the language video models respond to: name the subject and its material/finish, " +
+  "the camera (shot size, lens, angle) and its movement, the light (source, direction, quality), " +
+  "the setting, the palette, and the motion happening in frame. Present tense, concrete nouns. " +
+  "No brand logos, no on-screen text, no voice-over lines, no cuts inside a single shot.";
+
+/**
+ * One continuous shot from an ad brief — for a single-clip spot. Output is the
+ * raw prompt, ready to send to the video model.
+ */
+export function buildVideoPromptMessages(brief: AdBrief, seconds: number): ChatMsg[] {
+  const system =
+    `You are a commercial director writing ONE prompt for a text-to-video model. ` +
+    `The result is a single unbroken ${seconds}-second shot. ${SHOT_CRAFT} ` +
+    "Output ONLY the prompt — one paragraph, 40–80 words. No preamble, no quotes, no labels.";
+  return [
+    { role: "system", content: system },
+    { role: "user", content: briefLines(brief).join("\n") },
+  ];
+}
+
+/**
+ * A shot list for a multi-shot spot. Asks for strict JSON so the panel can queue
+ * each shot as its own generation; parseStoryboard tolerates a model that wraps
+ * it in prose or a code fence anyway.
+ */
+export function buildStoryboardMessages(
+  brief: AdBrief,
+  shots: number,
+  secondsPerShot: number
+): ChatMsg[] {
+  const system =
+    `You are a commercial director boarding a ${shots * secondsPerShot}-second spot as ` +
+    `exactly ${shots} shots of ${secondsPerShot} seconds each. Each shot is one unbroken take. ` +
+    "Together they must tell one arc — hook, product, payoff — and stay visually continuous: " +
+    "same product, same palette, same light, so the cuts read as one film. " +
+    SHOT_CRAFT +
+    ' Reply with ONLY a JSON array: [{"title":"3-5 word slug","prompt":"40-70 words"}]. No prose, no code fence.';
+  return [
+    { role: "system", content: system },
+    { role: "user", content: briefLines(brief).join("\n") },
+  ];
+}
+
+export interface Shot {
+  title: string;
+  prompt: string;
+}
+
+/** Pull the shot list out of a model reply, fence or stray prose and all. */
+export function parseStoryboard(raw: string | null): Shot[] {
+  if (!raw) return [];
+  const text = raw.replace(/^\s*```(?:json)?/i, "").replace(/```\s*$/, "");
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start < 0 || end <= start) return [];
+  try {
+    const arr = JSON.parse(text.slice(start, end + 1));
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map((s, i) => ({
+        title: String(s?.title ?? `Shot ${i + 1}`).trim() || `Shot ${i + 1}`,
+        prompt: String(s?.prompt ?? "").trim(),
+      }))
+      .filter((s) => s.prompt);
+  } catch {
+    return [];
+  }
+}

@@ -184,3 +184,10 @@
 /* ---- Phase 0: markdown, toasts, copy, onboarding ---- */
 
 /* Markdown in chat */
+
+/* Exact-size presets: the handful of sizes people actually ship to. */
+.size-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

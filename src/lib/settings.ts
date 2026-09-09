@@ -64,8 +64,25 @@ export interface Settings {
 
   // OpenRouter cloud images
   openrouterImageModel: string;
-  imageResolution: string; // "512" | "1K" | "2K" | "4K"
-  imageAspect: string; // "1:1" | "16:9" | "9:16" | "3:4" | "4:3"
+  imageResolution: string; // tier, from the selected model's live catalog entry
+  imageAspect: string; // "1:1" | "16:9" | "9:16" | "3:4" | "4:3" | …
+
+  /** Deliver images at an exact pixel size. No model outputs arbitrary sizes —
+   *  they only offer tiers — so this generates at the smallest tier that covers
+   *  the request and resamples on the Mac. Off = whatever the tier gives you. */
+  imageExactSize: boolean;
+  imageOutWidth: number;
+  imageOutHeight: number;
+
+  // Video generation (OpenRouter /api/v1/videos). The model list is live, so
+  // only the last-used choices are stored — never a hardcoded catalog.
+  videoModel: string;
+  videoDuration: number;
+  videoResolution: string;
+  videoAspect: string;
+  videoAudio: boolean;
+  /** Shots in a storyboarded spot. 1 means a single-clip ad. */
+  videoShots: number;
 
   // Phone / remote access (companion server). The token pairs a device; the
   // wake-lock keeps the Mac awake while "Away mode" is on.
@@ -147,6 +164,17 @@ export const DEFAULT_SETTINGS: Settings = {
   openrouterImageModel: "black-forest-labs/flux-1.1-pro",
   imageResolution: "1K",
   imageAspect: "3:4",
+
+  imageExactSize: false,
+  imageOutWidth: 2400,
+  imageOutHeight: 2400,
+
+  videoModel: "",
+  videoDuration: 0,
+  videoResolution: "",
+  videoAspect: "16:9",
+  videoAudio: true,
+  videoShots: 4,
 
   remotePort: 8787,
   remoteToken: "",

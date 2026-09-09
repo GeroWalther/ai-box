@@ -270,8 +270,13 @@ export interface OpenrouterImageArgs {
   apiKey: string;
   model: string;
   prompt: string;
-  resolution: string;
-  aspectRatio: string;
+  /** Tier — omit for the many models that declare no `resolution` parameter. */
+  resolution?: string;
+  aspectRatio?: string;
+  /** Exact pixels to deliver. Met by resampling on the Mac after generation,
+   *  since no model outputs arbitrary sizes. Both must be set to apply. */
+  outWidth?: number;
+  outHeight?: number;
 }
 
 /** Cloud image via OpenRouter. Returns base64 (no prefix). */
@@ -289,4 +294,113 @@ export interface OpenrouterEditArgs {
 /** Edit/transform an uploaded image via OpenRouter. Returns base64 (no prefix). */
 export async function editImageOpenrouter(args: OpenrouterEditArgs): Promise<string> {
   return invokeCmd<string>("edit_image_openrouter", { params: args });
+}
+
+// ---- Video generation (OpenRouter /api/v1/videos) --------------------------
+// The catalog is fetched live, so the model list and every per-model control
+// (durations, resolutions, aspect ratios, frame slots, audio, seed) come from
+// OpenRouter rather than from constants baked into this app.
+
+export interface VideoModel {
+  id: string;
+  name: string;
+  description: string;
+  created: number;
+  durations: number[];
+  resolutions: string[];
+  aspectRatios: string[];
+  /** "first_frame" / "last_frame" — empty when the model is text-to-video only. */
+  frameImages: string[];
+  generateAudio: boolean;
+  seed: boolean;
+  /** Raw price SKUs from OpenRouter; units differ per model. */
+  pricing: Record<string, string> | null;
+}
+
+export async function listVideoModels(apiKey: string): Promise<VideoModel[]> {
+  return invokeCmd<VideoModel[]>("list_video_models", { params: { apiKey } });
+}
+
+export interface VideoFrame {
+  url: string; // https URL or data: URI
+  frameType?: "first_frame" | "last_frame";
+}
+
+export interface VideoCreateArgs {
+  apiKey: string;
+  model: string;
+  prompt: string;
+  duration?: number;
+  resolution?: string;
+  aspectRatio?: string;
+  generateAudio?: boolean;
+  seed?: number;
+  frameImages?: VideoFrame[];
+  inputReferences?: VideoFrame[];
+}
+
+/** Submit a job. Returns the OpenRouter job id — generation is NOT done yet. */
+export async function createVideo(args: VideoCreateArgs): Promise<{ id: string; status: string }> {
+  return invokeCmd("video_create", { params: args });
+}
+
+export type VideoJobStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "expired";
+
+export interface VideoJob {
+  status: VideoJobStatus;
+  url: string | null;
+  error: string | null;
+  cost: number | null;
+}
+
+export async function videoStatus(apiKey: string, jobId: string): Promise<VideoJob> {
+  return invokeCmd<VideoJob>("video_status", { params: { apiKey, jobId } });
+}
+
+/** Fetch the finished MP4 onto the Mac. Returns its size in bytes. */
+export async function downloadVideo(
+  apiKey: string,
+  id: string,
+  url: string
+): Promise<{ bytes: number }> {
+  return invokeCmd("video_download", { params: { apiKey, id, url } });
+}
+
+/** Copy a stored clip into ~/Downloads. Returns the path written. */
+export async function saveVideo(id: string, name?: string): Promise<string> {
+  return invokeCmd<string>("video_save", { id, name });
+}
+
+export async function stitchAvailable(): Promise<boolean> {
+  return invokeCmd<boolean>("video_stitch_available");
+}
+
+/** Join clips, in order, into one MP4 in ~/Downloads. Needs ffmpeg installed. */
+export async function stitchVideos(ids: string[], name?: string): Promise<string> {
+  return invokeCmd<string>("video_stitch", { ids, name });
+}
+
+// ---- Cloud image models (live catalog) -------------------------------------
+// Per-model capabilities, so the Images tab stops sending parameters a model
+// doesn't accept. `resolutions` is empty for the many models that size purely by
+// aspect ratio (GPT Image, FLUX.2, Recraft, Nano Banana 1).
+
+export interface ImageModelInfo {
+  id: string;
+  name: string;
+  description: string;
+  created: number;
+  resolutions: string[];
+  aspectRatios: string[];
+  inputImage: boolean;
+}
+
+export async function listImageModels(apiKey: string): Promise<ImageModelInfo[]> {
+  return invokeCmd<ImageModelInfo[]>("list_image_models", { params: { apiKey } });
 }

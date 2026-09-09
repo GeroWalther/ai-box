@@ -31,6 +31,7 @@ import SettingsModal from "./components/SettingsModal";
 import RemoteApprovalListener from "./components/RemoteApprovalListener";
 import StorageWarning from "./components/StorageWarning";
 import ImagePanel from "./components/ImagePanel";
+import VideoPanel from "./components/VideoPanel";
 import Chat from "./components/Chat";
 import ModelManager from "./components/ModelManager";
 import Onboarding from "./components/Onboarding";
@@ -44,7 +45,7 @@ const ICON_STROKE = {
   strokeLinejoin: "round" as const,
 };
 
-type ViewKey = "chat" | "write" | "images" | "terminal";
+type ViewKey = "chat" | "write" | "images" | "video" | "terminal";
 
 const SECTIONS: { key: ViewKey; label: string; icon: React.ReactNode }[] = [
   {
@@ -78,6 +79,16 @@ const SECTIONS: { key: ViewKey; label: string; icon: React.ReactNode }[] = [
     ),
   },
   {
+    key: "video",
+    label: "Video",
+    icon: (
+      <svg viewBox="0 0 24 24" {...ICON_STROKE}>
+        <rect x="2" y="6" width="14" height="12" rx="2" />
+        <path d="M16 10.5l6-3.5v10l-6-3.5z" />
+      </svg>
+    ),
+  },
+  {
     key: "terminal",
     label: "Terminal",
     icon: (
@@ -104,6 +115,7 @@ export default function App() {
   const [sidebarSlot, setSidebarSlot] = useState<HTMLDivElement | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [imagePrefill, setImagePrefill] = useState<string | null>(null);
+  const [videoPrefill, setVideoPrefill] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [findOpen, setFindOpen] = useState(false);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
@@ -498,6 +510,15 @@ export default function App() {
             orModels={orModels}
             prefill={imagePrefill}
             onPrefillConsumed={() => setImagePrefill(null)}
+            sidebarSlot={sidebarSlot}
+            onCloseDrawer={() => setDrawerOpen(false)}
+          />
+        ) : view === "video" ? (
+          <VideoPanel
+            settings={settings}
+            onChange={updateSettings}
+            prefill={videoPrefill}
+            onPrefillConsumed={() => setVideoPrefill(null)}
             sidebarSlot={sidebarSlot}
             onCloseDrawer={() => setDrawerOpen(false)}
           />

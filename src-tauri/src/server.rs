@@ -669,6 +669,49 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
                 .unwrap_or_default();
             Ok(Value::String(crate::export_library(files)?))
         }
+        // --- video generation (safe) — the Mac injects its own OpenRouter key ---
+        // Generation is async, so the phone drives create → status → download
+        // exactly as the desktop does; only the key handling differs.
+        "list_video_models" | "video_create" | "video_status" | "video_download" => {
+            let a = inject_key_value(
+                args.clone(),
+                &mac_key_for(&ctx.settings.value(), "https://openrouter.ai"),
+            );
+            match command {
+                "list_video_models" => {
+                    serde_json::to_value(crate::video::list_video_models(params(&a)?).await?)
+                        .map_err(|e| e.to_string())
+                }
+                "video_create" => crate::video::video_create(params(&a)?).await,
+                "video_status" => crate::video::video_status(params(&a)?).await,
+                _ => crate::video::video_download(params(&a)?).await,
+            }
+        }
+        "video_put" => {
+            crate::video::video_put(s("id"), s("record"))?;
+            Ok(Value::Null)
+        }
+        "video_list" => Ok(Value::Array(crate::video::video_list())),
+        "video_get" => Ok(crate::video::video_get(s("id")).map(Value::String).unwrap_or(Value::Null)),
+        "video_data" => Ok(Value::String(crate::video::video_data(s("id"))?)),
+        "video_delete" => {
+            crate::video::video_delete(s("id"))?;
+            Ok(Value::Null)
+        }
+        "video_save" => {
+            let name = args.get("name").and_then(|v| v.as_str()).map(|x| x.to_string());
+            Ok(Value::String(crate::video::video_save(s("id"), name)?))
+        }
+        "video_stitch_available" => Ok(Value::Bool(crate::video::video_stitch_available())),
+        "video_stitch" => {
+            let ids: Vec<String> = args
+                .get("ids")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let name = args.get("name").and_then(|v| v.as_str()).map(|x| x.to_string());
+            Ok(Value::String(crate::video::video_stitch(ids, name).await?))
+        }
         "image_get" => Ok(crate::image_get(s("id")).map(Value::String).unwrap_or(Value::Null)),
         "image_delete" => {
             crate::image_delete(s("id"))?;
@@ -679,6 +722,14 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
         "generate_image_comfy" => Ok(Value::String(crate::generate_image_comfy(params(&args)?).await?)),
         "generate_img2img_comfy" => {
             Ok(Value::String(crate::generate_img2img_comfy(params(&args)?).await?))
+        }
+        "list_image_models" => {
+            let a = inject_key_value(
+                args.clone(),
+                &mac_key_for(&ctx.settings.value(), "https://openrouter.ai"),
+            );
+            serde_json::to_value(crate::list_image_models(params(&a)?).await?)
+                .map_err(|e| e.to_string())
         }
         "generate_image_openrouter" => {
             let a = inject_key_value(args.clone(), &mac_key_for(&ctx.settings.value(), "https://openrouter.ai"));

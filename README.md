@@ -2,10 +2,10 @@
 
 **Your Mac's AI workstation — and a remote control for it from your phone.**
 
-A native macOS app that puts four things behind one window: an **agentic chat**
+A native macOS app that puts five things behind one window: an **agentic chat**
 that can actually touch your machine, a **writing studio** for long-form prose and
-everyday copy, **image generation** that runs on your own GPU, and a real
-**terminal**. Then it does the part nobody else does — it hands you all of that on
+everyday copy, **image generation** that runs on your own GPU, **video generation**
+that boards and renders a whole ad, and a real **terminal**. Then it does the part nobody else does — it hands you all of that on
 your phone, over your own network, with your Mac still holding the keys.
 
 Built with **Tauri 2 + React + Rust**. Bring your own model: any OpenRouter model,
@@ -44,6 +44,24 @@ you (no Python setup), or Automatic1111/Forge, or cloud models through OpenRoute
 Local generation never leaves the machine. Illustrate a scene straight from the
 manuscript — the prompt is composed from your prose *and* your Story Bible, so
 recurring characters stay visually consistent.
+
+### 🎬 Video
+Make a finished spot, not a novelty clip. Pick any video model OpenRouter carries
+— Kling v3, Veo 3.1, Seedance 2.5, Sora 2 Pro, Wan, Hailuo, Runway — from a
+**live catalog**, never a hardcoded list, so a model released tomorrow shows up
+today. Every control is built from what that model actually accepts: its
+durations, resolutions, aspect ratios, first/last-frame slots, audio and seed
+support, so an invalid request can't be assembled.
+
+- **Ad brief → shot language.** Say what the product is, who it's for and the
+  tone; your text model writes the prompt in the terms video models respond to —
+  shot size, lens, camera move, light, palette.
+- **Storyboard mode** boards a spot as *N* continuous shots that hold one look,
+  queues each as its own render, and **joins the finished shots into one MP4**
+  (needs `ffmpeg`).
+- **Renders are jobs, not requests.** Quit mid-render and the job is picked back
+  up next launch — a paid render is never lost with the window that started it.
+- Clips are stored on the Mac, so the library is the same on your phone.
 
 ### 💻 Terminal
 A real PTY. `vim`, `top`, `claude`, whatever you like — including from your phone.

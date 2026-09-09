@@ -6,15 +6,17 @@ import {
   OPENROUTER_IMAGE_MODELS,
   OPENROUTER_IMAGE_MODEL_INFO,
   OPENROUTER_IMAGE_EDIT_MODELS,
-  IMAGE_RESOLUTIONS,
   IMAGE_ASPECTS,
 } from "../lib/presets";
+import { planSize, sortTiers } from "../lib/imageSize";
 import {
   generateImageComfy,
   generateImg2imgComfy,
   generateImageOpenrouter,
   editImageOpenrouter,
   listComfyCheckpoints,
+  listImageModels,
+  type ImageModelInfo,
   comfyStatus,
   comfyStart,
   savePng,
@@ -72,6 +74,14 @@ export default function ImagePanel({
   // Managed ComfyUI: is it installed, and is it up? Drives the setup/start CTAs.
   const [comfy, setComfy] = useState<{ installed: boolean; running: boolean } | null>(null);
   const [startingComfy, setStartingComfy] = useState(false);
+  // Live capabilities for cloud models: which tiers and ratios each one takes.
+  // Read at runtime because they differ per model and many models take neither.
+  const [cloudModels, setCloudModels] = useState<ImageModelInfo[]>([]);
+  useEffect(() => {
+    listImageModels(settings.openrouterKey)
+      .then(setCloudModels)
+      .catch(() => setCloudModels([]));
+  }, [settings.openrouterKey]);
 
   // A scene handed over from Write prefills the prompt and focuses this tab.
   useEffect(() => {
@@ -195,8 +205,12 @@ export default function ImagePanel({
               apiKey: settings.openrouterKey,
               model: settings.openrouterImageModel,
               prompt,
-              resolution: settings.imageResolution,
-              aspectRatio: settings.imageAspect,
+              // Send only what this model declares, and let an exact-size
+              // request choose the tier rather than the stored tier winning.
+              resolution: sizing.resolution ?? undefined,
+              aspectRatio: sizing.aspect ?? undefined,
+              outWidth: settings.imageExactSize ? settings.imageOutWidth : undefined,
+              outHeight: settings.imageExactSize ? settings.imageOutHeight : undefined,
             })
         : sourceImage
         ? await generateImg2imgComfy({
@@ -340,6 +354,38 @@ export default function ImagePanel({
   }
 
   const isCloud = settings.imageBackend === "openrouter";
+
+  /** The selected cloud model's live capability entry, when we have one. */
+  const cloudModel = cloudModels.find((m) => m.id === settings.openrouterImageModel) ?? null;
+  /** Tiers this model actually offers, smallest first (the catalog is unsorted). */
+  const tiers = sortTiers(cloudModel?.resolutions ?? []);
+  const ratios = cloudModel?.aspectRatios ?? [];
+
+  /**
+   * What to send for size. In exact mode the plan drives everything, so the
+   * tier is derived from the pixels asked for rather than from a stored tier
+   * that may not even exist on this model. Otherwise the stored choices are
+   * used, but only where the model declares them — sending `resolution` to a
+   * model that has no such parameter is a 400, which is what broke FLUX.2,
+   * GPT Image and Recraft here.
+   */
+  const sizing = settings.imageExactSize
+    ? planSize(tiers, ratios, settings.imageOutWidth, settings.imageOutHeight)
+    : {
+        resolution: tiers.length
+          ? tiers.includes(settings.imageResolution)
+            ? settings.imageResolution
+            : tiers[tiers.length - 1]
+          : null,
+        aspect: ratios.length
+          ? ratios.includes(settings.imageAspect)
+            ? settings.imageAspect
+            : ratios[0]
+          : null,
+        tierPixels: 0,
+        upscaling: false,
+        explanation: "",
+      };
   // Live image models from the OpenRouter catalog (beyond the curated set), so
   // new image models appear automatically. Edit-capable = accepts image input.
   const curatedIds = new Set(OPENROUTER_IMAGE_MODELS);
@@ -436,27 +482,85 @@ export default function ImagePanel({
                   )}
               </select>
             </div>
+            <label className="video-check">
+              <input
+                type="checkbox"
+                checked={settings.imageExactSize}
+                onChange={(e) => onChange({ imageExactSize: e.target.checked })}
+              />
+              Exact output size
+            </label>
+
+            {settings.imageExactSize ? (
+              <>
+                <div className="row-2">
+                  <div className="field">
+                    <label>Width (px)</label>
+                    <input
+                      type="number"
+                      min={16}
+                      max={8192}
+                      value={settings.imageOutWidth}
+                      onChange={(e) => onChange({ imageOutWidth: Number(e.target.value) })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Height (px)</label>
+                    <input
+                      type="number"
+                      min={16}
+                      max={8192}
+                      value={settings.imageOutHeight}
+                      onChange={(e) => onChange({ imageOutHeight: Number(e.target.value) })}
+                    />
+                  </div>
+                </div>
+                <div className="size-presets">
+                  {[
+                    [2400, 2400],
+                    [1920, 1080],
+                    [1080, 1920],
+                    [1200, 630],
+                  ].map(([w, h]) => (
+                    <button
+                      key={`${w}x${h}`}
+                      className="btn tiny"
+                      onClick={() => onChange({ imageOutWidth: w, imageOutHeight: h })}
+                    >
+                      {w}×{h}
+                    </button>
+                  ))}
+                </div>
+                {/* Says plainly which tier gets requested and what happens next,
+                    so the cost and the crop are never a surprise. */}
+                <p className={sizing.upscaling ? "hint error" : "hint"}>
+                  {sizing.explanation}
+                </p>
+              </>
+            ) : (
             <div className="row-2">
+              {tiers.length > 0 && (
               <div className="field">
                 <label>Resolution</label>
                 <select
-                  value={settings.imageResolution}
+                  value={sizing.resolution ?? tiers[0]}
                   onChange={(e) => onChange({ imageResolution: e.target.value })}
                 >
-                  {IMAGE_RESOLUTIONS.map((r) => (
+                  {tiers.map((r) => (
                     <option key={r} value={r}>
                       {r}
                     </option>
                   ))}
                 </select>
               </div>
+              )}
               <div className="field">
                 <label>Aspect</label>
                 <select
-                  value={settings.imageAspect}
+                  value={sizing.aspect ?? settings.imageAspect}
                   onChange={(e) => onChange({ imageAspect: e.target.value })}
                 >
-                  {IMAGE_ASPECTS.map((a) => (
+                  {(ratios.length ? ratios : IMAGE_ASPECTS).map((a) => (
                     <option key={a} value={a}>
                       {a}
                     </option>
@@ -464,6 +568,7 @@ export default function ImagePanel({
                 </select>
               </div>
             </div>
+            )}
             <p className="hint">
               Uses your OpenRouter key. Cloud models are high quality but may
               filter some content; local models have no restrictions.

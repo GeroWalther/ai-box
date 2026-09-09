@@ -11,6 +11,7 @@ mod comfy;
 mod guard;
 mod pty;
 mod server;
+mod video;
 
 /// The guard policy for a desktop tool call, derived from the settings the
 /// frontend pushes on every change. Falls back to "home directory, protections
@@ -647,21 +648,83 @@ struct OpenrouterImageParams {
     api_key: String,
     model: String,
     prompt: String,
-    resolution: String,   // "512" | "1K" | "2K" | "4K"
-    aspect_ratio: String, // "1:1" | "16:9" | "9:16" | "3:4" | "4:3"
+    /// Tier the model was asked for ("512" | "1K" | "2K" | "4K"). Optional
+    /// because plenty of models (GPT Image, FLUX.2, Recraft, Nano Banana 1)
+    /// don't accept the parameter at all, and sending it to them is an error.
+    #[serde(default)]
+    resolution: Option<String>,
+    #[serde(default)]
+    aspect_ratio: Option<String>,
+    /// Exact pixel size to deliver. No image model outputs arbitrary sizes —
+    /// they only offer tiers — so this is honoured by resampling the result
+    /// here, after generation. Both must be set for it to apply.
+    #[serde(default)]
+    out_width: Option<u32>,
+    #[serde(default)]
+    out_height: Option<u32>,
+}
+
+/// Did the provider finish normally but hand back prose instead of a picture?
+///
+/// Gemini's image models do this when the prompt names a subject rather than
+/// describing a picture ("Luxury Hotels & Resorts") — they answer in words. It
+/// reads as an HTTP 400, but `finish_reason: STOP` with `block_reason: null`
+/// says the model completed happily and simply produced no image part. That is
+/// worth retrying differently; a refusal or a bad parameter is not.
+fn is_text_instead_of_image(body: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    let meta = &v["error"]["metadata"];
+    let finished_clean = meta["finish_reason"].as_str() == Some("STOP")
+        && meta["block_reason"].is_null();
+    let message = v["error"]["message"].as_str().unwrap_or("");
+    finished_clean || message.contains("could not generate an image")
+}
+
+/// Turn a provider's raw JSON into something a person can act on, keeping the
+/// original detail on the end for when it actually says something useful.
+fn friendly_image_error(status: reqwest::StatusCode, body: &str) -> String {
+    let detail = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| body.chars().take(300).collect());
+    if is_text_instead_of_image(body) {
+        return format!(
+            "The model replied with text instead of a picture. That usually means the \
+prompt names a subject rather than describing a shot — try \"a sunlit infinity pool \
+overlooking the sea at golden hour, palms, linen loungers\" instead of \"Luxury \
+Hotels\". ({detail})"
+        );
+    }
+    format!("Image generation failed (HTTP {status}): {detail}")
 }
 
 /// Generate an image via OpenRouter's cloud Image API. Returns base64 (no prefix).
+///
+/// Two paths, because the models behind this endpoint are not alike. Dedicated
+/// image models (FLUX, GPT-Image) answer the Image API directly. Gemini's Flash
+/// Image is a *chat* model wearing an image API, and when the prompt is terse it
+/// answers in prose and the request 400s. So on that specific failure we retry
+/// through chat-completions with `modalities: ["image", "text"]`, which states
+/// outright that an image is required rather than leaving it implied.
 #[tauri::command]
 async fn generate_image_openrouter(params: OpenrouterImageParams) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": params.model,
         "prompt": params.prompt,
-        "resolution": params.resolution,
-        "aspect_ratio": params.aspect_ratio,
         "n": 1,
     });
+    // Send a sizing parameter only when the caller says this model takes one.
+    // OpenRouter rejects parameters a model doesn't declare, so an unconditional
+    // "resolution" broke every model that sizes by aspect ratio alone.
+    if let Some(r) = &params.resolution {
+        body["resolution"] = serde_json::json!(r);
+    }
+    if let Some(a) = &params.aspect_ratio {
+        body["aspect_ratio"] = serde_json::json!(a);
+    }
     let resp = client
         .post("https://openrouter.ai/api/v1/images")
         .header("Authorization", format!("Bearer {}", params.api_key.trim()))
@@ -672,21 +735,190 @@ async fn generate_image_openrouter(params: OpenrouterImageParams) -> Result<Stri
         .await
         .map_err(|e| format!("Request failed: {e}"))?;
     if !resp.status().is_success() {
-        let s = resp.status();
-        let t = resp.text().await.unwrap_or_default();
-        return Err(format!("OpenRouter image error HTTP {s}: {t}"));
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if is_text_instead_of_image(&text) {
+            let b64 = image_via_chat(&client, &params)
+                .await
+                .map_err(|_| friendly_image_error(status, &text))?;
+            return resize_b64(&b64, params.out_width.zip(params.out_height));
+        }
+        return Err(friendly_image_error(status, &text));
     }
     let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let want = params.out_width.zip(params.out_height);
     if let Some(b64) = json["data"][0]["b64_json"].as_str() {
-        return Ok(b64.to_string());
+        return resize_b64(b64, want);
     }
     // Some providers return a URL instead — fetch and encode it.
     if let Some(url) = json["data"][0]["url"].as_str() {
         let img = client.get(url).send().await.map_err(|e| e.to_string())?;
         let bytes = img.bytes().await.map_err(|e| e.to_string())?;
-        return Ok(base64::engine::general_purpose::STANDARD.encode(&bytes));
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        return resize_b64(&b64, want);
     }
-    Err("OpenRouter returned no image data".to_string())
+    // A 200 with no image is the same "answered in prose" case, so take the
+    // same second run at it before giving up.
+    let b64 = image_via_chat(&client, &params)
+        .await
+        .map_err(|_| "The model returned no image. Try describing the shot rather than naming the subject.".to_string())?;
+    resize_b64(&b64, want)
+}
+
+/// One cloud image model, as the picker needs it.
+///
+/// Everything here is read from OpenRouter at runtime. The point is `resolutions`
+/// and `aspect_ratios`: they differ per model and are often EMPTY — GPT Image,
+/// FLUX.2, Recraft and Nano Banana 1 take no `resolution` at all — and sending a
+/// parameter a model doesn't declare is a 400. The UI shows only the controls a
+/// model actually has.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageModel {
+    id: String,
+    name: String,
+    description: String,
+    created: u64,
+    resolutions: Vec<String>,
+    aspect_ratios: Vec<String>,
+    /// Accepts an input image (so it can edit / transform).
+    input_image: bool,
+}
+
+/// The live catalog of cloud image models, newest first.
+#[tauri::command]
+async fn list_image_models(params: video::KeyParams) -> Result<Vec<ImageModel>, String> {
+    let client = reqwest::Client::new();
+    let mut req = client
+        .get("https://openrouter.ai/api/v1/images/models")
+        .header("HTTP-Referer", "https://ai-box.local")
+        .header("X-Title", "AI Box");
+    if !params.api_key.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", params.api_key.trim()));
+    }
+    let resp = req.send().await.map_err(|e| format!("Request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(friendly_image_error(status, &text));
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let mut models: Vec<ImageModel> = json["data"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let p = &m["supported_parameters"];
+            ImageModel {
+                id: m["id"].as_str().unwrap_or("").to_string(),
+                name: m["name"].as_str().unwrap_or("").to_string(),
+                description: m["description"].as_str().unwrap_or("").to_string(),
+                created: m["created"].as_u64().unwrap_or(0),
+                resolutions: enum_values(&p["resolution"]),
+                aspect_ratios: enum_values(&p["aspect_ratio"]),
+                input_image: m["architecture"]["input_modalities"]
+                    .as_array()
+                    .map(|a| a.iter().any(|x| x.as_str() == Some("image")))
+                    .unwrap_or(false),
+            }
+        })
+        .filter(|m| !m.id.is_empty())
+        .collect();
+    models.sort_by(|a, b| b.created.cmp(&a.created));
+    Ok(models)
+}
+
+/// Pull `values` out of a `{"type":"enum","values":[…]}` parameter description.
+fn enum_values(param: &serde_json::Value) -> Vec<String> {
+    param["values"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+/// Deliver an image at an exact pixel size.
+///
+/// The models only offer tiers (512 / 1K / 2K / 4K), so "2400 × 2400" can only
+/// be met by resampling what came back. The caller picks the smallest tier that
+/// covers the request, which makes this a downscale in the normal case.
+///
+/// It scales to *cover* the target and centre-crops rather than stretching to
+/// fit: the chosen aspect ratio is the nearest one the model offered, not
+/// necessarily the exact ratio asked for, and a distorted image is a worse
+/// answer than a slightly cropped one. Output is always PNG.
+fn resize_b64(b64: &str, want: Option<(u32, u32)>) -> Result<String, String> {
+    let Some((w, h)) = want else {
+        return Ok(b64.to_string());
+    };
+    if w == 0 || h == 0 {
+        return Ok(b64.to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .map_err(|e| format!("decode image: {e}"))?;
+    let img = image::load_from_memory(&bytes).map_err(|e| format!("read image: {e}"))?;
+    if img.width() == w && img.height() == h {
+        return Ok(b64.to_string()); // already exact — don't re-encode for nothing
+    }
+    let out = resize_cover(&img, w, h);
+    let mut buf = std::io::Cursor::new(Vec::new());
+    out.write_to(&mut buf, image::ImageFormat::Png)
+        .map_err(|e| format!("encode png: {e}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(buf.into_inner()))
+}
+
+/// Scale to cover `w`×`h`, then centre-crop to exactly that. Lanczos3, which is
+/// the right filter for the downscale this almost always is.
+fn resize_cover(img: &image::DynamicImage, w: u32, h: u32) -> image::DynamicImage {
+    use image::GenericImageView;
+    let (iw, ih) = img.dimensions();
+    // Scale by the LARGER ratio so both axes reach the target, then trim.
+    let scale = (w as f64 / iw as f64).max(h as f64 / ih as f64);
+    let sw = ((iw as f64 * scale).round() as u32).max(w);
+    let sh = ((ih as f64 * scale).round() as u32).max(h);
+    let scaled = img.resize_exact(sw, sh, image::imageops::FilterType::Lanczos3);
+    scaled.crop_imm((sw - w) / 2, (sh - h) / 2, w, h)
+}
+
+/// Second attempt at an image, through chat-completions. `modalities` makes the
+/// image output explicit, which is what gets a chat-shaped image model (Gemini
+/// Flash Image) to draw rather than describe.
+async fn image_via_chat(
+    client: &reqwest::Client,
+    params: &OpenrouterImageParams,
+) -> Result<String, String> {
+    let shape = match &params.aspect_ratio {
+        Some(a) => format!(" ({a} aspect ratio)"),
+        None => String::new(),
+    };
+    let body = serde_json::json!({
+        "model": params.model,
+        "modalities": ["image", "text"],
+        "messages": [{
+            "role": "user",
+            "content": format!(
+                "Generate an image{shape}. Do not reply with text. Subject: {}",
+                params.prompt
+            ),
+        }],
+    });
+    let resp = client
+        .post("https://openrouter.ai/api/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", params.api_key.trim()))
+        .header("HTTP-Referer", "https://ai-box.local")
+        .header("X-Title", "AI Studio")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(friendly_image_error(status, &text));
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    extract_openrouter_image(&json, client).await
 }
 
 #[derive(Deserialize)]
@@ -2279,7 +2511,7 @@ fn images_dir() -> String {
     app_path("images")
 }
 /// Keep ids filesystem-safe (they're UUIDs, but guard against traversal).
-fn safe_id(id: &str) -> String {
+pub(crate) fn safe_id(id: &str) -> String {
     id.chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .collect()
@@ -2390,6 +2622,7 @@ pub fn run() {
             generate_image_comfy,
             generate_img2img_comfy,
             generate_image_openrouter,
+            list_image_models,
             edit_image_openrouter,
             list_comfy_checkpoints,
             chat_completion,
@@ -2426,6 +2659,18 @@ pub fn run() {
             image_list,
             image_get,
             image_delete,
+            video::list_video_models,
+            video::video_create,
+            video::video_status,
+            video::video_download,
+            video::video_put,
+            video::video_list,
+            video::video_get,
+            video::video_data,
+            video::video_delete,
+            video::video_save,
+            video::video_stitch,
+            video::video_stitch_available,
             doc_version_put,
             doc_version_list,
             doc_version_get,
@@ -2465,6 +2710,105 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The exact body OpenRouter returned for the prompt "Luxury Hotels &
+    /// Resorts – außergewöhnliche Reiseziele" on Gemini 3.1 Flash Image.
+    const GEMINI_TEXT_NOT_IMAGE: &str = r#"{"error":{"message":"Gemini could not generate an image (STOP)","code":400,"metadata":{"provider_name":"Google","finish_reason":"STOP","candidate_count":1,"block_reason":null}}}"#;
+
+    fn png_b64(w: u32, h: u32) -> String {
+        let img = image::DynamicImage::new_rgb8(w, h);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(buf.into_inner())
+    }
+
+    fn dims_of(b64: &str) -> (u32, u32) {
+        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let img = image::load_from_memory(&bytes).unwrap();
+        (img.width(), img.height())
+    }
+
+    #[test]
+    fn exact_size_is_delivered_from_a_tier_the_model_can_actually_produce() {
+        // The 2400x2400 the models can't do: generated at 4K, resampled here.
+        let out = resize_b64(&png_b64(4096, 4096), Some((2400, 2400))).unwrap();
+        assert_eq!(dims_of(&out), (2400, 2400));
+    }
+
+    #[test]
+    fn a_mismatched_source_ratio_is_cropped_not_stretched() {
+        // 16:9 source, 1:1 target. Covering keeps the scale square, so the
+        // result is a centre crop rather than a squashed image.
+        let out = resize_b64(&png_b64(4096, 2304), Some((2400, 2400))).unwrap();
+        assert_eq!(dims_of(&out), (2400, 2400));
+
+        // Tall target from a wide source: still exact, still undistorted.
+        let out = resize_b64(&png_b64(4096, 2304), Some((1080, 1920))).unwrap();
+        assert_eq!(dims_of(&out), (1080, 1920));
+    }
+
+    #[test]
+    fn resize_is_skipped_when_there_is_nothing_to_do() {
+        let src = png_b64(2048, 2048);
+        // No size requested — the bytes must come back untouched, not re-encoded.
+        assert_eq!(resize_b64(&src, None).unwrap(), src);
+        // Already the exact size — likewise.
+        assert_eq!(resize_b64(&src, Some((2048, 2048))).unwrap(), src);
+        // A zero dimension is a UI in mid-edit, not a request to make nothing.
+        assert_eq!(resize_b64(&src, Some((0, 800))).unwrap(), src);
+    }
+
+    #[test]
+    fn odd_scale_factors_still_land_exactly() {
+        // Rounding in the cover step must never leave the crop short by a pixel.
+        for (sw, sh, tw, th) in [(1024, 1024, 333, 777), (513, 1023, 2400, 100), (100, 100, 2400, 2400)] {
+            let out = resize_b64(&png_b64(sw, sh), Some((tw, th))).unwrap();
+            assert_eq!(dims_of(&out), (tw, th), "{sw}x{sh} -> {tw}x{th}");
+        }
+    }
+
+    #[test]
+    fn enum_values_reads_the_catalog_shape_and_tolerates_absence() {
+        let p = serde_json::json!({"type": "enum", "values": ["512", "1K", "2K", "4K"]});
+        assert_eq!(enum_values(&p), vec!["512", "1K", "2K", "4K"]);
+        // GPT Image / FLUX.2 declare no resolution at all — that must read as
+        // "no control", not as a crash or a phantom default.
+        assert!(enum_values(&serde_json::Value::Null).is_empty());
+        assert!(enum_values(&serde_json::json!({"type": "range", "min": 1, "max": 6})).is_empty());
+    }
+
+    #[test]
+    fn text_instead_of_image_is_recognised_and_retried() {
+        assert!(is_text_instead_of_image(GEMINI_TEXT_NOT_IMAGE));
+        let msg = friendly_image_error(reqwest::StatusCode::BAD_REQUEST, GEMINI_TEXT_NOT_IMAGE);
+        assert!(msg.contains("replied with text instead of a picture"));
+        // The provider's own words survive, for when they do carry a clue.
+        assert!(msg.contains("could not generate an image"));
+    }
+
+    #[test]
+    fn a_safety_block_is_not_treated_as_a_retryable_prose_reply() {
+        // block_reason set and finish_reason SAFETY: the model refused. Retrying
+        // with the same prompt would just burn another call.
+        let blocked = r#"{"error":{"message":"Blocked","metadata":{"finish_reason":"SAFETY","block_reason":"SAFETY"}}}"#;
+        assert!(!is_text_instead_of_image(blocked));
+        let msg = friendly_image_error(reqwest::StatusCode::BAD_REQUEST, blocked);
+        assert!(msg.contains("Image generation failed"));
+    }
+
+    #[test]
+    fn ordinary_failures_stay_readable_and_never_dump_raw_json() {
+        let bad_key = r#"{"error":{"message":"No auth credentials found","code":401}}"#;
+        assert!(!is_text_instead_of_image(bad_key));
+        let msg = friendly_image_error(reqwest::StatusCode::UNAUTHORIZED, bad_key);
+        assert_eq!(msg, "Image generation failed (HTTP 401 Unauthorized): No auth credentials found");
+        assert!(!msg.contains('{'));
+
+        // A gateway HTML page is not JSON; it must still produce something finite.
+        let html = "<html><body>502 Bad Gateway</body></html>";
+        assert!(!is_text_instead_of_image(html));
+        assert!(friendly_image_error(reqwest::StatusCode::BAD_GATEWAY, html).contains("502"));
+    }
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 

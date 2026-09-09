@@ -7,7 +7,7 @@
 import { useEffect, useRef } from "react";
 
 export interface ShortcutHandlers {
-  setView: (v: "chat" | "write" | "images" | "terminal") => void;
+  setView: (v: "chat" | "write" | "images" | "video" | "terminal") => void;
   openSettings: () => void;
   /** Write-tab only. */
   generate: () => void;
@@ -30,7 +30,8 @@ export function useShortcuts(view: string, handlers: ShortcutHandlers) {
       if (mod && e.key === "1") return void (e.preventDefault(), h.setView("chat"));
       if (mod && e.key === "2") return void (e.preventDefault(), h.setView("write"));
       if (mod && e.key === "3") return void (e.preventDefault(), h.setView("images"));
-      if (mod && e.key === "4") return void (e.preventDefault(), h.setView("terminal"));
+      if (mod && e.key === "4") return void (e.preventDefault(), h.setView("video"));
+      if (mod && e.key === "5") return void (e.preventDefault(), h.setView("terminal"));
       if (mod && e.key === ",") return void (e.preventDefault(), h.openSettings());
 
       if (viewRef.current !== "write") return;
