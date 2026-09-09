@@ -661,3 +661,112 @@ mod tests {
         assert!(video_save("definitely-not-a-real-clip-id".into(), None).is_err());
     }
 }
+
+/// A real, paid, end-to-end run against OpenRouter. Ignored by default — it
+/// costs money and takes minutes — so `cargo test` stays free and fast. Run it
+/// deliberately when the pipeline needs proving:
+///
+///   OPENROUTER_API_KEY=sk-or-... cargo test --  --ignored --nocapture live_
+///
+/// It uses the cheapest configuration in the catalog (Veo 3.1 Lite, 4s, 720p,
+/// audio off ≈ $0.12) and exercises the same functions the panel calls, so a
+/// pass means the shipped path works, not merely that the API is reachable.
+#[cfg(test)]
+mod live {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "spends real money; run explicitly"]
+    async fn live_end_to_end_render() {
+        let key = std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY");
+
+        // 1. Catalog — and confirm the model we are about to use is really in it.
+        let models = list_video_models(KeyParams { api_key: key.clone() })
+            .await
+            .expect("catalog");
+        println!("catalog: {} models", models.len());
+        let model = models
+            .iter()
+            .find(|m| m.id == "google/veo-3.1-lite")
+            .expect("veo-3.1-lite present");
+        println!(
+            "using {} — durations {:?}, resolutions {:?}",
+            model.id, model.durations, model.resolutions
+        );
+        assert!(model.durations.contains(&4));
+        assert!(model.resolutions.iter().any(|r| r == "720p"));
+
+        // 2. Submit.
+        let created = video_create(CreateParams {
+            api_key: key.clone(),
+            model: model.id.clone(),
+            prompt: "Slow dolly-in on a worn workbench at golden hour, a phone \
+propped against a toolbox, warm rim light, shallow depth of field, dust in the air"
+                .into(),
+            duration: Some(4),
+            resolution: Some("720p".into()),
+            aspect_ratio: Some("16:9".into()),
+            generate_audio: Some(false),
+            seed: None,
+            frame_images: vec![],
+            input_references: vec![],
+        })
+        .await
+        .expect("create");
+        let job_id = created["id"].as_str().expect("job id").to_string();
+        println!("job {job_id} -> {}", created["status"]);
+
+        // 3. Poll to a terminal state, the way the panel does.
+        let started = std::time::Instant::now();
+        let url = loop {
+            assert!(started.elapsed().as_secs() < 900, "timed out after 15 min");
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let job = video_status(JobParams {
+                api_key: key.clone(),
+                job_id: job_id.clone(),
+            })
+            .await
+            .expect("status");
+            let status = job["status"].as_str().unwrap_or("");
+            println!("  {:>4}s  {status}", started.elapsed().as_secs());
+            match status {
+                "pending" | "in_progress" => continue,
+                "completed" => break job["url"].as_str().expect("url").to_string(),
+                other => panic!("job {other}: {:?}", job["error"]),
+            }
+        };
+
+        // 4. Download, and prove what landed is really a playable MP4.
+        let id = format!("livetest-{}", uuid::Uuid::new_v4());
+        let out = video_download(DownloadParams {
+            api_key: key.clone(),
+            id: id.clone(),
+            url,
+        })
+        .await
+        .expect("download");
+        let bytes = out["bytes"].as_u64().expect("bytes");
+        println!("downloaded {:.1} MB", bytes as f64 / 1e6);
+        assert!(bytes > 100_000, "suspiciously small: {bytes} bytes");
+
+        let path = mp4_path(&id);
+        let head = std::fs::read(&path).expect("stored file");
+        // ISO-BMFF: bytes 4..8 of an MP4 are the 'ftyp' box type.
+        assert_eq!(&head[4..8], b"ftyp", "not an MP4 container");
+        println!("stored at {path}");
+
+        // 5. The record/list/delete round trip the gallery depends on.
+        let rec = serde_json::json!({
+            "id": id, "jobId": job_id, "prompt": "live test",
+            "model": model.id, "modelName": model.name,
+            "status": "completed", "at": 1, "bytes": bytes,
+        });
+        video_put(id.clone(), rec.to_string()).expect("put");
+        assert!(video_list().iter().any(|v| v["id"] == id.as_str()), "not listed");
+        assert!(!video_data(id.clone()).expect("data").is_empty());
+
+        video_delete(id.clone()).expect("delete");
+        assert!(!std::path::Path::new(&path).exists(), "mp4 left behind");
+        println!("PASS — create -> poll -> download -> store -> delete");
+    }
+}
