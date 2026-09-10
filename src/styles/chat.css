@@ -210,9 +210,3 @@
   color: #fff;
   animation: sa-pulse 1.2s ease-in-out infinite;
 }
-
-/* A screenshot is waiting to be sent with the next message. */
-.attach-btn.has-shot {
-  background: rgba(61, 139, 255, 0.18);
-  border-color: rgba(61, 139, 255, 0.5);
-}

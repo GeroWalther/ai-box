@@ -23,7 +23,6 @@ import { parseSyncList } from "../lib/syncList";
 import { useOpenrouterModels } from "../lib/openrouterModels";
 import { useToast } from "../lib/toast";
 import { Recorder, transcribe } from "../lib/screenAssist";
-import { captureScreen } from "../lib/api";
 import { listen } from "@tauri-apps/api/event";
 import { lineDiffText } from "../lib/diff";
 import DiffPreview from "./DiffPreview";
@@ -138,28 +137,6 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   // Dictation. The transcript lands in the composer rather than being sent, so
   // a misheard instruction is caught before an agent with shell access acts on
   // it — and so it works with chat models that cannot hear, local ones included.
-  // A screenshot attached to the next message. Same capture as the overlay, but
-  // here the agent has file and shell tools as well as eyes — so "fix that
-  // error" can become an actual edit rather than a description of one.
-  const [shot, setShot] = useState<string | null>(null);
-  const [shooting, setShooting] = useState(false);
-
-  async function grabScreen() {
-    if (shot) {
-      setShot(null);
-      return;
-    }
-    setShooting(true);
-    try {
-      setShot(await captureScreen());
-    } catch (e) {
-      logError("chat.capture", e);
-      toastError(String(e));
-    } finally {
-      setShooting(false);
-    }
-  }
-
   const recorder = useRef(new Recorder());
   const [listening, setListening] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -418,19 +395,6 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     !!provider.model &&
     !(settings.provider === "openrouter" && !settings.openrouterKey);
 
-  /**
-   * The final user turn, as either plain text or multimodal content. Only the
-   * newest message carries the image: past screenshots would balloon every
-   * request for a view of the screen that has long since changed.
-   */
-  function userContent(text: string, screenshot?: string | null): unknown {
-    if (!screenshot) return text;
-    return [
-      { type: "text", text },
-      { type: "image_url", image_url: { url: `data:image/png;base64,${screenshot}` } },
-    ];
-  }
-
   function historyMessages(): { role: "user" | "assistant"; content: string }[] {
     return messages
       .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
@@ -448,15 +412,9 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     setGenerating(true);
     const myGen = ++genIdRef.current;
     const history = historyMessages();
-    const screenshot = shot;
-    setShot(null);
-    pushMsg({
-      role: "user",
-      content: screenshot ? `${text}\n\n_(with a screenshot of my screen)_` : text,
-      reasoning: "",
-    });
-    if (agentMode) await runAgent(text, history, myGen, screenshot);
-    else await runStream(text, history, myGen, screenshot);
+    pushMsg({ role: "user", content: text, reasoning: "" });
+    if (agentMode) await runAgent(text, history, myGen);
+    else await runStream(text, history, myGen);
     if (genIdRef.current === myGen) setGenerating(false);
   }
 
@@ -474,13 +432,12 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   async function runStream(
     text: string,
     history: { role: "user" | "assistant"; content: string }[],
-    myGen: number,
-    screenshot?: string | null
+    myGen: number
   ) {
     const apiMessages = [
       { role: "system" as const, content: CHAT_SYSTEM },
       ...history,
-      { role: "user" as const, content: userContent(text, screenshot) },
+      { role: "user" as const, content: text },
     ];
     pushMsg({ role: "assistant", content: "", reasoning: "" });
     const live = () => genIdRef.current === myGen;
@@ -514,13 +471,12 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   async function runAgent(
     text: string,
     history: { role: string; content: string }[],
-    myGen: number,
-    screenshot?: string | null
+    myGen: number
   ) {
     const convo: any[] = [
       { role: "system", content: AGENT_SYSTEM },
       ...history,
-      { role: "user", content: userContent(text, screenshot) },
+      { role: "user", content: text },
     ];
     for (let step = 0; step < 16; step++) {
       if (genIdRef.current !== myGen) return;
@@ -958,18 +914,6 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
               onClick={() => fileRef.current?.click()}
             >
               📎
-            </button>
-            <button
-              className={shot ? "btn ghost attach-btn has-shot" : "btn ghost attach-btn"}
-              title={
-                shot
-                  ? "Screen attached — click to remove"
-                  : "Attach what's on your screen to this message"
-              }
-              onClick={() => void grabScreen()}
-              disabled={shooting}
-            >
-              {shooting ? "…" : shot ? "🖼✓" : "🖥"}
             </button>
             <button
               className={listening ? "btn ghost attach-btn dictating" : "btn ghost attach-btn"}
