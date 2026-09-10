@@ -19,6 +19,7 @@ import { isTauri, invokeCmd } from "./lib/transport";
 import { syncAll } from "./lib/syncBus";
 import { useToast } from "./lib/toast";
 import { checkForUpdate } from "./lib/updater";
+import { setAssistHotkey } from "./lib/api";
 import { logError } from "./lib/log";
 import { useAppSettings } from "./hooks/useAppSettings";
 import { useDocuments } from "./hooks/useDocuments";
@@ -179,6 +180,16 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("ai-studio.view", view);
   }, [view]);
+
+  // Bind the Screen Assist shortcut on launch. Without this the overlay would
+  // only become reachable after opening Settings once, which is exactly the
+  // kind of hidden precondition that makes a feature look broken.
+  useEffect(() => {
+    if (!hydrated || !isTauri()) return;
+    setAssistHotkey(settings.assistEnabled ? settings.assistHotkey : "").catch((e) =>
+      logError("assist.hotkey", e)
+    );
+  }, [hydrated, settings.assistEnabled, settings.assistHotkey]);
 
   // Background update check (desktop only).
   useEffect(() => {

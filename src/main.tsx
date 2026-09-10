@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import ScreenAssist from "./components/ScreenAssist";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ToastProvider } from "./lib/toast";
 
@@ -18,12 +19,25 @@ if (typeof crypto !== "undefined" && typeof crypto.randomUUID !== "function") {
   };
 }
 
+// The Screen Assist overlay is a second window running the SAME bundle, told
+// apart by a query flag. One bundle rather than a second entry point keeps the
+// build simple and means the overlay shares the app's settings and helpers
+// verbatim — but it must NOT mount App, which would run a whole second copy of
+// the workspace, its sync and its timers behind a transparent window.
+const isOverlay = new URLSearchParams(window.location.search).has("overlay");
+
+if (isOverlay) document.documentElement.dataset.overlay = "1";
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <ToastProvider>
-        <App />
-      </ToastProvider>
+      {isOverlay ? (
+        <ScreenAssist />
+      ) : (
+        <ToastProvider>
+          <App />
+        </ToastProvider>
+      )}
     </ErrorBoundary>
   </React.StrictMode>,
 );

@@ -84,6 +84,22 @@ export interface Settings {
   /** Shots in a storyboarded spot. 1 means a single-clip ad. */
   videoShots: number;
 
+  // Screen Assist: the overlay that sees the screen, answers aloud and draws.
+  assistEnabled: boolean;
+  /** Global shortcut that opens the ask bar. Shift+<this> attaches the screen. */
+  assistHotkey: string;
+  /** Model doing the looking. A default, not a fixed choice — the picker is
+   *  filled from OpenRouter at runtime so a better model needs no release. */
+  assistModel: string;
+  /** Attach a fresh screenshot to EVERY question without being asked. Off means
+   *  the screen is only sent when explicitly attached. */
+  assistAutoCapture: boolean;
+  assistSpeak: boolean;
+  /** macOS voice name. Empty = the system default. Siri's voice is not
+   *  available to third-party apps, so Premium is as close as this gets. */
+  assistVoice: string;
+  assistRate: number;
+
   // Phone / remote access (companion server). The token pairs a device; the
   // wake-lock keeps the Mac awake while "Away mode" is on.
   remotePort: number;
@@ -175,6 +191,14 @@ export const DEFAULT_SETTINGS: Settings = {
   videoAspect: "16:9",
   videoAudio: true,
   videoShots: 4,
+
+  assistEnabled: true,
+  assistHotkey: "Alt+Space",
+  assistModel: "google/gemini-3.7-flash",
+  assistAutoCapture: true,
+  assistSpeak: true,
+  assistVoice: "",
+  assistRate: 190,
 
   remotePort: 8787,
   remoteToken: "",

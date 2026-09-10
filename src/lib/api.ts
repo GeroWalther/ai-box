@@ -404,3 +404,41 @@ export interface ImageModelInfo {
 export async function listImageModels(apiKey: string): Promise<ImageModelInfo[]> {
   return invokeCmd<ImageModelInfo[]>("list_image_models", { params: { apiKey } });
 }
+
+// ---- Screen Assist ---------------------------------------------------------
+
+/** Screenshot of the current display as base64 PNG (overlay excluded). */
+export const captureScreen = () => invokeCmd<string>("capture_screen");
+/** Logical points of the display, for mapping 0–1000 coordinates onto it. */
+export const screenSize = () => invokeCmd<[number, number]>("screen_size");
+
+export interface MacVoice {
+  name: string;
+  locale: string;
+  quality: "premium" | "enhanced" | "default";
+}
+export const listVoices = () => invokeCmd<MacVoice[]>("list_voices");
+export const speak = (text: string, voice?: string, rate?: number) =>
+  invokeCmd<void>("speak", { text, voice: voice || null, rate: rate ?? null });
+export const stopSpeaking = () => invokeCmd<void>("stop_speaking");
+
+export const overlayOpen = (withScreen: boolean) =>
+  invokeCmd<void>("overlay_open", { withScreen });
+export const overlaySetClickthrough = (ignore: boolean) =>
+  invokeCmd<void>("overlay_set_clickthrough", { ignore });
+export const overlayClose = () => invokeCmd<void>("overlay_close");
+export const setAssistHotkey = (accelerator: string) =>
+  invokeCmd<void>("set_assist_hotkey", { accelerator });
+
+export interface AssistModel {
+  id: string;
+  name: string;
+  created: number;
+  /** Accepts a screenshot. Every model in this list does. */
+  sees: boolean;
+  /** Accepts microphone audio, so speech needs no separate transcription. */
+  hears: boolean;
+  promptPrice: number;
+}
+export const listAssistModels = (apiKey: string) =>
+  invokeCmd<AssistModel[]>("list_assist_models", { params: { apiKey } });

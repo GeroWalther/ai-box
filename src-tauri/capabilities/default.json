@@ -2,7 +2,10 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "windows": [
+    "main",
+    "screen-assist"
+  ],
   "permissions": [
     "core:default",
     "opener:default",
@@ -10,7 +13,12 @@
     "process:default",
     {
       "identifier": "opener:allow-open-url",
-      "allow": [{ "url": "https://civitai.com/*" }]
-    }
+      "allow": [
+        {
+          "url": "https://civitai.com/*"
+        }
+      ]
+    },
+    "global-shortcut:default"
   ]
 }

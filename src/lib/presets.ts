@@ -784,3 +784,147 @@ export function parseStoryboard(raw: string | null): Shot[] {
     return [];
   }
 }
+
+// ---- Screen Assist ---------------------------------------------------------
+// Ask about what's on screen, get a spoken answer plus something drawn over the
+// real interface.
+//
+// Coordinates are normalised 0–1000 on both axes because that is the space
+// Gemini natively emits, and it is resolution-independent — the same answer maps
+// onto a 5K display and a laptop panel without the model knowing either size.
+
+/** One thing to draw over the screen. */
+export interface Annotation {
+  kind: "circle" | "arrow" | "box" | "underline";
+  /** [x, y, x2, y2] in 0–1000 space. A circle/arrow uses the box's centre. */
+  box: [number, number, number, number];
+  /** Short caption rendered next to the mark. Optional. */
+  label?: string;
+}
+
+export interface ScreenAnswer {
+  /** What gets spoken. Plain prose, no markup. */
+  say: string;
+  /** Longer text for the overlay, when there is more to show than to say. */
+  detail?: string;
+  annotations: Annotation[];
+}
+
+const ASSIST_RULES =
+  "Answer in at most three sentences unless the question truly needs more — this is " +
+  "spoken aloud, so write it the way a person would say it, with no markdown, no " +
+  "lists and no code fences in `say`. Put anything longer, or anything with code, " +
+  "in `detail` instead.";
+
+const POINTING_RULES =
+  "When the answer refers to something visible, mark it. Coordinates are 0–1000 on " +
+  "both axes: x from the left edge, y from the top edge, INDEPENDENT of the real " +
+  "resolution. Give a tight box around the element itself, not the region it sits " +
+  "in. Use `circle` for a control to click, `arrow` to point at something small, " +
+  "`box` to frame an area, `underline` for a line of text. Mark only what the " +
+  "answer actually mentions — two or three marks at most, and none at all if the " +
+  "answer is not about anything on screen.";
+
+const SHAPE =
+  'Reply with ONLY a JSON object: {"say":"...","detail":"...","annotations":' +
+  '[{"kind":"circle","box":[x,y,x2,y2],"label":"..."}]}. No prose around it, no ' +
+  "code fence. `detail` and `label` are optional; `annotations` may be empty.";
+
+/**
+ * Messages for one question.
+ *
+ * With a screenshot the model is told to look; without one it is told plainly
+ * that it cannot see the screen, which stops it inventing an interface to point
+ * at — the failure mode that makes a screen assistant untrustworthy.
+ */
+export function buildScreenAssistMessages(
+  question: string,
+  hasScreenshot: boolean
+): { system: string; user: string } {
+  const system = hasScreenshot
+    ? "You are a assistant looking at a screenshot of the user's Mac screen. Answer their " +
+      "question about what they can see: explain it, tell them the answer, or walk them " +
+      "through the next step. " +
+      ASSIST_RULES +
+      " " +
+      POINTING_RULES +
+      " If the question turns out to have nothing to do with the screen, just answer it " +
+      "normally and return no annotations. " +
+      SHAPE
+    : "You are a helpful assistant. The user has NOT shared their screen with you, so you " +
+      "cannot see it. Answer from your own knowledge. If the question clearly needs to see " +
+      "their screen, say so in one line and suggest they ask again with the screen attached " +
+      "— do not guess at what might be on it. " +
+      ASSIST_RULES +
+      " Return an empty annotations array. " +
+      SHAPE;
+
+  return { system, user: question };
+}
+
+/**
+ * Read the answer back, tolerating a model that wraps its JSON in a fence or a
+ * sentence. A model that ignores the format entirely still produces a usable
+ * spoken answer: its prose becomes `say` rather than an error.
+ */
+export function parseScreenAnswer(raw: string | null): ScreenAnswer {
+  const text = (raw ?? "").trim();
+  if (!text) return { say: "", annotations: [] };
+
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      const o = JSON.parse(text.slice(start, end + 1));
+      const say = typeof o.say === "string" ? o.say.trim() : "";
+      if (say || Array.isArray(o.annotations)) {
+        return {
+          say,
+          detail: typeof o.detail === "string" && o.detail.trim() ? o.detail.trim() : undefined,
+          annotations: cleanAnnotations(o.annotations),
+        };
+      }
+    } catch {
+      /* fall through to treating the whole reply as speech */
+    }
+  }
+  // Not JSON at all — strip any fence and speak what came back rather than
+  // failing in front of the user.
+  return {
+    say: text.replace(/```[a-z]*\n?/gi, "").trim(),
+    annotations: [],
+  };
+}
+
+/** Keep only marks that are real, in range, and the right way round. */
+function cleanAnnotations(input: unknown): Annotation[] {
+  if (!Array.isArray(input)) return [];
+  const kinds = ["circle", "arrow", "box", "underline"] as const;
+  const out: Annotation[] = [];
+  for (const a of input.slice(0, 6)) {
+    const box = (a as Annotation)?.box;
+    if (!Array.isArray(box) || box.length !== 4) continue;
+    const n = box.map(Number);
+    if (n.some((v) => !Number.isFinite(v))) continue;
+    // Models occasionally emit [x2,y2,x1,y1]; normalise rather than drop it.
+    let [x1, y1, x2, y2] = [
+      Math.min(n[0], n[2]),
+      Math.min(n[1], n[3]),
+      Math.max(n[0], n[2]),
+      Math.max(n[1], n[3]),
+    ];
+    x1 = clamp(x1);
+    y1 = clamp(y1);
+    x2 = clamp(x2);
+    y2 = clamp(y2);
+    // A zero-area mark is a point, not a mistake — give it something to draw.
+    if (x2 - x1 < 4) [x1, x2] = [clamp(x1 - 12), clamp(x2 + 12)];
+    if (y2 - y1 < 4) [y1, y2] = [clamp(y1 - 12), clamp(y2 + 12)];
+    const kind = kinds.includes((a as Annotation)?.kind) ? (a as Annotation).kind : "circle";
+    const label = typeof (a as Annotation)?.label === "string" ? (a as Annotation).label : undefined;
+    out.push({ kind, box: [x1, y1, x2, y2], label: label?.slice(0, 60) });
+  }
+  return out;
+}
+
+const clamp = (v: number) => Math.max(0, Math.min(1000, v));

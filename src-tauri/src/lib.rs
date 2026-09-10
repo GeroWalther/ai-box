@@ -10,6 +10,7 @@ use tauri::ipc::Channel;
 mod comfy;
 mod guard;
 mod pty;
+mod screen;
 mod server;
 mod video;
 
@@ -2607,6 +2608,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .manage(screen::Speaker::default())
         .manage(server::ApprovalRegistry::default())
         .manage(server::RemoteState::default())
         .manage(server::RemoteSettings::default())
@@ -2671,6 +2674,16 @@ pub fn run() {
             video::video_save,
             video::video_stitch,
             video::video_stitch_available,
+            screen::capture_screen,
+            screen::screen_size,
+            screen::list_voices,
+            screen::speak,
+            screen::stop_speaking,
+            screen::overlay_open,
+            screen::overlay_set_clickthrough,
+            screen::overlay_close,
+            screen::list_assist_models,
+            screen::set_assist_hotkey,
             doc_version_put,
             doc_version_list,
             doc_version_get,
@@ -2683,6 +2696,15 @@ pub fn run() {
             comfy_start,
             comfy_stop
         ])
+        .setup(|app| {
+            // Build the overlay up front and leave it hidden. Creating it on
+            // first use would put a window-server round trip in the middle of
+            // the very interaction that has to feel instant.
+            if let Err(e) = screen::create_overlay(&app.handle().clone()) {
+                eprintln!("overlay.create: {e}");
+            }
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| {

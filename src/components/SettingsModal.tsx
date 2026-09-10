@@ -1,5 +1,6 @@
 import type { Settings } from "../lib/settings";
 import AgentSettings from "./AgentSettings";
+import AssistSettings from "./AssistSettings";
 import Diagnostics from "./Diagnostics";
 import RemoteAccess from "./RemoteAccess";
 
@@ -43,6 +44,8 @@ export default function SettingsModal({ settings, onChange, onClose }: Props) {
               </button>
             </div>
           </section>
+
+          <AssistSettings settings={settings} onChange={onChange} />
 
           <section>
             <h3>OpenRouter (bring your own key)</h3>
