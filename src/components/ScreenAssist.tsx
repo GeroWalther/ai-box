@@ -143,7 +143,7 @@ export default function ScreenAssist() {
       const result = await ask(settings, { text, clip, withScreen });
       setAnswer(result);
       setPhase("answered");
-      void say(settings, result.say);
+      void say(settings, result.say, result.lang);
       // Filed under a "Screen Assist" chat session, so the overlay needs no
       // history of its own and these turn up in search and device sync.
       const asked = text.trim() || "(spoken question)";

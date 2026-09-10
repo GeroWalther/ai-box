@@ -6,7 +6,7 @@
 // halves the latency of the thing you notice most, and it is why the model
 // picker cares whether a model can hear.
 import { chatCompletion } from "./agent";
-import { captureScreen, speak, stopSpeaking } from "./api";
+import { captureScreen, listVoices, speak, stopSpeaking, type MacVoice } from "./api";
 import { buildScreenAssistMessages, parseScreenAnswer, type ScreenAnswer } from "./presets";
 import type { Settings } from "./settings";
 
@@ -105,11 +105,23 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
   return { ...answer, sawScreen: !!screenshot };
 }
 
-/** Speak an answer, if speech is on. Never throws — a mute answer still shows. */
-export async function say(settings: Settings, text: string): Promise<void> {
+/** Installed voices, fetched once — the list only changes when macOS does. */
+let voiceCache: MacVoice[] | null = null;
+async function voices(): Promise<MacVoice[]> {
+  if (!voiceCache) voiceCache = await listVoices().catch(() => []);
+  return voiceCache;
+}
+
+/**
+ * Speak an answer in a voice that actually speaks its language.
+ *
+ * Never throws: speech is a nicety, and the text is already on screen.
+ */
+export async function say(settings: Settings, text: string, lang?: string): Promise<void> {
   if (!settings.assistSpeak || !text.trim()) return;
   try {
-    await speak(text, settings.assistVoice, settings.assistRate);
+    const voice = voiceForLanguage(await voices(), lang, settings.assistVoice);
+    await speak(text, voice, settings.assistRate);
   } catch {
     /* speech is a nicety; the text is already on screen */
   }
@@ -257,4 +269,31 @@ export async function transcribe(settings: Settings, clip: Clip): Promise<string
     temperature: 0,
   });
   return (msg.content ?? "").trim();
+}
+
+/**
+ * The best installed voice for a language.
+ *
+ * macOS voices carry their language: Samantha reads German with English
+ * phonetics and Anna reads English with German ones, so the voice has to follow
+ * the answer rather than be fixed once in settings. Siri's own language setting
+ * is irrelevant here — `say` never consults it.
+ *
+ * A voice the user picked explicitly wins, but only while it speaks the right
+ * language; otherwise the best match is chosen, preferring Apple's Premium and
+ * Enhanced voices, which `listVoices` already sorts to the front.
+ */
+export function voiceForLanguage(
+  voices: MacVoice[],
+  lang: string | undefined,
+  preferred: string
+): string {
+  const code = (lang ?? "").slice(0, 2).toLowerCase();
+  const chosen = voices.find((v) => v.name === preferred);
+  if (chosen && (!code || chosen.locale.slice(0, 2).toLowerCase() === code)) {
+    return chosen.name;
+  }
+  if (!code) return preferred;
+  // listVoices() is already ordered best-quality-first within a language.
+  return voices.find((v) => v.locale.slice(0, 2).toLowerCase() === code)?.name ?? preferred;
 }

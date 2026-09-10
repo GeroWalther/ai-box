@@ -805,12 +805,19 @@ export interface Annotation {
 export interface ScreenAnswer {
   /** What gets spoken. Plain prose, no markup. */
   say: string;
+  /** BCP-47 tag for the language `say` is written in, e.g. "de" or "en".
+   *  Used to pick a matching system voice — a German sentence read by an
+   *  English voice is close to unintelligible, and the model knows which
+   *  language it just wrote far more reliably than any guess from the text. */
+  lang?: string;
   /** Longer text for the overlay, when there is more to show than to say. */
   detail?: string;
   annotations: Annotation[];
 }
 
 const ASSIST_RULES =
+  "ALWAYS answer in the same language the user asked in. If they asked in German, " +
+  "answer in German. Set `lang` to that language's two-letter code. " +
   "Answer in at most three sentences unless the question truly needs more — this is " +
   "spoken aloud, so write it the way a person would say it, with no markdown, no " +
   "lists and no code fences in `say`. Put anything longer, or anything with code, " +
@@ -826,7 +833,7 @@ const POINTING_RULES =
   "answer is not about anything on screen.";
 
 const SHAPE =
-  'Reply with ONLY a JSON object: {"say":"...","detail":"...","annotations":' +
+  'Reply with ONLY a JSON object: {"say":"...","lang":"en","detail":"...","annotations":' +
   '[{"kind":"circle","box":[x,y,x2,y2],"label":"..."}]}. No prose around it, no ' +
   "code fence. `detail` and `label` are optional; `annotations` may be empty.";
 
@@ -880,6 +887,7 @@ export function parseScreenAnswer(raw: string | null): ScreenAnswer {
       if (say || Array.isArray(o.annotations)) {
         return {
           say,
+          lang: typeof o.lang === "string" ? o.lang.trim().toLowerCase() : undefined,
           detail: typeof o.detail === "string" && o.detail.trim() ? o.detail.trim() : undefined,
           annotations: cleanAnnotations(o.annotations),
         };

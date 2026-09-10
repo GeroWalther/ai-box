@@ -170,7 +170,7 @@ export default function AssistSettings({ settings, onChange }: Props) {
                     value={settings.assistVoice}
                     onChange={(e) => onChange({ assistVoice: e.target.value })}
                   >
-                    <option value="">System default</option>
+                    <option value="">Auto — match the answer&apos;s language</option>
                     {voices.map((v) => (
                       <option key={v.name} value={v.name}>
                         {v.name}
@@ -205,6 +205,14 @@ export default function AssistSettings({ settings, onChange }: Props) {
                   ▶ Hear it
                 </button>
               </div>
+              <p className="hint">
+                On Auto, a German answer is read by a German voice and an English
+                one by an English voice. macOS voices carry their language —
+                Samantha reads German with English phonetics — and Siri&apos;s own
+                language setting has no effect here, because <code>say</code>{" "}
+                never consults it. Picking a specific voice below pins the
+                language to that voice.
+              </p>
               {premium.length === 0 && (
                 <p className="hint">
                   Siri&apos;s voice isn&apos;t available to third-party apps — Apple
