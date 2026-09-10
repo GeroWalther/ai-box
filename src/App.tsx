@@ -186,10 +186,11 @@ export default function App() {
   // kind of hidden precondition that makes a feature look broken.
   useEffect(() => {
     if (!hydrated || !isTauri()) return;
-    setAssistHotkey(settings.assistEnabled ? settings.assistHotkey : "").catch((e) =>
-      logError("assist.hotkey", e)
-    );
-  }, [hydrated, settings.assistEnabled, settings.assistHotkey]);
+    setAssistHotkey(
+      settings.assistEnabled ? settings.assistHotkey : "",
+      settings.assistPushToTalk
+    ).catch((e) => logError("assist.hotkey", e));
+  }, [hydrated, settings.assistEnabled, settings.assistHotkey, settings.assistPushToTalk]);
 
   // Background update check (desktop only).
   useEffect(() => {

@@ -14,7 +14,9 @@ export interface GenerateArgs {
   baseUrl: string;
   apiKey: string;
   model: string;
-  messages: ChatMsg[];
+  /** Content is usually a string, but a multimodal turn (text + an image) sends
+   *  an array of parts, which is passed through to the provider untouched. */
+  messages: (ChatMsg | { role: string; content: unknown })[];
   temperature: number;
   maxTokens: number;
 }
@@ -428,8 +430,8 @@ export const overlayOpen = (withScreen: boolean, listening = false) =>
 export const overlayMarks = (annotations: unknown[]) =>
   invokeCmd<void>("overlay_marks", { annotations });
 export const overlayClose = () => invokeCmd<void>("overlay_close");
-export const setAssistHotkey = (accelerator: string) =>
-  invokeCmd<void>("set_assist_hotkey", { accelerator });
+export const setAssistHotkey = (accelerator: string, pushToTalk = false) =>
+  invokeCmd<void>("set_assist_hotkey", { accelerator, pushToTalk });
 
 export interface AssistModel {
   id: string;
@@ -443,3 +445,11 @@ export interface AssistModel {
 }
 export const listAssistModels = (apiKey: string) =>
   invokeCmd<AssistModel[]>("list_assist_models", { params: { apiKey } });
+
+/** Record an overlay exchange in Agentic Chat; `focus` continues it there. */
+export const assistToChat = (
+  question: string,
+  answer: string,
+  sawScreen: boolean,
+  focus: boolean
+) => invokeCmd<void>("assist_to_chat", { question, answer, sawScreen, focus });

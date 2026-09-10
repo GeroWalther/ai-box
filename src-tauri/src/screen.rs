@@ -505,7 +505,11 @@ pub async fn list_assist_models(params: crate::video::KeyParams) -> Result<Vec<A
 /// The `shift` variant of the same key opens with the screen attached, so the
 /// two modes are one muscle memory apart: ask, or ask about *this*.
 #[tauri::command]
-pub fn set_assist_hotkey(app: tauri::AppHandle, accelerator: String) -> Result<(), String> {
+pub fn set_assist_hotkey(
+    app: tauri::AppHandle,
+    accelerator: String,
+    push_to_talk: bool,
+) -> Result<(), String> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
     let gs = app.global_shortcut();
@@ -537,17 +541,21 @@ pub fn set_assist_hotkey(app: tauri::AppHandle, accelerator: String) -> Result<(
         let pressed = event.state() == ShortcutState::Pressed;
         let is_talk = *shortcut == talk_shortcut;
 
-        if is_talk {
-            // Hold to talk, release to send.
+        // Hold to talk, release to send — for the dedicated talk key, and for
+        // the main shortcut too when the user has asked for that. Holding a key
+        // you already press to open the bar is the shortest path there is from
+        // "I have a question" to having asked it.
+        if is_talk || push_to_talk {
             if pressed {
-                let _ = overlay_open(app.clone(), true, true);
+                let with_screen = is_talk || shortcut.mods.shift();
+                let _ = overlay_open(app.clone(), with_screen, true);
             } else {
                 let _ = app.emit_to(BAR, "screen-assist://talk-end", ());
             }
             return;
         }
-        // The plain shortcut opens the bar for typing; fire on press only, or
-        // the key-up would immediately reopen it.
+        // Otherwise the plain shortcut just opens the bar for typing; fire on
+        // press only, or the key-up would immediately reopen it.
         if pressed {
             let _ = overlay_open(app.clone(), shortcut.mods.shift(), false);
         }
@@ -558,5 +566,49 @@ pub fn set_assist_hotkey(app: tauri::AppHandle, accelerator: String) -> Result<(
         handler,
     )
     .map_err(|e| format!("Could not bind {accelerator}: {e}"))?;
+    Ok(())
+}
+
+// ---- handing an exchange to Agentic Chat -----------------------------------
+
+/// Record an overlay exchange in the main window's chat history, optionally
+/// bringing that window forward to carry on there.
+///
+/// The overlay deliberately keeps no history of its own. Chat already has
+/// sessions, a sidebar, search and conflict-free sync between devices, and a
+/// screen question is just a message with an image attached — a second store
+/// would duplicate all of that and agree with it only by luck.
+///
+/// The main window does the writing, not this one. Both windows share an origin
+/// and therefore a localStorage, so if the overlay wrote sessions directly the
+/// main window's next save would clobber it. One writer, always.
+#[tauri::command]
+pub fn assist_to_chat(
+    app: tauri::AppHandle,
+    question: String,
+    answer: String,
+    saw_screen: bool,
+    focus: bool,
+) -> Result<(), String> {
+    app.emit_to(
+        "main",
+        "screen-assist://exchange",
+        serde_json::json!({
+            "question": question,
+            "answer": answer,
+            "sawScreen": saw_screen,
+            "focus": focus,
+        }),
+    )
+    .map_err(|e| e.to_string())?;
+
+    if focus {
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.show();
+            let _ = main.unminimize();
+            let _ = main.set_focus();
+        }
+        let _ = overlay_close(app);
+    }
     Ok(())
 }

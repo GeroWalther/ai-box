@@ -45,13 +45,13 @@ export default function AssistSettings({ settings, onChange }: Props) {
       setAssistHotkey("").catch(() => {});
       return;
     }
-    setAssistHotkey(settings.assistHotkey)
+    setAssistHotkey(settings.assistHotkey, settings.assistPushToTalk)
       .then(() => setHotkeyError(""))
       .catch((e) => {
         setHotkeyError(String(e));
         logError("assist.hotkey", e);
       });
-  }, [settings.assistEnabled, settings.assistHotkey]);
+  }, [settings.assistEnabled, settings.assistHotkey, settings.assistPushToTalk]);
 
   const selected = models.find((m) => m.id === settings.assistModel);
   const premium = voices.filter((v) => v.quality !== "default");
@@ -121,6 +121,21 @@ export default function AssistSettings({ settings, onChange }: Props) {
             ) : (
               `${models.length} models can see a screenshot, read live from OpenRouter.`
             )}
+          </p>
+
+          <label className="video-check">
+            <input
+              type="checkbox"
+              checked={settings.assistPushToTalk}
+              onChange={(e) => onChange({ assistPushToTalk: e.target.checked })}
+            />
+            Hold the shortcut to talk
+          </label>
+          <p className="hint">
+            On, {HOTKEYS.find((h) => h.value === settings.assistHotkey)?.label ?? "the shortcut"}{" "}
+            is push-to-talk: hold it, speak, let go and it sends — no mouse, no
+            second key. Off, it opens the bar for typing and you speak by holding{" "}
+            {settings.assistHotkey.split("+")[0]}&nbsp;M instead.
           </p>
 
           <label className="video-check">

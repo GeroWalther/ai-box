@@ -17,7 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { loadSecrets, loadSettings, type Settings } from "../lib/settings";
-import { overlayClose, overlayMarks } from "../lib/api";
+import { assistToChat, overlayClose, overlayMarks } from "../lib/api";
 import { ask, hush, say, Recorder, type AskResult } from "../lib/screenAssist";
 import { logError } from "../lib/log";
 
@@ -31,6 +31,7 @@ export default function ScreenAssist() {
   const [error, setError] = useState("");
   const [recording, setRecording] = useState(false);
   const [withScreen, setWithScreen] = useState(true);
+  const [lastAsked, setLastAsked] = useState("");
 
   const recorder = useRef(new Recorder());
   const inputRef = useRef<HTMLInputElement>(null);
@@ -143,6 +144,13 @@ export default function ScreenAssist() {
       setAnswer(result);
       setPhase("answered");
       void say(settings, result.say);
+      // Filed under a "Screen Assist" chat session, so the overlay needs no
+      // history of its own and these turn up in search and device sync.
+      const asked = text.trim() || "(spoken question)";
+      assistToChat(asked, result.detail ? `${result.say}\n\n${result.detail}` : result.say, result.sawScreen, false).catch(
+        () => {}
+      );
+      setLastAsked(asked);
     } catch (e) {
       logError("assist.ask", e);
       setError(String(e));
@@ -256,6 +264,20 @@ export default function ScreenAssist() {
                 <div className="sa-foot">
                   <span className="sa-badge">{answer?.sawScreen ? "saw your screen" : "answered from knowledge"}</span>
                   <span className="sa-actions">
+                    <button
+                      title="Open this in Agentic Chat, where the agent can also act on it"
+                      onClick={() => {
+                        void assistToChat(
+                          lastAsked,
+                          answer?.detail ? `${answer.say}\n\n${answer.detail}` : (answer?.say ?? ""),
+                          answer?.sawScreen ?? false,
+                          true
+                        );
+                        dismiss();
+                      }}
+                    >
+                      Continue in chat
+                    </button>
                     <button onClick={dismiss}>Done</button>
                     <button
                       onClick={() => {

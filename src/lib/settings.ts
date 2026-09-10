@@ -94,6 +94,9 @@ export interface Settings {
   /** Attach a fresh screenshot to EVERY question without being asked. Off means
    *  the screen is only sent when explicitly attached. */
   assistAutoCapture: boolean;
+  /** Make the main shortcut itself push-to-talk: hold it to speak, release to
+   *  send, without ever reaching for the mouse or a second key. */
+  assistPushToTalk: boolean;
   assistSpeak: boolean;
   /** macOS voice name. Empty = the system default. Siri's voice is not
    *  available to third-party apps, so Premium is as close as this gets. */
@@ -196,6 +199,7 @@ export const DEFAULT_SETTINGS: Settings = {
   assistHotkey: "Alt+Space",
   assistModel: "google/gemini-3.7-flash",
   assistAutoCapture: true,
+  assistPushToTalk: true,
   assistSpeak: true,
   assistVoice: "",
   assistRate: 190,
