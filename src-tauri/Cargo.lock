@@ -27,6 +27,7 @@ dependencies = [
  "image",
  "keyring",
  "local-ip-address",
+ "objc2",
  "portable-pty",
  "reqwest 0.12.28",
  "serde",

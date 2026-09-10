@@ -422,10 +422,11 @@ export const speak = (text: string, voice?: string, rate?: number) =>
   invokeCmd<void>("speak", { text, voice: voice || null, rate: rate ?? null });
 export const stopSpeaking = () => invokeCmd<void>("stop_speaking");
 
-export const overlayOpen = (withScreen: boolean) =>
-  invokeCmd<void>("overlay_open", { withScreen });
-export const overlaySetClickthrough = (ignore: boolean) =>
-  invokeCmd<void>("overlay_set_clickthrough", { ignore });
+export const overlayOpen = (withScreen: boolean, listening = false) =>
+  invokeCmd<void>("overlay_open", { withScreen, listening });
+/** Draw marks over the screen (empty clears them). */
+export const overlayMarks = (annotations: unknown[]) =>
+  invokeCmd<void>("overlay_marks", { annotations });
 export const overlayClose = () => invokeCmd<void>("overlay_close");
 export const setAssistHotkey = (accelerator: string) =>
   invokeCmd<void>("set_assist_hotkey", { accelerator });

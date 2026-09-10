@@ -5,20 +5,21 @@
 // floating over whatever app you were actually using. Two consequences shape the
 // code:
 //
-//   * The window must stop taking clicks the moment the answer is on screen,
-//     or the circle it just drew around a button would be the one thing
-//     stopping you clicking it. `overlaySetClickthrough` flips that per phase.
+//   * The marks are drawn by a SEPARATE window (ScreenMarks) that never takes
+//     a click. This one is small and interactive. Splitting them is what lets
+//     you click the very button that was just highlighted — a single window
+//     cannot be click-through and typable at once.
 //
-//   * Nothing here may assume it is the focused app. Escape and the hotkey are
-//     the only ways out, because the user's next click belongs to the app
-//     underneath, not to us.
+//   * This is a non-activating NSPanel, so it takes keys WITHOUT activating AI
+//     Box. Nothing here may assume it is the focused app; the user's next click
+//     belongs to whatever is underneath.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { loadSettings, type Settings } from "../lib/settings";
-import { overlayClose, overlaySetClickthrough } from "../lib/api";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { loadSecrets, loadSettings, type Settings } from "../lib/settings";
+import { overlayClose, overlayMarks } from "../lib/api";
 import { ask, hush, say, Recorder, type AskResult } from "../lib/screenAssist";
 import { logError } from "../lib/log";
-import type { Annotation } from "../lib/presets";
 
 type Phase = "idle" | "asking" | "thinking" | "answered";
 
@@ -34,19 +35,41 @@ export default function ScreenAssist() {
   const recorder = useRef(new Recorder());
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // API keys are deliberately NOT in localStorage — saveSettings strips them and
+  // the real value lives in the OS keychain. loadSettings() therefore returns a
+  // blank key, which is why this window has to rehydrate secrets the same way
+  // the main window does. Without this every request 401s with a key that is
+  // sitting right there on disk.
+  const secrets = useRef<Partial<Settings>>({});
+  useEffect(() => {
+    loadSecrets()
+      .then((s) => {
+        secrets.current = s;
+        setSettings((prev) => ({ ...prev, ...s }));
+      })
+      .catch((e) => logError("assist.secrets", e));
+  }, []);
+
   /** Settings live in the main window; re-read them each time we open. */
   const refreshSettings = useCallback(() => {
-    const s = loadSettings();
+    const s = { ...loadSettings(), ...secrets.current };
     setSettings(s);
+    // Re-read the keychain too: a key added since this window was created would
+    // otherwise stay invisible to the overlay until the whole app restarted.
+    void loadSecrets()
+      .then((sec) => {
+        secrets.current = sec;
+        setSettings((prev) => ({ ...prev, ...sec }));
+      })
+      .catch(() => {});
     return s;
   }, []);
 
-  // While the bar is open the window takes clicks; once an answer is up it must
-  // not, so the marks are decoration over a fully usable screen.
+  // Hand the marks to the drawing layer. Clearing them on every other phase
+  // means a stale arrow from the last question never lingers over a new one.
   useEffect(() => {
-    const interactive = phase === "asking" || phase === "thinking";
-    overlaySetClickthrough(!interactive).catch(() => {});
-  }, [phase]);
+    overlayMarks(phase === "answered" && answer ? answer.annotations : []).catch(() => {});
+  }, [phase, answer]);
 
   const dismiss = useCallback(() => {
     recorder.current.cancel();
@@ -63,21 +86,42 @@ export default function ScreenAssist() {
   // sticky auto-capture setting overrides it — that checkbox exists precisely so
   // the screen comes along without anyone reaching for a modifier.
   useEffect(() => {
-    const un = listen<boolean>("screen-assist://open", (e) => {
-      const s = refreshSettings();
-      setAnswer(null);
-      setError("");
-      setQuestion("");
-      setWithScreen(s.assistAutoCapture || e.payload === true);
-      setPhase("asking");
-      // The window has only just been shown; focus after the paint or the
-      // caret lands nowhere and the first keystrokes are lost.
-      requestAnimationFrame(() => inputRef.current?.focus());
+    const un = listen<{ withScreen: boolean; listening: boolean }>(
+      "screen-assist://open",
+      (e) => {
+        const s = refreshSettings();
+        setAnswer(null);
+        setError("");
+        setQuestion("");
+        setWithScreen(s.assistAutoCapture || e.payload?.withScreen === true);
+        setPhase("asking");
+        if (e.payload?.listening) {
+          // Push-to-talk: the key is already down, so start recording now
+          // rather than making the user click a mic they did not reach for.
+          void startRecording();
+        } else {
+          // The window has only just been shown; focus after the paint or the
+          // caret lands nowhere and the first keystrokes are lost.
+          requestAnimationFrame(() => inputRef.current?.focus());
+        }
+      }
+    );
+    return () => {
+      void un.then((f) => f());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshSettings]);
+
+  // Push-to-talk released: stop and send whatever was said.
+  useEffect(() => {
+    const un = listen("screen-assist://talk-end", () => {
+      void finishRecording();
     });
     return () => {
       void un.then((f) => f());
     };
-  }, [refreshSettings]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [withScreen, settings]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -106,17 +150,8 @@ export default function ScreenAssist() {
     }
   }
 
-  async function toggleRecording() {
-    if (recording) {
-      setRecording(false);
-      const clip = await recorder.current.stop().catch(() => null);
-      if (!clip) {
-        setError("That was too short to hear — hold the button while you speak.");
-        return;
-      }
-      await submit(question, clip);
-      return;
-    }
+  async function startRecording() {
+    if (recorder.current.recording) return;
     try {
       await recorder.current.start();
       setRecording(true);
@@ -127,6 +162,21 @@ export default function ScreenAssist() {
     }
   }
 
+  async function finishRecording() {
+    if (!recorder.current.recording) return;
+    setRecording(false);
+    const clip = await recorder.current.stop().catch(() => null);
+    if (!clip) {
+      setError("That was too short to hear — hold the key while you speak.");
+      return;
+    }
+    await submit(question, clip);
+  }
+
+  function toggleRecording() {
+    void (recording ? finishRecording() : startRecording());
+  }
+
   if (phase === "idle") return null;
 
   const canHear = true; // enforced by the picker; a deaf model simply ignores audio
@@ -134,16 +184,22 @@ export default function ScreenAssist() {
 
   return (
     <div className="sa-root">
-      {/* Marks first, so the bar always sits above them. */}
-      {answer && <Marks annotations={answer.annotations} />}
-
       <div className="sa-dock">
         {(phase === "asking" || thinking) && (
-          <div className="sa-bar">
+          <div
+            className="sa-bar"
+            onMouseDown={(e) => {
+              // Drag by the background only. Starting a window drag from a
+              // control would swallow the click that was meant to press it.
+              const el = e.target as HTMLElement;
+              if (el.closest("input, button, label, textarea, select")) return;
+              void getCurrentWindow().startDragging();
+            }}
+          >
             <button
               className={recording ? "sa-mic recording" : "sa-mic"}
               title={recording ? "Stop and send" : "Ask by voice"}
-              onClick={() => void toggleRecording()}
+              onClick={toggleRecording}
               disabled={thinking || !canHear}
             >
               <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round">
@@ -199,15 +255,9 @@ export default function ScreenAssist() {
                 {answer?.detail && <pre className="sa-detail">{answer.detail}</pre>}
                 <div className="sa-foot">
                   <span className="sa-badge">{answer?.sawScreen ? "saw your screen" : "answered from knowledge"}</span>
-                  {/* Click-through is on now, so this row needs its own
-                      exception or the buttons would be unclickable. */}
                   <span className="sa-actions">
-                    <button onMouseEnter={() => overlaySetClickthrough(false)} onMouseLeave={() => overlaySetClickthrough(true)} onClick={dismiss}>
-                      Done
-                    </button>
+                    <button onClick={dismiss}>Done</button>
                     <button
-                      onMouseEnter={() => overlaySetClickthrough(false)}
-                      onMouseLeave={() => overlaySetClickthrough(true)}
                       onClick={() => {
                         void hush();
                         setAnswer(null);
@@ -225,80 +275,5 @@ export default function ScreenAssist() {
         )}
       </div>
     </div>
-  );
-}
-
-/**
- * Draw the marks.
- *
- * Coordinates arrive normalised 0–1000 and become percentages, which means the
- * SVG needs no knowledge of the display's real size and stays correct if the
- * window is moved to a different monitor mid-answer.
- */
-function Marks({ annotations }: { annotations: Annotation[] }) {
-  if (!annotations.length) return null;
-  return (
-    <svg className="sa-marks" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">
-      <defs>
-        <marker id="sa-head" markerWidth="7" markerHeight="7" refX="5.6" refY="3.5" orient="auto">
-          <path d="M0,0 L7,3.5 L0,7 z" fill="var(--sa-mark)" />
-        </marker>
-        {/* Drawn twice — a dark casing under the bright stroke — so a mark stays
-            visible on a white document and on a dark editor alike. */}
-        <filter id="sa-glow" x="-30%" y="-30%" width="160%" height="160%">
-          <feDropShadow dx="0" dy="0" stdDeviation="6" floodColor="rgba(0,0,0,0.75)" floodOpacity="1" />
-        </filter>
-      </defs>
-      {annotations.map((a, i) => (
-        <Mark key={i} a={a} />
-      ))}
-    </svg>
-  );
-}
-
-function Mark({ a }: { a: Annotation }) {
-  const [x1, y1, x2, y2] = a.box;
-  const w = x2 - x1;
-  const h = y2 - y1;
-  const cx = x1 + w / 2;
-  const cy = y1 + h / 2;
-  const common = {
-    fill: "none",
-    stroke: "var(--sa-mark)",
-    strokeWidth: 3.2,
-    filter: "url(#sa-glow)",
-    vectorEffect: "non-scaling-stroke" as const,
-  };
-
-  return (
-    <g className="sa-mark">
-      {a.kind === "circle" && (
-        <ellipse cx={cx} cy={cy} rx={Math.max(w / 2 + 6, 10)} ry={Math.max(h / 2 + 6, 10)} {...common} />
-      )}
-      {a.kind === "box" && <rect x={x1} y={y1} width={w} height={h} rx={6} {...common} />}
-      {a.kind === "underline" && (
-        <path d={`M${x1},${y2 + 5} L${x2},${y2 + 5}`} {...common} strokeLinecap="round" />
-      )}
-      {a.kind === "arrow" && (
-        // Comes in from the upper-left so it doesn't cover what it points at,
-        // and shortens near the edge so the tail stays on screen.
-        <path
-          d={`M${Math.max(cx - 90, 8)},${Math.max(cy - 70, 8)} L${cx - 10},${cy - 10}`}
-          {...common}
-          markerEnd="url(#sa-head)"
-          strokeLinecap="round"
-        />
-      )}
-      {a.label && (
-        <text
-          className="sa-label"
-          x={cx}
-          y={y1 - 10 > 16 ? y1 - 10 : y2 + 22}
-          textAnchor="middle"
-        >
-          {a.label}
-        </text>
-      )}
-    </g>
   );
 }

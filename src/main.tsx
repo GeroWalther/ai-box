@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import ScreenAssist from "./components/ScreenAssist";
+import ScreenMarks from "./components/ScreenMarks";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ToastProvider } from "./lib/toast";
 
@@ -24,14 +25,21 @@ if (typeof crypto !== "undefined" && typeof crypto.randomUUID !== "function") {
 // build simple and means the overlay shares the app's settings and helpers
 // verbatim — but it must NOT mount App, which would run a whole second copy of
 // the workspace, its sync and its timers behind a transparent window.
-const isOverlay = new URLSearchParams(window.location.search).has("overlay");
+// Screen Assist runs as TWO extra windows off the same bundle: a full-screen
+// drawing layer that never takes a click, and a small bar that does. One bundle
+// keeps the build simple and lets both share the app's settings verbatim —
+// but neither may mount App, which would run a second copy of the whole
+// workspace, its sync and its timers behind a transparent window.
+const overlay = new URLSearchParams(window.location.search).get("overlay");
 
-if (isOverlay) document.documentElement.dataset.overlay = "1";
+if (overlay) document.documentElement.dataset.overlay = overlay;
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary>
-      {isOverlay ? (
+      {overlay === "marks" ? (
+        <ScreenMarks />
+      ) : overlay === "bar" ? (
         <ScreenAssist />
       ) : (
         <ToastProvider>

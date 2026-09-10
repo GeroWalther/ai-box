@@ -40,6 +40,12 @@ portable-pty = "0.8"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 vt100 = "0.16.2"
+
+# Already in the tree via Tauri; declared here so the overlay can talk to AppKit
+# directly and become a non-activating NSPanel. Pinned to the version Tauri
+# already pulls, so this adds no second copy to the build.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
 # Resampling generated images to an exact pixel size the models can't output
 # natively (they only offer 512/1K/2K/4K tiers).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }

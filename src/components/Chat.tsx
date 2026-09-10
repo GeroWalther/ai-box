@@ -22,6 +22,7 @@ import { logError } from "../lib/log";
 import { parseSyncList } from "../lib/syncList";
 import { useOpenrouterModels } from "../lib/openrouterModels";
 import { useToast } from "../lib/toast";
+import { Recorder, transcribe } from "../lib/screenAssist";
 import { lineDiffText } from "../lib/diff";
 import DiffPreview from "./DiffPreview";
 import ModelManager from "./ModelManager";
@@ -132,6 +133,39 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeIdRef = useRef("");
   const fileRef = useRef<HTMLInputElement>(null);
+  // Dictation. The transcript lands in the composer rather than being sent, so
+  // a misheard instruction is caught before an agent with shell access acts on
+  // it — and so it works with chat models that cannot hear, local ones included.
+  const recorder = useRef(new Recorder());
+  const [listening, setListening] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+
+  async function toggleDictation() {
+    if (transcribing) return;
+    if (listening) {
+      setListening(false);
+      const clip = await recorder.current.stop().catch(() => null);
+      if (!clip) return;
+      setTranscribing(true);
+      try {
+        const text = await transcribe(settings, clip);
+        if (text) setInput((prev) => (prev ? `${prev.trimEnd()} ${text}` : text));
+      } catch (e) {
+        logError("chat.dictate", e);
+        toastError(String(e));
+      } finally {
+        setTranscribing(false);
+      }
+      return;
+    }
+    try {
+      await recorder.current.start();
+      setListening(true);
+    } catch (e) {
+      logError("chat.mic", e);
+      toastError("No microphone access. Grant it in System Settings → Privacy & Security → Microphone.");
+    }
+  }
   const [deletedSessions, setDeletedSessions] = useState<Record<string, number>>(() => {
     try {
       const v = JSON.parse(localStorage.getItem(SESSIONS_DEL_KEY) || "null");
@@ -832,6 +866,20 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
               onClick={() => fileRef.current?.click()}
             >
               📎
+            </button>
+            <button
+              className={listening ? "btn ghost attach-btn dictating" : "btn ghost attach-btn"}
+              title={
+                listening
+                  ? "Stop and transcribe"
+                  : transcribing
+                    ? "Transcribing…"
+                    : "Dictate (the text lands here for you to check before sending)"
+              }
+              onClick={() => void toggleDictation()}
+              disabled={transcribing}
+            >
+              {transcribing ? "…" : "🎙"}
             </button>
             <textarea
               className="promptbar-input"

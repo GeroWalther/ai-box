@@ -33,24 +33,25 @@ pub const OVERLAY: &str = "screen-assist";
 /// races the window server and catches the overlay mid-fade.
 #[tauri::command]
 pub async fn capture_screen(app: tauri::AppHandle) -> Result<String, String> {
-    let overlay = app.get_webview_window(OVERLAY);
-    let was_visible = overlay
-        .as_ref()
-        .and_then(|w| w.is_visible().ok())
-        .unwrap_or(false);
-    if was_visible {
-        if let Some(w) = &overlay {
-            let _ = w.hide();
+    // Both layers must go: the bar would appear in the shot, and the previous
+    // answer's marks would have the model reading its own arrows back.
+    let mut restore = Vec::new();
+    for label in [BAR, MARKS] {
+        if let Some(w) = app.get_webview_window(label) {
+            if w.is_visible().unwrap_or(false) {
+                let _ = w.hide();
+                restore.push(w);
+            }
         }
+    }
+    if !restore.is_empty() {
         tokio::time::sleep(std::time::Duration::from_millis(140)).await;
     }
 
     let result = capture_to_base64().await;
 
-    if was_visible {
-        if let Some(w) = &overlay {
-            let _ = w.show();
-        }
+    for w in restore {
+        let _ = w.show();
     }
     result
 }
@@ -83,7 +84,7 @@ System Settings → Privacy & Security → Screen Recording, then restart it."
 #[tauri::command]
 pub fn screen_size(app: tauri::AppHandle) -> Result<(f64, f64), String> {
     let win = app
-        .get_webview_window(OVERLAY)
+        .get_webview_window(MARKS)
         .or_else(|| app.get_webview_window("main"))
         .ok_or("no window")?;
     let monitor = win
@@ -210,18 +211,41 @@ pub fn stop_speaking(speaker: tauri::State<'_, Speaker>) {
     }
 }
 
-// ---- the overlay window ---------------------------------------------------
+// ---- the overlay windows --------------------------------------------------
+//
+// TWO windows, not one, and the split is what makes the thing usable.
+//
+//   * `MARKS` is full-screen, transparent, and permanently click-through. It
+//     only ever draws. Because it never takes a click, it can never come
+//     between you and the button it just highlighted.
+//
+//   * `BAR` is small, sits near the bottom, and takes clicks and keys normally.
+//
+// A single window cannot be both. The earlier version toggled click-through on
+// the whole window per phase, which meant the answer's own buttons became
+// unclickable the moment the answer appeared — and while the bar was open, the
+// full-screen window swallowed every click meant for the app underneath. The
+// usual workaround is a 60fps loop polling the cursor to decide; splitting the
+// window makes the question moot.
 
-/// Build the overlay once, at startup, hidden.
-///
-/// `transparent` needs `macOSPrivateApi` in tauri.conf.json. That rules out the
-/// App Store, which is irrelevant here — AI Box ships Developer ID through
-/// GitHub Releases.
+/// The full-screen drawing layer. Never focusable, never clickable.
+pub const MARKS: &str = "screen-assist";
+/// The small ask/answer bar. Focusable, but non-activating.
+pub const BAR: &str = "screen-assist-bar";
+
+/// Height reserved for the bar, in logical points. It grows on screen via CSS;
+/// this is the window it grows inside.
+const BAR_H: f64 = 340.0;
+const BAR_W: f64 = 760.0;
+
+/// Build both windows once, hidden.
 pub fn create_overlay(app: &tauri::AppHandle) -> Result<(), String> {
-    if app.get_webview_window(OVERLAY).is_some() {
-        return Ok(());
-    }
-    let win = WebviewWindowBuilder::new(app, OVERLAY, WebviewUrl::App("index.html?overlay=1".into()))
+    if app.get_webview_window(MARKS).is_none() {
+        let marks = WebviewWindowBuilder::new(
+            app,
+            MARKS,
+            WebviewUrl::App("index.html?overlay=marks".into()),
+        )
         .title("Screen Assist")
         .transparent(true)
         .decorations(false)
@@ -229,16 +253,41 @@ pub fn create_overlay(app: &tauri::AppHandle) -> Result<(), String> {
         .shadow(false)
         .skip_taskbar(true)
         .resizable(false)
+        .focused(false)
         .visible(false)
-        // Show over full-screen apps too, otherwise the one place you most want
-        // help — a full-screen editor — is the one place it cannot draw.
         .visible_on_all_workspaces(true)
         .build()
-        .map_err(|e| format!("create overlay: {e}"))?;
+        .map_err(|e| format!("create marks layer: {e}"))?;
+        // Permanent: this layer exists only to draw.
+        let _ = marks.set_ignore_cursor_events(true);
+        #[cfg(target_os = "macos")]
+        let _ = crate::panel::make_panel(&marks, false);
+        let _ = fit_to_screen(&marks);
+    }
 
-    // Click-through until the ask bar opens.
-    let _ = win.set_ignore_cursor_events(true);
-    let _ = fit_to_screen(&win);
+    if app.get_webview_window(BAR).is_none() {
+        let bar = WebviewWindowBuilder::new(
+            app,
+            BAR,
+            WebviewUrl::App("index.html?overlay=bar".into()),
+        )
+        .title("Ask AI Box")
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .shadow(false)
+        .skip_taskbar(true)
+        .resizable(false)
+        .focused(false)
+        .visible(false)
+        .inner_size(BAR_W, BAR_H)
+        .visible_on_all_workspaces(true)
+        .build()
+        .map_err(|e| format!("create bar: {e}"))?;
+        #[cfg(target_os = "macos")]
+        let _ = crate::panel::make_panel(&bar, true);
+        let _ = place_bar(&bar);
+    }
     Ok(())
 }
 
@@ -256,34 +305,66 @@ fn fit_to_screen(win: &tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the ask bar: show the overlay, let it take clicks, and focus it.
-#[tauri::command]
-pub fn overlay_open(app: tauri::AppHandle, with_screen: bool) -> Result<(), String> {
-    create_overlay(&app)?;
-    let win = app.get_webview_window(OVERLAY).ok_or("no overlay")?;
-    let _ = fit_to_screen(&win);
-    // The bar is a text field — it must receive clicks and keys.
-    let _ = win.set_ignore_cursor_events(false);
-    let _ = win.show();
-    let _ = win.set_focus();
-    app.emit_to(OVERLAY, "screen-assist://open", with_screen)
+/// Sit the bar low and centred, where a HUD belongs and where it covers least.
+fn place_bar(win: &tauri::WebviewWindow) -> Result<(), String> {
+    let monitor = win
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or("no monitor")?;
+    let scale = monitor.scale_factor();
+    let sw = monitor.size().width as f64 / scale;
+    let sh = monitor.size().height as f64 / scale;
+    let x = monitor.position().x as f64 / scale + (sw - BAR_W) / 2.0;
+    let y = monitor.position().y as f64 / scale + sh - BAR_H - 60.0;
+    win.set_position(tauri::LogicalPosition::new(x, y))
         .map_err(|e| e.to_string())
 }
 
-/// Hand clicks back to the app underneath while an answer stays on screen, so
-/// the user can actually press the button that was just circled.
+/// Open the ask bar. `listening` starts the microphone immediately, which is
+/// how the push-to-talk shortcut arrives here.
 #[tauri::command]
-pub fn overlay_set_clickthrough(app: tauri::AppHandle, ignore: bool) -> Result<(), String> {
-    let win = app.get_webview_window(OVERLAY).ok_or("no overlay")?;
-    win.set_ignore_cursor_events(ignore).map_err(|e| e.to_string())
+pub fn overlay_open(app: tauri::AppHandle, with_screen: bool, listening: bool) -> Result<(), String> {
+    create_overlay(&app)?;
+    let bar = app.get_webview_window(BAR).ok_or("no bar")?;
+    let _ = place_bar(&bar);
+    let _ = bar.show();
+    // Key, but NOT activating: the panel style means the app behind stays
+    // frontmost, so this never drags the AI Box main window over your work.
+    let _ = bar.set_focus();
+    app.emit_to(
+        BAR,
+        "screen-assist://open",
+        serde_json::json!({ "withScreen": with_screen, "listening": listening }),
+    )
+    .map_err(|e| e.to_string())
 }
 
-/// Dismiss the overlay entirely.
+/// Draw a set of marks over the screen, or clear them when empty.
+#[tauri::command]
+pub fn overlay_marks(app: tauri::AppHandle, annotations: serde_json::Value) -> Result<(), String> {
+    create_overlay(&app)?;
+    let marks = app.get_webview_window(MARKS).ok_or("no marks layer")?;
+    let empty = annotations.as_array().map(|a| a.is_empty()).unwrap_or(true);
+    if empty {
+        let _ = marks.hide();
+    } else {
+        let _ = fit_to_screen(&marks);
+        // Show without focusing: this layer must never take key status away
+        // from whatever the user is working in.
+        let _ = marks.show();
+    }
+    app.emit_to(MARKS, "screen-assist://marks", annotations)
+        .map_err(|e| e.to_string())
+}
+
+/// Dismiss everything.
 #[tauri::command]
 pub fn overlay_close(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window(OVERLAY) {
-        let _ = win.set_ignore_cursor_events(true);
-        let _ = win.hide();
+    if let Some(bar) = app.get_webview_window(BAR) {
+        let _ = bar.hide();
+    }
+    if let Some(marks) = app.get_webview_window(MARKS) {
+        let _ = marks.hide();
     }
     Ok(())
 }
@@ -436,18 +517,46 @@ pub fn set_assist_hotkey(app: tauri::AppHandle, accelerator: String) -> Result<(
     }
     let with_screen = format!("Shift+{accelerator}");
 
-    let plain_key = accelerator.clone();
+    // Push-to-talk: the same modifier with M. Held down it records, released it
+    // sends — so asking out loud is one gesture rather than open, click, speak,
+    // click. Derived from the chosen accelerator so both shortcuts always share
+    // a modifier and stay one muscle memory apart.
+    let talk = accelerator
+        .rsplit_once('+')
+        .map(|(mods, _)| format!("{mods}+M"))
+        .unwrap_or_else(|| "Alt+M".into());
+
+    // Compare parsed shortcuts, never their Display strings: `Shortcut`'s
+    // formatting is not the accelerator syntax it was parsed from ("alt+KeyM"
+    // vs "Alt+M"), so a string compare here silently never matched and every
+    // press fell through to the plain open-the-bar branch.
+    let talk_shortcut: tauri_plugin_global_shortcut::Shortcut = talk
+        .parse()
+        .map_err(|e| format!("Could not parse {talk}: {e}"))?;
     let handler = move |app: &tauri::AppHandle, shortcut: &tauri_plugin_global_shortcut::Shortcut, event: tauri_plugin_global_shortcut::ShortcutEvent| {
-        // Fire on press only. Without this the overlay opens on the key down
-        // and immediately reopens on the key up.
-        if event.state() != ShortcutState::Pressed {
+        let pressed = event.state() == ShortcutState::Pressed;
+        let is_talk = *shortcut == talk_shortcut;
+
+        if is_talk {
+            // Hold to talk, release to send.
+            if pressed {
+                let _ = overlay_open(app.clone(), true, true);
+            } else {
+                let _ = app.emit_to(BAR, "screen-assist://talk-end", ());
+            }
             return;
         }
-        let with_screen = shortcut.mods.shift();
-        let _ = overlay_open(app.clone(), with_screen);
+        // The plain shortcut opens the bar for typing; fire on press only, or
+        // the key-up would immediately reopen it.
+        if pressed {
+            let _ = overlay_open(app.clone(), shortcut.mods.shift(), false);
+        }
     };
 
-    gs.on_shortcuts([plain_key.as_str(), with_screen.as_str()], handler)
-        .map_err(|e| format!("Could not bind {accelerator}: {e}"))?;
+    gs.on_shortcuts(
+        [accelerator.as_str(), with_screen.as_str(), talk.as_str()],
+        handler,
+    )
+    .map_err(|e| format!("Could not bind {accelerator}: {e}"))?;
     Ok(())
 }

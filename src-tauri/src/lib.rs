@@ -10,6 +10,7 @@ use tauri::ipc::Channel;
 mod comfy;
 mod guard;
 mod pty;
+mod panel;
 mod screen;
 mod server;
 mod video;
@@ -2680,7 +2681,7 @@ pub fn run() {
             screen::speak,
             screen::stop_speaking,
             screen::overlay_open,
-            screen::overlay_set_clickthrough,
+            screen::overlay_marks,
             screen::overlay_close,
             screen::list_assist_models,
             screen::set_assist_hotkey,

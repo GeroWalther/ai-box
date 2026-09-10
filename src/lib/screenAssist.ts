@@ -44,6 +44,14 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
   if (!question && !input.clip) {
     return { say: "", annotations: [], sawScreen: false };
   }
+  // Say which key is missing rather than letting OpenRouter answer with a bare
+  // 401, which reads as "your key is wrong" when the real cause is that this
+  // window never loaded it.
+  if (!settings.openrouterKey.trim()) {
+    throw new Error(
+      "No OpenRouter key available. Open AI Box → Settings and check the key is saved."
+    );
+  }
 
   let screenshot: string | null = null;
   let captureError: string | null = null;
@@ -206,4 +214,47 @@ function blobToBase64(blob: Blob): Promise<string> {
     };
     reader.readAsDataURL(blob);
   });
+}
+
+// ---- dictation --------------------------------------------------------------
+
+/**
+ * Turn a recording into text.
+ *
+ * Deliberately separate from `ask`: in Agentic Chat the transcript goes into the
+ * composer for the user to read and edit BEFORE it is sent, rather than straight
+ * to the model. That agent can run shell commands and rewrite files, and acting
+ * on a misheard instruction that nobody saw is a bad trade for saving one
+ * keystroke. It also means dictation works with any chat model, including local
+ * Ollama ones that cannot hear a thing.
+ *
+ * Uses the Screen Assist model, which the picker already guarantees is
+ * audio-capable, rather than adding a second model setting to configure.
+ */
+export async function transcribe(settings: Settings, clip: Clip): Promise<string> {
+  if (!settings.openrouterKey.trim()) {
+    throw new Error("Dictation needs your OpenRouter key — add it in Settings.");
+  }
+  const msg = await chatCompletion({
+    baseUrl: "https://openrouter.ai/api/v1",
+    apiKey: settings.openrouterKey,
+    model: settings.assistModel,
+    messages: [
+      {
+        role: "system",
+        content:
+          "Transcribe the audio verbatim. Output ONLY the words spoken — no " +
+          "preamble, no quotation marks, no commentary, no translation. If the " +
+          "audio contains no discernible speech, output nothing at all.",
+      },
+      {
+        role: "user",
+        content: [{ type: "input_audio", input_audio: { data: clip.data, format: clip.format } }],
+      },
+    ],
+    tools: [],
+    // Zero: this is a transcription, and any creativity here is a misquote.
+    temperature: 0,
+  });
+  return (msg.content ?? "").trim();
 }

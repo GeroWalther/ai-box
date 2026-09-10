@@ -4,7 +4,8 @@
   "description": "Capability for the main window",
   "windows": [
     "main",
-    "screen-assist"
+    "screen-assist",
+    "screen-assist-bar"
   ],
   "permissions": [
     "core:default",
@@ -19,6 +20,7 @@
         }
       ]
     },
-    "global-shortcut:default"
+    "global-shortcut:default",
+    "core:window:allow-start-dragging"
   ]
 }

@@ -202,3 +202,11 @@
   letter-spacing: 0.5px;
   color: var(--muted);
 }
+
+/* Dictation button, mid-recording. Same red pulse as the Screen Assist mic so
+   "we are listening" looks identical wherever it appears. */
+.attach-btn.dictating {
+  background: #e4483f;
+  color: #fff;
+  animation: sa-pulse 1.2s ease-in-out infinite;
+}
