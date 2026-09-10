@@ -22,8 +22,8 @@ html[data-overlay] #root {
    not stretch or the drag region would cover the whole screen. */
 html[data-overlay="marks"] .sa-marks,
 .sa-root {
-  --sa-mark: #3d8bff;             /* blue outline */
-  --sa-wash: rgba(61, 139, 255, 0.22); /* blue highlight wash */
+  --sa-mark: #0a84ff;                  /* systemBlue, macOS dark */
+  --sa-wash: rgba(10, 132, 255, 0.16); /* faint enough to read through */
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 .sa-root {
@@ -34,8 +34,8 @@ html[data-overlay="marks"] .sa-marks,
 /* Marks are painted straight onto the screen by their own window, which never
    takes a click — hence the colours living on :root there too. */
 html[data-overlay="marks"] {
-  --sa-mark: #3d8bff;
-  --sa-wash: rgba(61, 139, 255, 0.22);
+  --sa-mark: #0a84ff;
+  --sa-wash: rgba(10, 132, 255, 0.16);
 }
 
 /* ---- the marks drawn over the screen ---- */
@@ -46,22 +46,21 @@ html[data-overlay="marks"] {
   height: 100%;
   pointer-events: none;
 }
-.sa-mark {
-  animation: sa-pop 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.2);
-  transform-origin: center;
-}
-@keyframes sa-pop {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+
+/* A filled pill, the way macOS badges a thing — legible over any background
+   without the stroked-outline look that reads as homemade. */
+.sa-pill {
+  fill: var(--sa-mark);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
 }
 .sa-label {
   fill: #fff;
-  font-size: 15px;
-  font-weight: 600;
-  paint-order: stroke;
-  stroke: rgba(0, 0, 0, 0.85);
-  stroke-width: 4px;
-  stroke-linejoin: round;
+  font-size: 13px;
+  font-weight: 590; /* SF's semibold */
+  letter-spacing: -0.08px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
 }
 
 /* ---- the dock: ask bar + answer ---- */
@@ -226,22 +225,31 @@ html[data-overlay="marks"] {
 /* The highlight pulse: one soft expansion to catch the eye, then it settles.
    Deliberately finite — something breathing forever over your work is a
    distraction, not a pointer. */
+/* One soft expansion to catch the eye, then it settles. Deliberately finite:
+   something breathing forever over your work is a distraction, not a pointer. */
 .sa-ping {
-  transform-origin: center;
-  animation: sa-ping 1.6s ease-out 2;
+  animation: sa-ping 1.5s cubic-bezier(0.25, 0.8, 0.35, 1) 2;
   opacity: 0;
 }
 @keyframes sa-ping {
-  0%   { opacity: 0.85; transform: scale(1); }
-  100% { opacity: 0;    transform: scale(1.35); }
+  0%   { opacity: 0.7; transform: scale(1); }
+  100% { opacity: 0;   transform: scale(1.14); }
 }
 @media (prefers-reduced-motion: reduce) {
   .sa-ping { animation: none; }
   .sa-mark { animation: none; }
 }
 
+/* Settles into place rather than popping — the easing macOS uses for a
+   sheet, so it reads as part of the system. */
 .sa-mark {
-  animation: sa-pop 0.34s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+  animation: sa-settle 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+@keyframes sa-settle {
+  from { opacity: 0; transform: scale(1.06); }
+  to   { opacity: 1; transform: scale(1); }
 }
 
 /* Highlights fade themselves out rather than waiting to be dismissed. */
