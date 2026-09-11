@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated Info.plist at bundle time.
+
+  These strings are not decoration: macOS refuses the permission outright when
+  the matching key is missing, and the dialog the user sees is this exact
+  sentence. Screen Assist needs all three — it looks at the screen, listens to
+  the question, and (when asked to act) drives the Mac through Apple Events.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>AI Box uses this to carry out what you ask Screen Assist to do — change a setting, open or quit an app, adjust the volume.</string>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>AI Box uses this to switch Bluetooth on and off when you ask Screen Assist to.</string>
+  <key>NSBluetoothPeripheralUsageDescription</key>
+  <string>AI Box uses this to switch Bluetooth on and off when you ask Screen Assist to.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>AI Box uses the microphone so you can ask Screen Assist out loud instead of typing.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>AI Box takes a screenshot when you ask Screen Assist about what is on your screen.</string>
+</dict>
+</plist>

@@ -453,3 +453,39 @@ export const assistToChat = (
   sawScreen: boolean,
   focus: boolean
 ) => invokeCmd<void>("assist_to_chat", { question, answer, sawScreen, focus });
+
+// ---- Using the Mac ---------------------------------------------------------
+//
+// All coordinates here are SCREEN POINTS from the top-left of the display, not
+// the model's normalised space — `lib/control.ts` owns that conversion.
+
+/** Can AI Box drive the mouse and keyboard (Accessibility permission)? */
+export const controlTrusted = () => invokeCmd<boolean>("control_trusted");
+/** Show macOS's Accessibility prompt. Resolves with the state before the answer. */
+export const controlRequestAccess = () => invokeCmd<boolean>("control_request_access");
+export const controlMove = (x: number, y: number) => invokeCmd<string>("control_move", { x, y });
+export const controlClick = (x: number, y: number, button = "left", count = 1) =>
+  invokeCmd<string>("control_click", { x, y, button, count });
+export const controlDrag = (x1: number, y1: number, x2: number, y2: number) =>
+  invokeCmd<string>("control_drag", { x1, y1, x2, y2 });
+export const controlScroll = (x: number, y: number, dx: number, dy: number) =>
+  invokeCmd<string>("control_scroll", { x, y, dx, dy });
+export const controlType = (text: string) => invokeCmd<string>("control_type", { text });
+export const controlKey = (combo: string) => invokeCmd<string>("control_key", { combo });
+export const controlSystem = (action: string, value: string) =>
+  invokeCmd<string>("control_system", { action, value });
+
+export interface ControlStatus {
+  bluetooth: string;
+  wifi: string;
+  volume: string;
+  appearance: string;
+  frontmostApp: string;
+  canControl: boolean;
+}
+export const controlStatus = () => invokeCmd<ControlStatus>("control_status");
+
+/** Let clicks pass through the ask bar, so it cannot press its own UI. */
+export const overlayPassClicks = (on: boolean) => invokeCmd<void>("overlay_pass_clicks", { on });
+/** Take over Escape globally for the duration of a run, as the stop key. */
+export const overlayActing = (active: boolean) => invokeCmd<void>("overlay_acting", { active });

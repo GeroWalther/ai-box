@@ -166,11 +166,86 @@ html[data-overlay="marks"] {
 }
 .sa-answer.thinking {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
   color: rgba(255, 255, 255, 0.72);
   font-size: 13.5px;
 }
+.sa-thinking-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sa-thinking-row > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Stop is the one control that has to be findable without reading, because it
+   is reached for while the Mac is being driven. Warm, not red: this is a brake,
+   not a destructive action. */
+.sa-stop {
+  flex: none;
+  border: 1px solid rgba(255, 159, 90, 0.4);
+  background: rgba(255, 159, 90, 0.16);
+  color: #ffcaa3;
+  border-radius: 7px;
+  padding: 3px 11px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.sa-stop:hover { background: rgba(255, 159, 90, 0.28); }
+
+/* The trail of what was actually done. Small and quiet — it is a record to
+   glance at, and the answer underneath is the thing being read. */
+.sa-trail {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.62);
+}
+.sa-trail li {
+  display: flex;
+  gap: 7px;
+  align-items: baseline;
+}
+.sa-trail li.failed { color: #ffb4ab; }
+.sa-tick {
+  flex: none;
+  width: 11px;
+  color: rgba(120, 220, 160, 0.9);
+  font-size: 10.5px;
+}
+.sa-trail li.failed .sa-tick { color: #ff8f86; }
+
+.sa-grant {
+  margin: 10px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.62);
+}
+.sa-grant button {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8eaf0;
+  border-radius: 8px;
+  padding: 4px 11px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sa-grant button:hover { background: rgba(255, 255, 255, 0.16); }
 .sa-say {
   margin: 0;
   font-size: 15px;

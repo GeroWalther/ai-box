@@ -17,7 +17,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { loadSecrets, loadSettings, type Settings } from "../lib/settings";
-import { assistToChat, overlayClose, overlayMarks } from "../lib/api";
+import { assistToChat, controlRequestAccess, controlTrusted, overlayClose, overlayMarks } from "../lib/api";
+import type { Step } from "../lib/control";
 import { ask, hush, say, Recorder, type AskResult } from "../lib/screenAssist";
 import { logError } from "../lib/log";
 
@@ -32,6 +33,13 @@ export default function ScreenAssist() {
   const [recording, setRecording] = useState(false);
   const [withScreen, setWithScreen] = useState(true);
   const [lastAsked, setLastAsked] = useState("");
+  const [steps, setSteps] = useState<Step[]>([]);
+  const [needsAccess, setNeedsAccess] = useState(false);
+
+  // Set while a run is in flight; flipped by Stop and by Esc, and read between
+  // steps. A ref rather than state because the loop is already running and would
+  // never see a re-render.
+  const stop = useRef(false);
 
   const recorder = useRef(new Recorder());
   const inputRef = useRef<HTMLInputElement>(null);
@@ -73,12 +81,14 @@ export default function ScreenAssist() {
   }, [phase, answer]);
 
   const dismiss = useCallback(() => {
+    stop.current = true;
     recorder.current.cancel();
     setRecording(false);
     setPhase("idle");
     setAnswer(null);
     setError("");
     setQuestion("");
+    setSteps([]);
     void hush();
     overlayClose().catch(() => {});
   }, []);
@@ -124,23 +134,63 @@ export default function ScreenAssist() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [withScreen, settings]);
 
+  // Escape pressed anywhere on the Mac while a run is in flight. The overlay's
+  // own key handler cannot hear it: the first click hands focus to the app being
+  // driven, so this arrives from the global shortcut instead.
+  useEffect(() => {
+    const un = listen("screen-assist://stop", () => {
+      stop.current = true;
+      setSteps((prev) =>
+        prev.length ? prev : [{ tool: "stop", message: "Stopping…", ok: true }]
+      );
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, []);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") {
         e.preventDefault();
+        // Mid-run, Esc is a brake rather than a close: the user is watching
+        // their own Mac being driven and the urgent need is to make it stop,
+        // not to lose the window that says what happened.
+        if (phase === "thinking" && !stop.current) {
+          stop.current = true;
+          return;
+        }
         dismiss();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dismiss]);
+  }, [dismiss, phase]);
 
   async function submit(text: string, clip: Awaited<ReturnType<Recorder["stop"]>>) {
     if (!text.trim() && !clip) return;
     setPhase("thinking");
     setError("");
+    setSteps([]);
+    setNeedsAccess(false);
+    stop.current = false;
     try {
-      const result = await ask(settings, { text, clip, withScreen });
+      const result = await ask(settings, {
+        text,
+        clip,
+        withScreen,
+        act: settings.assistAct,
+        stopped: () => stop.current,
+        onStep: (step, done) =>
+          setSteps((prev) => {
+            // The same step arrives twice: once as "Clicking Send", once with
+            // the result. The second replaces the first rather than stacking.
+            const next = prev.slice();
+            if (done && next.length) next[next.length - 1] = step;
+            else next.push(step);
+            return next;
+          }),
+      });
       setAnswer(result);
       setPhase("answered");
       void say(settings, result.say, result.lang);
@@ -151,6 +201,13 @@ export default function ScreenAssist() {
         () => {}
       );
       setLastAsked(asked);
+      // Only worth offering once the user has actually asked for something to
+      // be done and been unable to have it done.
+      if (settings.assistAct) {
+        controlTrusted()
+          .then((ok) => setNeedsAccess(!ok))
+          .catch(() => {});
+      }
     } catch (e) {
       logError("assist.ask", e);
       setError(String(e));
@@ -248,8 +305,23 @@ export default function ScreenAssist() {
 
         {thinking && (
           <div className="sa-answer thinking">
-            <span className="sa-dots"><i /><i /><i /></span>
-            {withScreen ? "Looking at your screen…" : "Thinking…"}
+            <div className="sa-thinking-row">
+              <span className="sa-dots"><i /><i /><i /></span>
+              <span>
+                {steps.length
+                  ? steps[steps.length - 1].message
+                  : withScreen
+                    ? "Looking at your screen…"
+                    : "Thinking…"}
+              </span>
+              {/* Reachable the whole time it is driving the Mac. Esc does the
+                  same thing, but a visible button is what someone reaches for
+                  when they want it to stop NOW. */}
+              <button className="sa-stop" onClick={() => { stop.current = true; }}>
+                {stop.current ? "Stopping…" : "Stop"}
+              </button>
+            </div>
+            {steps.length > 1 && <Trail steps={steps.slice(0, -1)} />}
           </div>
         )}
 
@@ -259,7 +331,20 @@ export default function ScreenAssist() {
               <p className="sa-error">{error}</p>
             ) : (
               <>
+                {steps.length > 0 && <Trail steps={steps} />}
                 <p className="sa-say">{answer?.say}</p>
+                {needsAccess && (
+                  <p className="sa-grant">
+                    To let me click and type, switch AI Box on under Accessibility.
+                    <button
+                      onClick={() => {
+                        void controlRequestAccess();
+                      }}
+                    >
+                      Open System Settings
+                    </button>
+                  </p>
+                )}
                 {answer?.detail && <pre className="sa-detail">{answer.detail}</pre>}
                 <div className="sa-foot">
                   <span className="sa-badge">{answer?.sawScreen ? "saw your screen" : "answered from knowledge"}</span>
@@ -297,5 +382,25 @@ export default function ScreenAssist() {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * What was actually done, in order.
+ *
+ * This is the part that makes an agent driving your Mac tolerable rather than
+ * alarming: every click is named as it happens, and a step that failed says so
+ * instead of disappearing into a summary that claims success.
+ */
+function Trail({ steps }: { steps: Step[] }) {
+  return (
+    <ol className="sa-trail">
+      {steps.map((s, i) => (
+        <li key={i} className={s.ok ? undefined : "failed"}>
+          <span className="sa-tick">{s.ok ? "✓" : "!"}</span>
+          {s.message}
+        </li>
+      ))}
+    </ol>
   );
 }

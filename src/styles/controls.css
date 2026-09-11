@@ -144,6 +144,19 @@ input[type="range"]:focus {
 .hint.error {
   color: var(--danger);
 }
+/* A button that reads as a link — for an action offered mid-sentence inside a
+   hint, where a real button would break the line of text it belongs to. */
+.linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.linkish:hover { opacity: 0.8; }
+
 .hint code,
 .modal-body code {
   background: var(--bg);

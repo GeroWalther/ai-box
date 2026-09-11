@@ -5,7 +5,16 @@
 // a screenshot. Both change without this app being rebuilt.
 import { useEffect, useState } from "react";
 import type { Settings } from "../lib/settings";
-import { listAssistModels, listVoices, setAssistHotkey, speak, type AssistModel, type MacVoice } from "../lib/api";
+import {
+  controlRequestAccess,
+  controlTrusted,
+  listAssistModels,
+  listVoices,
+  setAssistHotkey,
+  speak,
+  type AssistModel,
+  type MacVoice,
+} from "../lib/api";
 import { logError } from "../lib/log";
 
 interface Props {
@@ -23,10 +32,49 @@ const HOTKEYS = [
   { value: "", label: "No shortcut" },
 ];
 
+/**
+ * Voices grouped by language.
+ *
+ * macOS installs about 180 of them. A flat list buries the German voices below
+ * a hundred English novelty ones, which is how "where do I set a German voice?"
+ * becomes a real question. Language names come from the OS rather than a table
+ * kept here, so every locale is labelled properly.
+ */
+function byLanguage(voices: MacVoice[]): [string, MacVoice[]][] {
+  const names = new Intl.DisplayNames(undefined, { type: "language" });
+  const groups = new Map<string, MacVoice[]>();
+  for (const v of voices) {
+    const code = v.locale.split(/[_-]/)[0];
+    let label = code;
+    try {
+      label = names.of(code) ?? code;
+    } catch {
+      /* an unknown code is still worth grouping under itself */
+    }
+    const bucket = groups.get(label);
+    if (bucket) bucket.push(v);
+    else groups.set(label, [v]);
+  }
+  // listVoices() already puts English and the best-quality voices first, and
+  // Map preserves insertion order, so that ordering carries through.
+  return [...groups.entries()];
+}
+
 export default function AssistSettings({ settings, onChange }: Props) {
   const [voices, setVoices] = useState<MacVoice[]>([]);
   const [models, setModels] = useState<AssistModel[]>([]);
   const [hotkeyError, setHotkeyError] = useState("");
+  /** Whether macOS lets AI Box drive the mouse and keyboard. Re-checked on
+   *  focus, because the user grants it in System Settings — another app — and
+   *  would otherwise come back to a panel still claiming it is missing. */
+  const [canControl, setCanControl] = useState(true);
+
+  useEffect(() => {
+    const check = () => void controlTrusted().then(setCanControl).catch(() => {});
+    check();
+    window.addEventListener("focus", check);
+    return () => window.removeEventListener("focus", check);
+  }, []);
 
   useEffect(() => {
     listVoices().then(setVoices).catch(() => setVoices([]));
@@ -155,6 +203,57 @@ export default function AssistSettings({ settings, onChange }: Props) {
           <label className="video-check">
             <input
               type="checkbox"
+              checked={settings.assistAct}
+              onChange={(e) => onChange({ assistAct: e.target.checked })}
+            />
+            Let it use your Mac
+          </label>
+          <p className="hint">
+            On, asking for something to be <i>done</i> gets it done — &ldquo;turn Bluetooth
+            off&rdquo;, &ldquo;open Mail&rdquo;, &ldquo;scroll down and click Accept&rdquo;.
+            It clicks and types for real, one step at a time, naming each one as it goes;
+            Esc or Stop halts it instantly. It will not buy, send, post or delete things,
+            or touch passwords — for those it says so and leaves it to you.
+          </p>
+
+          {settings.assistAct && !canControl && (
+            <p className="hint error">
+              macOS hasn&apos;t given AI Box permission to click or type yet.{" "}
+              <button
+                type="button"
+                className="linkish"
+                onClick={() => {
+                  void controlRequestAccess();
+                }}
+              >
+                Open Accessibility settings
+              </button>
+              , switch AI Box on, and it works from the next question.
+            </p>
+          )}
+
+          {settings.assistAct && (
+            <div className="field">
+              <label>Stop after</label>
+              <select
+                value={String(settings.assistMaxSteps)}
+                onChange={(e) => onChange({ assistMaxSteps: Number(e.target.value) })}
+              >
+                <option value="6">6 actions</option>
+                <option value="12">12 actions</option>
+                <option value="20">20 actions</option>
+                <option value="40">40 actions</option>
+              </select>
+              <p className="hint">
+                A ceiling, not a target — it stops and reports rather than clicking
+                around your Mac indefinitely if it gets lost.
+              </p>
+            </div>
+          )}
+
+          <label className="video-check">
+            <input
+              type="checkbox"
               checked={settings.assistSpeak}
               onChange={(e) => onChange({ assistSpeak: e.target.checked })}
             />
@@ -171,11 +270,15 @@ export default function AssistSettings({ settings, onChange }: Props) {
                     onChange={(e) => onChange({ assistVoice: e.target.value })}
                   >
                     <option value="">Auto — match the answer&apos;s language</option>
-                    {voices.map((v) => (
-                      <option key={v.name} value={v.name}>
-                        {v.name}
-                        {v.quality !== "default" ? ` · ${v.quality}` : ""}
-                      </option>
+                    {byLanguage(voices).map(([label, list]) => (
+                      <optgroup key={label} label={label}>
+                        {list.map((v) => (
+                          <option key={v.name} value={v.name}>
+                            {v.name}
+                            {v.quality !== "default" ? ` · ${v.quality}` : ""}
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
                 </div>

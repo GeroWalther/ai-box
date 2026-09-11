@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
 mod comfy;
+mod control;
 mod guard;
 mod pty;
 mod panel;
@@ -2686,6 +2687,18 @@ pub fn run() {
             screen::overlay_close,
             screen::list_assist_models,
             screen::set_assist_hotkey,
+            screen::overlay_pass_clicks,
+            screen::overlay_acting,
+            control::control_trusted,
+            control::control_request_access,
+            control::control_move,
+            control::control_click,
+            control::control_drag,
+            control::control_scroll,
+            control::control_type,
+            control::control_key,
+            control::control_system,
+            control::control_status,
             doc_version_put,
             doc_version_list,
             doc_version_get,

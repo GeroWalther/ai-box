@@ -357,6 +357,58 @@ pub fn overlay_marks(app: tauri::AppHandle, annotations: serde_json::Value) -> R
         .map_err(|e| e.to_string())
 }
 
+/// Let a synthetic click pass straight through the ask bar.
+///
+/// The bar floats over the very screen it is about to click, so a click landing
+/// on it would press the assistant's own UI instead of the button underneath.
+/// Hiding the bar would fix that too, but it would also take the running
+/// commentary — and the Stop button — off screen at exactly the moment the user
+/// most wants both. Click-through keeps the bar visible and simply makes it not
+/// there as far as the mouse is concerned.
+///
+/// Toggled per action rather than for the whole run, so between steps the Stop
+/// button is a real button again.
+#[tauri::command]
+pub fn overlay_pass_clicks(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    let bar = app.get_webview_window(BAR).ok_or("no bar")?;
+    bar.set_ignore_cursor_events(on).map_err(|e| e.to_string())?;
+    if on {
+        // The window server applies this on its own clock; without the pause the
+        // first click can still land on a bar that is already click-through.
+        std::thread::sleep(std::time::Duration::from_millis(60));
+    }
+    Ok(())
+}
+
+/// Escape means STOP while Screen Assist is driving the Mac.
+///
+/// It has to be global: the first click hands key focus to whatever app is being
+/// driven, so the overlay's own keydown handler stops hearing anything. For the
+/// few seconds a run lasts, Escape is taken from that app and means "stop this"
+/// — which is what someone pressing it at that moment intends.
+#[tauri::command]
+pub fn overlay_acting(app: tauri::AppHandle, active: bool) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+    let gs = app.global_shortcut();
+    if !active {
+        let _ = gs.unregister("Escape");
+        // Never leave the bar deaf to the mouse because a run ended badly.
+        if let Some(bar) = app.get_webview_window(BAR) {
+            let _ = bar.set_ignore_cursor_events(false);
+        }
+        return Ok(());
+    }
+    // Re-registering the same shortcut is an error, not a no-op.
+    let _ = gs.unregister("Escape");
+    gs.on_shortcut("Escape", |app, _shortcut, event| {
+        if event.state() == ShortcutState::Pressed {
+            let _ = app.emit_to(BAR, "screen-assist://stop", ());
+        }
+    })
+    .map_err(|e| format!("Could not take over Escape: {e}"))
+}
+
 /// Dismiss everything.
 #[tauri::command]
 pub fn overlay_close(app: tauri::AppHandle) -> Result<(), String> {

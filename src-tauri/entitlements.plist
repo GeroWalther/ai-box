@@ -9,6 +9,11 @@
   <true/>
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
+  <!-- Screen Assist acts on the Mac through Apple Events (volume, appearance,
+       opening and quitting apps). Under the hardened runtime this is refused
+       without the entitlement, silently. -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
   <!-- The app is both an HTTP client (LLM/providers) and a local server (phone access). -->
   <key>com.apple.security.network.client</key>
   <true/>

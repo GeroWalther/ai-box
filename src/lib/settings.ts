@@ -102,6 +102,14 @@ export interface Settings {
    *  available to third-party apps, so Premium is as close as this gets. */
   assistVoice: string;
   assistRate: number;
+  /** Let Screen Assist USE the Mac — click, type, flip switches — instead of
+   *  only describing what to do. Needs Accessibility permission, which macOS
+   *  asks for the first time it is actually used. */
+  assistAct: boolean;
+  /** How many actions one request may take before it has to stop and report.
+   *  A ceiling, not a target: it exists so a confused model cannot click
+   *  around the machine indefinitely. */
+  assistMaxSteps: number;
 
   // Phone / remote access (companion server). The token pairs a device; the
   // wake-lock keeps the Mac awake while "Away mode" is on.
@@ -203,6 +211,8 @@ export const DEFAULT_SETTINGS: Settings = {
   assistSpeak: true,
   assistVoice: "",
   assistRate: 190,
+  assistAct: true,
+  assistMaxSteps: 12,
 
   remotePort: 8787,
   remoteToken: "",

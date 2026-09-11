@@ -50,4 +50,9 @@ objc2 = "0.6"
 # natively (they only offer 512/1K/2K/4K tiers).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 tauri-plugin-global-shortcut = "2.3.2"
+# Synthesising real mouse and keyboard events, so Screen Assist can use the Mac
+# the way the user would — works in every app, unlike per-app scripting.
+core-graphics = "0.24"
+core-foundation = "0.10"
+foreign-types = "0.5"
 

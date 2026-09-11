@@ -837,18 +837,40 @@ const SHAPE =
   '[{"kind":"circle","box":[x,y,x2,y2],"label":"..."}]}. No prose around it, no ' +
   "code fence. `detail` and `label` are optional; `annotations` may be empty.";
 
+const ACTING_RULES =
+  "You can also USE this Mac, not just describe it. When the user asks for something to " +
+  "be DONE — turn Bluetooth off, open an app, change a setting, fill something in — do it " +
+  "with the tools, then tell them it is done. Do not explain where the button is and stop " +
+  "there; that is what they asked you to save them. Rules that keep this from going wrong: " +
+  "prefer the `system` tool over clicking whenever it covers what you need — it is exact " +
+  "and needs no window to be open. Take ONE step at a time and look at the fresh " +
+  "screenshot before the next: the screen changes under you, and coordinates you worked " +
+  "out two clicks ago are stale. Click the centre of a control, not its edge. If a step " +
+  "fails or the screen is not what you expected, say so and try another way rather than " +
+  "repeating the same click. Never buy anything, send a message, post anything publicly, " +
+  "delete files, or touch passwords, keychains, banking or payment details — for those, " +
+  "stop and tell the user to do it themselves. When you are finished, answer in the normal " +
+  "JSON shape describing what you did.";
+
 /**
  * Messages for one question.
  *
  * With a screenshot the model is told to look; without one it is told plainly
  * that it cannot see the screen, which stops it inventing an interface to point
  * at — the failure mode that makes a screen assistant untrustworthy.
+ *
+ * `acting` swaps in a different job: not "explain this screen" but "deal with
+ * this for me". When acting was asked for and could not be granted, `actNote`
+ * carries the reason so the model can say it in one line instead of silently
+ * answering a different question than the one it was asked.
  */
 export function buildScreenAssistMessages(
   question: string,
-  hasScreenshot: boolean
+  hasScreenshot: boolean,
+  acting = false,
+  actNote = ""
 ): { system: string; user: string } {
-  const system = hasScreenshot
+  let system = hasScreenshot
     ? "You are a assistant looking at a screenshot of the user's Mac screen. Answer their " +
       "question about what they can see: explain it, tell them the answer, or walk them " +
       "through the next step. " +
@@ -865,6 +887,18 @@ export function buildScreenAssistMessages(
       ASSIST_RULES +
       " Return an empty annotations array. " +
       SHAPE;
+
+  if (acting) {
+    system += " " + ACTING_RULES;
+  } else if (actNote) {
+    // The user has acting switched on and asked for something to be done, but it
+    // is unavailable. Better to say why in one line than to quietly give
+    // directions and let them wonder why nothing happened.
+    system +=
+      ` You CANNOT act on this Mac for this question, because ${actNote}. If the user asked ` +
+      "you to do something rather than explain it, say that in one short line and then tell " +
+      "them how to do it themselves.";
+  }
 
   return { system, user: question };
 }
