@@ -82,8 +82,11 @@ html[data-overlay="marks"] {
   gap: 10px;
   padding: 9px 10px 9px 12px;
   border-radius: 15px;
-  background: rgba(28, 30, 38, 0.86);
-  backdrop-filter: blur(28px) saturate(150%);
+  /* Solid rather than blurred. A backdrop-filter is re-snapshotted by macOS
+     every time a transparent window resizes, and this window resizes whenever
+     its content changes — which read as the whole overlay flashing. A single
+     opaque surface costs a little gloss and is perfectly still. */
+  background: rgba(30, 32, 40, 0.97);
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
   animation: sa-rise 0.18s ease-out;
@@ -173,8 +176,7 @@ html[data-overlay="marks"] {
   width: 320px;
   padding: 11px 13px;
   border-radius: 14px;
-  background: rgba(28, 30, 38, 0.92);
-  backdrop-filter: blur(28px) saturate(150%);
+  background: rgba(30, 32, 40, 0.97);
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
   color: #eef0f5;
@@ -212,8 +214,7 @@ html[data-overlay="marks"] {
 .sa-answer {
   padding: 13px 16px;
   border-radius: 14px;
-  background: rgba(28, 30, 38, 0.9);
-  backdrop-filter: blur(28px) saturate(150%);
+  background: rgba(30, 32, 40, 0.97);
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
   color: #eef0f5;

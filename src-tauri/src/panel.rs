@@ -252,8 +252,11 @@ pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> Result<f64, Str
     unsafe {
         let obj = &*ptr;
         let frame: NsRect = objc2::msg_send![obj, frame];
-        // A point or two of jitter as text reflows is not worth a redraw.
-        if (frame.size.height - height).abs() < 2.0 {
+        // A few points of jitter as text reflows is not worth a redraw. The
+        // deadband is generous on purpose: every resize of a transparent window
+        // is a visible repaint, so trading a couple of stray pixels for a still
+        // overlay is the right way round.
+        if (frame.size.height - height).abs() < 6.0 {
             return Ok(frame.size.height);
         }
         let next = NsRect {
@@ -263,7 +266,10 @@ pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> Result<f64, Str
                 height,
             },
         };
-        let _: () = objc2::msg_send![obj, setFrame: next, display: true];
+        // display:NO — the window server redraws on its own next cycle. Forcing
+        // a synchronous redraw here repaints the blurred backdrop mid-resize,
+        // which is seen as a flash.
+        let _: () = objc2::msg_send![obj, setFrame: next, display: false];
         Ok(height)
     }
 }

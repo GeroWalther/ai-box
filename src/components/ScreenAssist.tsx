@@ -106,14 +106,58 @@ export default function ScreenAssist() {
     const card = dock.querySelector<HTMLElement>(".sa-answer");
     if (card) card.style.maxHeight = `${ceiling}px`;
 
+    // Coalesced to one resize per frame, and never two at once. A ResizeObserver
+    // fires for every intermediate layout — a panel opening, text reflowing,
+    // steps arriving — and each resize of a transparent window is a visible
+    // repaint. Unthrottled, that is a flicker rather than a resize.
+    let queued = 0;
+    let shrink: ReturnType<typeof setTimeout> | undefined;
+    let busy = false;
+    let last = 0;
+
+    const apply = async (h: number) => {
+      if (busy) return;
+      busy = true;
+      last = h;
+      try {
+        await overlayFit(h);
+      } catch {
+        /* the window will be fitted again on the next change */
+      } finally {
+        busy = false;
+      }
+    };
+
     const fit = () => {
-      const h = Math.ceil(dock.getBoundingClientRect().height) + 8;
-      if (h > 8) void overlayFit(h).catch(() => {});
+      if (queued) return;
+      queued = requestAnimationFrame(() => {
+        queued = 0;
+        const h = Math.ceil(dock.getBoundingClientRect().height) + 8;
+        if (h <= 8 || Math.abs(h - last) < 6) return;
+        if (h > last) {
+          // Growing has to be immediate or the answer is clipped while it waits.
+          clearTimeout(shrink);
+          void apply(h);
+          return;
+        }
+        // Shrinking can wait. A question runs through three layouts in a second
+        // — empty bar, thinking, answer — and following each one down means
+        // three resizes where the last one was the only one that mattered.
+        clearTimeout(shrink);
+        shrink = setTimeout(() => {
+          const settled = Math.ceil(dock.getBoundingClientRect().height) + 8;
+          if (settled > 8 && Math.abs(settled - last) >= 6) void apply(settled);
+        }, 220);
+      });
     };
     fit();
     const observer = new ResizeObserver(fit);
     observer.observe(dock);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (queued) cancelAnimationFrame(queued);
+      clearTimeout(shrink);
+    };
   }, [phase]);
 
   // This sitting's earlier exchanges, so a follow-up can say "and now turn it
