@@ -237,16 +237,6 @@ export default function AssistSettings({ settings, onChange }: Props) {
             </p>
           )}
 
-          {free.length === 0 && (
-            <p className="hint">
-              There is no free option. Every free model that claimed to see, hear and
-              act failed on a real request — two are gated to approved apps, one takes
-              minutes over a single screenshot. The free path is a model on this Mac
-              instead: it costs nothing and nothing leaves the machine, but it cannot
-              hear, so questions are typed.
-            </p>
-          )}
-
           {/* Said once, plainly, rather than as a badge on every row: the list is
               already filtered, so what matters is knowing WHY it is short. */}
           <p className="hint">
