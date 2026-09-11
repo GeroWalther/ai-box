@@ -138,35 +138,66 @@ html[data-overlay="marks"] {
   50% { box-shadow: 0 0 0 7px rgba(228, 72, 63, 0.22); }
 }
 
-.sa-screen {
+/* The settings gear. Everything that used to crowd the bar — the voice, the
+   screen toggle — lives behind it now, so the bar is a question field and
+   nothing else. */
+.sa-gear {
   flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+.sa-gear:hover { color: rgba(255, 255, 255, 0.85); background: rgba(255, 255, 255, 0.08); }
+.sa-gear.open { color: var(--sa-mark); background: rgba(10, 132, 255, 0.16); }
+
+/* The panel the gear opens. Sits above the bar in the same stack, so it pushes
+   nothing around and vanishes without reflowing the question field. */
+.sa-panel {
+  align-self: flex-end;
+  width: min(320px, 90vw);
+  padding: 11px 13px;
+  border-radius: 14px;
+  background: rgba(28, 30, 38, 0.92);
+  backdrop-filter: blur(28px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  color: #eef0f5;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  animation: sa-rise 0.16s ease-out;
+}
+.sa-opt {
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.72);
+  gap: 9px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.86);
   cursor: pointer;
-  user-select: none;
-  white-space: nowrap;
 }
-.sa-screen input { margin: 0; accent-color: var(--sa-mark); }
-
-/* The voice menu. Deliberately small and quiet — it sits beside the question
-   field and must never compete with it for attention. */
-.sa-voice {
-  flex: none;
-  max-width: 124px;
+.sa-opt input[type="checkbox"] { margin: 0; accent-color: var(--sa-mark); }
+.sa-opt.wide { justify-content: space-between; gap: 12px; }
+.sa-opt.wide > span { color: rgba(255, 255, 255, 0.6); }
+.sa-opt select {
+  flex: 1;
+  min-width: 0;
+  max-width: 190px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.78);
-  border-radius: 9px;
-  padding: 5px 7px;
-  font-size: 12px;
+  color: #eef0f5;
+  border-radius: 8px;
+  padding: 4px 6px;
+  font-size: 12.5px;
   font-family: inherit;
   cursor: pointer;
 }
-.sa-voice:hover { background: rgba(255, 255, 255, 0.12); }
-.sa-voice:disabled { opacity: 0.45; }
 
 /* ---- the answer ---- */
 .sa-answer {
@@ -296,17 +327,6 @@ html[data-overlay="marks"] {
   font-size: 11px;
   color: rgba(255, 255, 255, 0.5);
 }
-.sa-actions { display: flex; gap: 7px; }
-.sa-actions button {
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.07);
-  color: #e8eaf0;
-  border-radius: 8px;
-  padding: 4px 11px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.sa-actions button:hover { background: rgba(255, 255, 255, 0.15); }
 
 .sa-dots { display: inline-flex; gap: 4px; }
 .sa-dots i {

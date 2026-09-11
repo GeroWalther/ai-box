@@ -42,9 +42,9 @@ export default function ScreenAssist() {
   const [error, setError] = useState("");
   const [recording, setRecording] = useState(false);
   const [withScreen, setWithScreen] = useState(true);
-  const [lastAsked, setLastAsked] = useState("");
   const [steps, setSteps] = useState<Step[]>([]);
   const [voices, setVoices] = useState<MacVoice[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
   const [needsAccess, setNeedsAccess] = useState(false);
 
   // Set while a run is in flight; flipped by Stop and by Esc, and read between
@@ -260,7 +260,6 @@ export default function ScreenAssist() {
       assistToChat(asked, result.detail ? `${result.say}\n\n${result.detail}` : result.say, result.sawScreen, false).catch(
         () => {}
       );
-      setLastAsked(asked);
       // Three turns is enough for "now turn it back on" and short enough that
       // an old answer never crowds out the screenshot that matters.
       history.current = [...history.current, { q: asked, a: result.say }].slice(-3);
@@ -316,6 +315,80 @@ export default function ScreenAssist() {
         {/* The bar never goes away while the overlay is open, so a follow-up is
             just typed — "and now turn it back on" — rather than reached for
             through a button first. */}
+        {showSettings && (
+          <div className="sa-panel" onMouseDown={dragFrom}>
+            <label className="sa-opt">
+              <input
+                type="checkbox"
+                checked={withScreen}
+                onChange={(e) => {
+                  setWithScreen(e.target.checked);
+                  // Persisted as well as applied: someone turning this off in
+                  // the middle of a sitting means it, and would not thank us
+                  // for it coming back on at the next question.
+                  persist({ assistAutoCapture: e.target.checked });
+                }}
+              />
+              <span>See my screen</span>
+            </label>
+
+            <label className="sa-opt">
+              <input
+                type="checkbox"
+                checked={settings.assistAct}
+                onChange={(e) => persist({ assistAct: e.target.checked })}
+              />
+              <span>Let it use my Mac</span>
+            </label>
+
+            <label className="sa-opt">
+              <input
+                type="checkbox"
+                checked={settings.assistSpeak}
+                onChange={(e) => persist({ assistSpeak: e.target.checked })}
+              />
+              <span>Speak the answer</span>
+            </label>
+
+            {settings.assistSpeak && voices.length > 0 && (
+              <label className="sa-opt wide">
+                <span>Voice</span>
+                <select
+                  value={settings.assistVoice}
+                  onChange={(e) => persist({ assistVoice: e.target.value })}
+                >
+                  <option value="">Auto — match the answer</option>
+                  {byLanguage(voices).map(([label, list]) => (
+                    <optgroup key={label} label={label}>
+                      {list.map((v) => (
+                        <option key={v.name} value={v.name}>
+                          {v.name.replace(/ \(.*\)$/, "")}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {settings.assistAct && (
+              <label className="sa-opt wide">
+                <span>Stop after</span>
+                <select
+                  value={String(settings.assistMaxSteps)}
+                  onChange={(e) => persist({ assistMaxSteps: Number(e.target.value) })}
+                >
+                  <option value="6">6 actions</option>
+                  <option value="12">12 actions</option>
+                  <option value="20">20 actions</option>
+                  <option value="40">40 actions</option>
+                  <option value="0">Never</option>
+                </select>
+              </label>
+            )}
+          </div>
+        )}
+
         <div className="sa-bar" onMouseDown={dragFrom}>
           <button
             className={recording ? "sa-mic recording" : "sa-mic"}
@@ -347,41 +420,16 @@ export default function ScreenAssist() {
             disabled={thinking}
           />
 
-          {/* The voice, on screen rather than three panels away. Which language
-              you are about to be answered in is decided at the moment of
-              asking — it is not something to go and configure first. */}
-          {settings.assistSpeak && voices.length > 0 && (
-            <select
-              className="sa-voice"
-              title="Voice for the spoken answer"
-              value={settings.assistVoice}
-              onChange={(e) => persist({ assistVoice: e.target.value })}
-              disabled={thinking}
-            >
-              <option value="">Auto voice</option>
-              {byLanguage(voices).map(([label, list]) => (
-                <optgroup key={label} label={label}>
-                  {list.map((v) => (
-                    <option key={v.name} value={v.name}>
-                      {v.name.replace(/ \(.*\)$/, "")}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          )}
-
-          {/* The sticky toggle: on, and every question carries a fresh
-              screenshot without anyone reaching for a modifier key. */}
-          <label className="sa-screen" title="Attach a screenshot to every question">
-            <input
-              type="checkbox"
-              checked={withScreen}
-              onChange={(e) => setWithScreen(e.target.checked)}
-              disabled={thinking}
-            />
-            <span>See screen</span>
-          </label>
+          <button
+            className={showSettings ? "sa-gear open" : "sa-gear"}
+            title="Screen Assist settings"
+            onClick={() => setShowSettings((v) => !v)}
+          >
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <circle cx="12" cy="12" r="3.2" />
+              <path d="M19.4 14a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V20a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 18.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z" />
+            </svg>
+          </button>
 
           <button className="sa-close" onClick={dismiss} title="Close (Esc)">
             ✕
@@ -433,35 +481,6 @@ export default function ScreenAssist() {
                 {answer?.detail && <pre className="sa-detail">{answer.detail}</pre>}
                 <div className="sa-foot">
                   <span className="sa-badge">{answer?.sawScreen ? "saw your screen" : "answered from knowledge"}</span>
-                  <span className="sa-actions">
-                    <button
-                      title="Open this in Agentic Chat, where the agent can also act on it"
-                      onClick={() => {
-                        void assistToChat(
-                          lastAsked,
-                          answer?.detail ? `${answer.say}\n\n${answer.detail}` : (answer?.say ?? ""),
-                          answer?.sawScreen ?? false,
-                          true
-                        );
-                        dismiss();
-                      }}
-                    >
-                      Continue in chat
-                    </button>
-                    <button onClick={dismiss}>Done</button>
-                    <button
-                      onClick={() => {
-                        void hush();
-                        setAnswer(null);
-                        setSteps([]);
-                        setQuestion("");
-                        setPhase("asking");
-                        focusInput();
-                      }}
-                    >
-                      Ask again
-                    </button>
-                  </span>
                 </div>
               </>
             )}

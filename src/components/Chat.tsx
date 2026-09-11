@@ -927,7 +927,24 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
               onClick={() => void toggleDictation()}
               disabled={transcribing}
             >
-              {transcribing ? "…" : "🎙"}
+              {transcribing ? (
+                "…"
+              ) : (
+                /* The same mic the overlay draws, so dictation looks like one
+                   feature in two places rather than two features. */
+                <svg
+                  viewBox="0 0 24 24"
+                  width="17"
+                  height="17"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.9"
+                  strokeLinecap="round"
+                >
+                  <rect x="9" y="2" width="6" height="12" rx="3" />
+                  <path d="M5 11a7 7 0 0 0 14 0M12 18v4" />
+                </svg>
+              )}
             </button>
             <textarea
               className="promptbar-input"

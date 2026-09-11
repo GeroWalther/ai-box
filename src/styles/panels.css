@@ -33,7 +33,17 @@
 .approve-foot-right { display: flex; gap: 8px; }
 
 /* Attach button */
-.attach-btn { width: 38px; height: 40px; padding: 0; font-size: 16px; flex: none; }
+.attach-btn {
+  width: 38px;
+  height: 40px;
+  padding: 0;
+  font-size: 16px;
+  flex: none;
+  /* The dictate button draws an SVG mic rather than an emoji, and needs to
+     centre it the way the overlay's does. */
+  display: grid;
+  place-items: center;
+}
 
 /* Image preview action row */
 .preview-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
