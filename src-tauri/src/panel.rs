@@ -81,3 +81,42 @@ pub fn make_panel(window: &tauri::WebviewWindow, focusable: bool) -> Result<(), 
     }
     Ok(())
 }
+
+/// Put the keyboard into the panel's web view.
+///
+/// A non-activating panel can be the key window while its app is not the active
+/// one — that is the whole point of the style — but making the WINDOW key is not
+/// the same as giving the keyboard to the web view inside it. Tauri's
+/// `set_focus` does the first; without the second the window is key, the page
+/// calls `input.focus()` quite happily, and every keystroke still goes to
+/// whatever the user was using. No caret, no typing, no error.
+///
+/// The web view is the content view's first subview. Falling back to the content
+/// view itself is harmless: AppKit walks the responder chain down from whatever
+/// it is handed.
+pub fn focus_webview(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut AnyObject;
+    if ptr.is_null() {
+        return Err("no NSWindow behind this window".into());
+    }
+    unsafe {
+        let obj = &*ptr;
+        let content: *mut AnyObject = objc2::msg_send![obj, contentView];
+        if content.is_null() {
+            return Err("no content view".into());
+        }
+        let subviews: *mut AnyObject = objc2::msg_send![&*content, subviews];
+        let count: usize = if subviews.is_null() {
+            0
+        } else {
+            objc2::msg_send![&*subviews, count]
+        };
+        let target: *mut AnyObject = if count > 0 {
+            objc2::msg_send![&*subviews, objectAtIndex: 0usize]
+        } else {
+            content
+        };
+        let _: bool = objc2::msg_send![obj, makeFirstResponder: target];
+    }
+    Ok(())
+}

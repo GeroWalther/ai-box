@@ -5,6 +5,7 @@
 // a screenshot. Both change without this app being rebuilt.
 import { useEffect, useState } from "react";
 import { LOCAL_PREFIX, type Settings } from "../lib/settings";
+import { checkModel } from "../lib/screenAssist";
 import {
   controlRequestAccess,
   controlTrusted,
@@ -12,7 +13,6 @@ import {
   listLocalAssistModels,
   listVoices,
   openSettingsPane,
-  probeAssistModel,
   requestScreenAccess,
   screenAccess,
   setAssistHotkey,
@@ -116,11 +116,11 @@ export default function AssistSettings({ settings, onChange }: Props) {
     const previous = settings.assistModel;
     onChange({ assistModel: id });
     setRefusal("");
-    if (id.startsWith(LOCAL_PREFIX) || !settings.openrouterKey.trim()) return;
+    if (!id.startsWith(LOCAL_PREFIX) && !settings.openrouterKey.trim()) return;
 
     setChecking(true);
     try {
-      await probeAssistModel(settings.openrouterKey, id);
+      await checkModel(settings, id);
     } catch (e) {
       // Remembered, so it stops being offered at all — and the previous model,
       // which was working a moment ago, is put back rather than leaving the

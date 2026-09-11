@@ -2688,6 +2688,18 @@ fn resolve_remote_approval(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // One copy, or none of this works. A second instance builds a second
+        // overlay and races the first for the global shortcut, so the bar
+        // appears twice and has to be dismissed twice. Launching again raises
+        // the window that is already running instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            use tauri::Manager;
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.unminimize();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -2768,10 +2780,11 @@ pub fn run() {
             screen::overlay_close,
             screen::list_assist_models,
             screen::list_local_assist_models,
-            screen::probe_assist_model,
+            screen::probe_assets,
             screen::set_assist_hotkey,
             screen::overlay_pass_clicks,
             screen::overlay_bar_moved,
+            screen::overlay_take_keyboard,
             screen::overlay_escape,
             control::control_trusted,
             control::control_request_access,

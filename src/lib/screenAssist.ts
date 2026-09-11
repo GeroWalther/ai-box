@@ -5,10 +5,11 @@
 // answers in one round trip — rather than transcribe, wait, then ask. That
 // halves the latency of the thing you notice most, and it is why the model
 // picker cares whether a model can hear.
-import { chatCompletion } from "./agent";
+import { chatCompletion, type AssistantMessage } from "./agent";
 import {
   captureScreen,
   controlStatus,
+  probeAssets,
   controlTrusted,
   listVoices,
   overlayPassClicks,
@@ -589,4 +590,90 @@ export function voiceForLanguage(
   if (!code) return preferred;
   // listVoices() is already ordered best-quality-first within a language.
   return voices.find((v) => v.locale.slice(0, 2).toLowerCase() === code)?.name ?? preferred;
+}
+
+// ---- checking a model -------------------------------------------------------
+
+/**
+ * Does this model actually work here?
+ *
+ * Built from the same prompt builder, the same tools and the same parser as a
+ * real question, so what is checked is what will run. An earlier version
+ * reimplemented a simplified request and drifted from it immediately: it asked
+ * one thing in text and another in audio, and threw out a good model for
+ * answering the audio.
+ *
+ * Two questions, because they fail independently. One spoken question about a
+ * picture — a model that returns nothing to say leaves the overlay blank. One
+ * instruction to do something — a model that answers but never calls a tool
+ * leaves acting silently doing nothing.
+ *
+ * Nothing is executed: the tool call is inspected and thrown away, so checking a
+ * model never touches the Mac.
+ */
+export async function checkModel(settings: Settings, model: string): Promise<void> {
+  const probe = await probeAssets();
+  const provider = assistProvider({ ...settings, assistModel: model });
+  // A local model has no ears, and the picker does not pretend otherwise.
+  const canHear = !provider.local && !!probe.audio;
+
+  const ask = async (
+    question: string,
+    acting: boolean,
+    clip: Clip | null
+  ): Promise<AssistantMessage> => {
+    const { system, user } = buildScreenAssistMessages(question, true, acting);
+    const content: unknown[] = [
+      { type: "text", text: user },
+      { type: "image_url", image_url: { url: `data:image/png;base64,${probe.image}` } },
+    ];
+    if (clip) {
+      content.push({ type: "input_audio", input_audio: { data: clip.data, format: clip.format } });
+    }
+    return withTimeout(
+      chatCompletion({
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        model: provider.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content },
+        ],
+        tools: acting ? (CONTROL_TOOLS as unknown as unknown[]) : [],
+        temperature: 0.2,
+      }),
+      acting ? "taking an action" : "answering a question"
+    );
+  };
+
+  const spoken = await ask(
+    canHear ? "(the user's question is in the attached audio)" : "Describe this screen in one short sentence.",
+    false,
+    canHear ? { data: probe.audio as string, format: "wav" } : null
+  );
+  if (!parseScreenAnswer(spoken.content ?? null).say.trim()) {
+    throw new Error("That model returned nothing to say — its answers would come out blank.");
+  }
+
+  const acted = await ask("Turn Bluetooth off.", true, null);
+  if (!(acted.tool_calls ?? []).length) {
+    throw new Error(
+      "That model answers questions but will not use a tool, so it could never act on your Mac."
+    );
+  }
+}
+
+/** A model slower than this is not usable as a live overlay, whatever it says. */
+const CHECK_TIMEOUT_MS = 60_000;
+
+function withTimeout<T>(work: Promise<T>, what: string): Promise<T> {
+  return Promise.race([
+    work,
+    new Promise<T>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`That model took over a minute ${what}, which is too slow to ask.`)),
+        CHECK_TIMEOUT_MS
+      )
+    ),
+  ]);
 }

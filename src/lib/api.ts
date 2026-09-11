@@ -449,10 +449,14 @@ export interface AssistModel {
 }
 export const listAssistModels = (apiKey: string) =>
   invokeCmd<AssistModel[]>("list_assist_models", { params: { apiKey } });
-/** Ask a model for one token, to find out whether it will answer at all.
- *  Rejects with the provider's own reason when it refuses. */
-export const probeAssistModel = (apiKey: string, model: string) =>
-  invokeCmd<void>("probe_assist_model", { params: { apiKey }, model });
+export interface ProbeAssets {
+  /** base64 PNG, roughly the token cost of a real screenshot. */
+  image: string;
+  /** base64 16 kHz mono WAV of a spoken question, if macOS could make one. */
+  audio: string | null;
+}
+/** The screenshot and spoken question a model check is run with. */
+export const probeAssets = () => invokeCmd<ProbeAssets>("probe_assets");
 /** Ollama models on this Mac that can see a screen and make tool calls. */
 export const listLocalAssistModels = (baseUrl: string) =>
   invokeCmd<string[]>("list_local_assist_models", { baseUrl });
@@ -505,6 +509,8 @@ export const requestScreenAccess = () => invokeCmd<boolean>("request_screen_acce
 export const openSettingsPane = (pane: string) =>
   invokeCmd<string>("open_settings_pane", { pane });
 
+/** Take the keyboard into the bar's web view, from wherever it is. */
+export const overlayTakeKeyboard = () => invokeCmd<void>("overlay_take_keyboard");
 /** Remember that the user dragged the bar, so it stops being re-centred. */
 export const overlayBarMoved = () => invokeCmd<void>("overlay_bar_moved");
 /** Let clicks pass through the ask bar, so it cannot press its own UI. */

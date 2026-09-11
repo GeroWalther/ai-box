@@ -37,6 +37,7 @@ import {
   overlayClose,
   overlayEscape,
   overlayMarks,
+  overlayTakeKeyboard,
 } from "../lib/api";
 import type { Step } from "../lib/control";
 import type { AssistModel, MacVoice } from "../lib/api";
@@ -86,16 +87,18 @@ export default function ScreenAssist() {
    *  app took key status with it, so focusing the input alone would leave every
    *  keystroke going to that app instead. */
   const focusInput = useCallback(() => {
-    void getCurrentWindow().setFocus().catch(() => {});
+    // Two separate things: the window becomes key, and the KEYBOARD goes into
+    // the web view. Without the second the field focuses quite happily and every
+    // keystroke still lands in whatever app the user was using — no caret, no
+    // typing, no error.
+    void overlayTakeKeyboard().catch(() => {});
     requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
 
   /** Drag the whole overlay by its background, from anywhere on it. */
   const dragFrom = useCallback((e: React.MouseEvent) => {
-    // Whatever was clicked, this window wants the keyboard now. The panel is
-    // non-activating, so key status can be sitting in another app entirely and
-    // the field would take the click and then swallow every keystroke.
-    void getCurrentWindow().setFocus().catch(() => {});
+    // Whatever was clicked, this window wants the keyboard now.
+    void overlayTakeKeyboard().catch(() => {});
     // Starting a window drag from a control would swallow the click that was
     // meant to press it.
     const el = e.target as HTMLElement;
