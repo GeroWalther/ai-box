@@ -260,11 +260,38 @@ export function loadSettings(): Settings {
   }
 }
 
+/** Broadcast name for "settings changed in some window". */
+export const SETTINGS_EVENT = "settings://changed";
+
 export function saveSettings(s: Settings): void {
   // Never persist API keys to localStorage — strip them from the on-disk blob.
   const redacted = { ...s };
   for (const k of SECRET_FIELDS) redacted[k] = "";
   writeJson(STORAGE_KEY, redacted);
+
+  // Tell the other windows. The overlay and the Settings panel each hold their
+  // own copy of this object, and without a broadcast the two drift: a model
+  // picked in one keeps showing the old one in the other, and whichever saves
+  // next quietly overwrites the other's change.
+  if (isTauri()) {
+    void import("@tauri-apps/api/event")
+      .then((m) => m.emit(SETTINGS_EVENT, redacted))
+      .catch(() => {
+        /* a window that cannot broadcast still saved correctly */
+      });
+  }
+}
+
+/**
+ * Merge a broadcast into a local copy, keeping this window's secrets.
+ *
+ * The payload is redacted, so a naive spread would blank the API key in every
+ * window that receives one.
+ */
+export function mergeBroadcast(prev: Settings, incoming: Partial<Settings>): Settings {
+  const patch = { ...incoming };
+  for (const k of SECRET_FIELDS) delete patch[k];
+  return { ...prev, ...patch };
 }
 
 /** Load API keys from the OS keychain (desktop only; no-op on the phone). */

@@ -12,8 +12,10 @@ import {
   DEFAULT_SETTINGS,
   loadSecrets,
   loadSettings,
+  mergeBroadcast,
   saveSecrets,
   saveSettings,
+  SETTINGS_EVENT,
   type Settings,
 } from "../lib/settings";
 import { invokeCmd, isTauri } from "../lib/transport";
@@ -73,6 +75,28 @@ export function useAppSettings() {
         }
       })
       .catch((e) => logError("settings.adopt", e));
+  }, []);
+
+  // Another window changed something — the overlay's gear, most often. Merged
+  // into state but deliberately NOT saved again: the window that changed it has
+  // already written to disk, and re-saving here would bounce the broadcast back
+  // and forth between the two.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let stop: (() => void) | undefined;
+    void import("@tauri-apps/api/event")
+      .then((m) =>
+        m.listen<Partial<Settings>>(SETTINGS_EVENT, (e) => {
+          if (e.payload && typeof e.payload === "object") {
+            setSettings((prev) => mergeBroadcast(prev, e.payload));
+          }
+        })
+      )
+      .then((un) => {
+        stop = un;
+      })
+      .catch((e) => logError("settings.listen", e));
+    return () => stop?.();
   }, []);
 
   const update = useCallback((patch: Partial<Settings>) => {

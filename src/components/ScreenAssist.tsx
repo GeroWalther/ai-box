@@ -20,7 +20,9 @@ import {
   LOCAL_PREFIX,
   loadSecrets,
   loadSettings,
+  mergeBroadcast,
   saveSettings,
+  SETTINGS_EVENT,
   type Settings,
 } from "../lib/settings";
 import {
@@ -146,6 +148,19 @@ export default function ScreenAssist() {
   const persist = useCallback((patch: Partial<Settings>) => {
     saveSettings({ ...loadSettings(), ...patch });
     setSettings((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  // The Settings panel changed something while this window was open. Without
+  // this the two pickers drift apart and disagree about which model is selected.
+  useEffect(() => {
+    const un = listen<Partial<Settings>>(SETTINGS_EVENT, (e) => {
+      if (e.payload && typeof e.payload === "object") {
+        setSettings((prev) => mergeBroadcast(prev, e.payload));
+      }
+    });
+    return () => {
+      void un.then((f) => f());
+    };
   }, []);
 
   /** Settings live in the main window; re-read them each time we open. */
