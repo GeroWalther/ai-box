@@ -490,12 +490,18 @@ export default function ScreenAssist() {
 
   return (
     <div className="sa-root">
+      {/* Every child of the dock is KEYED. Without keys React matches children
+          by position, so opening the settings panel — which is inserted BEFORE
+          the bar — made React reuse the bar's DOM node for the panel and build a
+          fresh one for the bar. The bar was therefore torn down and rebuilt on
+          every toggle: its entrance animation replayed (the flash), and the
+          field lost focus and its caret. */}
       <div className="sa-dock" ref={dockRef}>
         {/* The bar never goes away while the overlay is open, so a follow-up is
             just typed — "and now turn it back on" — rather than reached for
             through a button first. */}
         {showSettings && (
-          <div className="sa-panel" onMouseDown={dragFrom}>
+          <div className="sa-panel" key="panel" onMouseDown={dragFrom}>
             <label className="sa-opt">
               <input
                 type="checkbox"
@@ -603,7 +609,7 @@ export default function ScreenAssist() {
           </div>
         )}
 
-        <div className="sa-bar" onMouseDown={dragFrom}>
+        <div className="sa-bar" key="bar" onMouseDown={dragFrom}>
           <button
             className={recording ? "sa-mic recording" : "sa-mic"}
             title={
@@ -657,7 +663,7 @@ export default function ScreenAssist() {
         </div>
 
         {thinking && (
-          <div className="sa-answer thinking" onMouseDown={dragFrom}>
+          <div className="sa-answer thinking" key="answer" onMouseDown={dragFrom}>
             <div className="sa-thinking-row">
               <span className="sa-dots"><i /><i /><i /></span>
               <span>
@@ -679,7 +685,7 @@ export default function ScreenAssist() {
         )}
 
         {phase === "answered" && (
-          <div className="sa-answer" onMouseDown={dragFrom}>
+          <div className="sa-answer" key="answer" onMouseDown={dragFrom}>
             {error ? (
               <p className="sa-error">{error}</p>
             ) : (
