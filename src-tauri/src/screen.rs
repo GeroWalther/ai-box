@@ -401,12 +401,14 @@ pub fn overlay_open(app: tauri::AppHandle, with_screen: bool, listening: bool) -
         let _ = place_bar(&bar);
     }
     let _ = bar.show();
-    // Key, but NOT activating: the panel style means the app behind stays
-    // frontmost, so this never drags the AI Box main window over your work.
-    let _ = bar.set_focus();
-    // And the keyboard has to go INTO the web view, not merely into the window.
+    // Key, but NOT activating. Tauri's set_focus activates the application,
+    // which pulls AI Box to the front and pushes the user's work behind it —
+    // the precise opposite of an overlay. `make_key` orders the panel forward
+    // and hands the keyboard to its web view, leaving the frontmost app alone.
     #[cfg(target_os = "macos")]
-    let _ = crate::panel::focus_webview(&bar);
+    let _ = crate::panel::make_key(&bar);
+    #[cfg(not(target_os = "macos"))]
+    let _ = bar.set_focus();
     app.emit_to(
         BAR,
         "screen-assist://open",
@@ -441,9 +443,10 @@ pub fn overlay_marks(app: tauri::AppHandle, annotations: serde_json::Value) -> R
 #[tauri::command]
 pub fn overlay_take_keyboard(app: tauri::AppHandle) -> Result<(), String> {
     let bar = app.get_webview_window(BAR).ok_or("no bar")?;
-    let _ = bar.set_focus();
     #[cfg(target_os = "macos")]
-    crate::panel::focus_webview(&bar)?;
+    crate::panel::make_key(&bar)?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = bar.set_focus();
     Ok(())
 }
 
