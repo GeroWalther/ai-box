@@ -1,6 +1,6 @@
 [package]
 name = "ai-box"
-version = "0.3.0"
+version = "0.4.0"
 description = "AI Box — your Mac's AI workstation"
 authors = ["Gero Walther"]
 edition = "2021"
