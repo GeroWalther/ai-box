@@ -418,6 +418,9 @@ export interface MacVoice {
   name: string;
   locale: string;
   quality: "premium" | "enhanced" | "default";
+  /** One of the shortlist worth offering by default, rather than one of the
+   *  other 170 macOS happens to ship. */
+  classic: boolean;
 }
 export const listVoices = () => invokeCmd<MacVoice[]>("list_voices");
 export const speak = (text: string, voice?: string, rate?: number) =>
@@ -485,6 +488,8 @@ export interface ControlStatus {
 }
 export const controlStatus = () => invokeCmd<ControlStatus>("control_status");
 
+/** Remember that the user dragged the bar, so it stops being re-centred. */
+export const overlayBarMoved = () => invokeCmd<void>("overlay_bar_moved");
 /** Let clicks pass through the ask bar, so it cannot press its own UI. */
 export const overlayPassClicks = (on: boolean) => invokeCmd<void>("overlay_pass_clicks", { on });
 /** Take over Escape globally for the duration of a run, as the stop key. */

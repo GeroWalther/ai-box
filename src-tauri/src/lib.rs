@@ -2688,6 +2688,7 @@ pub fn run() {
             screen::list_assist_models,
             screen::set_assist_hotkey,
             screen::overlay_pass_clicks,
+            screen::overlay_bar_moved,
             screen::overlay_acting,
             control::control_trusted,
             control::control_request_access,

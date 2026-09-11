@@ -4,11 +4,12 @@
 // in this file: the installed macOS voices, and the models that can actually see
 // a screenshot. Both change without this app being rebuilt.
 import { useEffect, useState } from "react";
-import type { Settings } from "../lib/settings";
+import { LOCAL_PREFIX, type Settings } from "../lib/settings";
 import {
   controlRequestAccess,
   controlTrusted,
   listAssistModels,
+  listOllamaModels,
   listVoices,
   setAssistHotkey,
   speak,
@@ -16,6 +17,7 @@ import {
   type MacVoice,
 } from "../lib/api";
 import { logError } from "../lib/log";
+import { byLanguage, worthOffering } from "../lib/voices";
 
 interface Props {
   settings: Settings;
@@ -32,37 +34,13 @@ const HOTKEYS = [
   { value: "", label: "No shortcut" },
 ];
 
-/**
- * Voices grouped by language.
- *
- * macOS installs about 180 of them. A flat list buries the German voices below
- * a hundred English novelty ones, which is how "where do I set a German voice?"
- * becomes a real question. Language names come from the OS rather than a table
- * kept here, so every locale is labelled properly.
- */
-function byLanguage(voices: MacVoice[]): [string, MacVoice[]][] {
-  const names = new Intl.DisplayNames(undefined, { type: "language" });
-  const groups = new Map<string, MacVoice[]>();
-  for (const v of voices) {
-    const code = v.locale.split(/[_-]/)[0];
-    let label = code;
-    try {
-      label = names.of(code) ?? code;
-    } catch {
-      /* an unknown code is still worth grouping under itself */
-    }
-    const bucket = groups.get(label);
-    if (bucket) bucket.push(v);
-    else groups.set(label, [v]);
-  }
-  // listVoices() already puts English and the best-quality voices first, and
-  // Map preserves insertion order, so that ordering carries through.
-  return [...groups.entries()];
-}
-
 export default function AssistSettings({ settings, onChange }: Props) {
   const [voices, setVoices] = useState<MacVoice[]>([]);
   const [models, setModels] = useState<AssistModel[]>([]);
+  /** Models already on this Mac. Free, private, and they work with no key —
+   *  but only the vision ones can see a screen, which is why they are labelled
+   *  rather than filtered: Ollama does not say which is which. */
+  const [local, setLocal] = useState<string[]>([]);
   const [hotkeyError, setHotkeyError] = useState("");
   /** Whether macOS lets AI Box drive the mouse and keyboard. Re-checked on
    *  focus, because the user grants it in System Settings — another app — and
@@ -77,7 +55,12 @@ export default function AssistSettings({ settings, onChange }: Props) {
   }, []);
 
   useEffect(() => {
-    listVoices().then(setVoices).catch(() => setVoices([]));
+    // Only the shortlist: macOS ships about 180 voices and all but a handful of
+    // them are jokes, legacy synthesisers, or duplicates of a language nobody
+    // here speaks.
+    listVoices()
+      .then((all) => setVoices(worthOffering(all)))
+      .catch(() => setVoices([]));
   }, []);
 
   useEffect(() => {
@@ -85,6 +68,12 @@ export default function AssistSettings({ settings, onChange }: Props) {
       .then(setModels)
       .catch(() => setModels([]));
   }, [settings.openrouterKey]);
+
+  useEffect(() => {
+    listOllamaModels(settings.ollamaUrl)
+      .then(setLocal)
+      .catch(() => setLocal([]));
+  }, [settings.ollamaUrl]);
 
   // Bind the shortcut whenever it changes, and report a clash rather than
   // leaving the user with a key that silently does nothing.
@@ -102,6 +91,12 @@ export default function AssistSettings({ settings, onChange }: Props) {
   }, [settings.assistEnabled, settings.assistHotkey, settings.assistPushToTalk]);
 
   const selected = models.find((m) => m.id === settings.assistModel);
+  const isLocal = settings.assistModel.startsWith(LOCAL_PREFIX);
+  // OpenRouter marks its no-charge variants with a :free suffix. Worth their own
+  // group: "needs a key" and "costs money" are different questions, and the
+  // answer to the second is the one people are actually asking.
+  const free = models.filter((m) => m.id.endsWith(":free") || m.promptPrice === 0);
+  const paid = models.filter((m) => !(m.id.endsWith(":free") || m.promptPrice === 0));
   const premium = voices.filter((v) => v.quality !== "default");
 
   return (
@@ -143,13 +138,38 @@ export default function AssistSettings({ settings, onChange }: Props) {
                 value={settings.assistModel}
                 onChange={(e) => onChange({ assistModel: e.target.value })}
               >
-                {!models.length && <option value={settings.assistModel}>{settings.assistModel}</option>}
-                {models.slice(0, 60).map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name || m.id}
-                    {m.hears ? " · hears" : ""}
-                  </option>
-                ))}
+                {!models.length && !local.length && (
+                  <option value={settings.assistModel}>{settings.assistModel}</option>
+                )}
+                {local.length > 0 && (
+                  <optgroup label="On this Mac — free, nothing leaves the machine">
+                    {local.map((m) => (
+                      <option key={m} value={LOCAL_PREFIX + m}>
+                        {m}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {free.length > 0 && (
+                  <optgroup label="Free tier — needs an OpenRouter key">
+                    {free.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name || m.id}
+                        {m.hears ? " · hears" : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {paid.length > 0 && (
+                  <optgroup label="Paid — needs an OpenRouter key">
+                    {paid.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name || m.id}
+                        {m.hears ? " · hears" : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </div>
           </div>
@@ -157,7 +177,14 @@ export default function AssistSettings({ settings, onChange }: Props) {
           {hotkeyError && <p className="hint error">{hotkeyError}</p>}
 
           <p className="hint">
-            {selected ? (
+            {isLocal ? (
+              <>
+                Runs on this Mac. Free, and the screenshot never leaves it — but it
+                has to be a <b>vision</b> model (llava, llama3.2-vision, qwen2-vl,
+                gemma3) or it cannot see the screen, and none of them can hear, so
+                voice questions will need a hosted model.
+              </>
+            ) : selected ? (
               <>
                 ${(selected.promptPrice * 1e6).toFixed(2)} / M input tokens.{" "}
                 {selected.hears ? (
@@ -167,7 +194,8 @@ export default function AssistSettings({ settings, onChange }: Props) {
                 )}
               </>
             ) : (
-              `${models.length} models can see a screenshot, read live from OpenRouter.`
+              `${models.length} hosted models can see a screenshot, read live from ` +
+              `OpenRouter${local.length ? `, plus ${local.length} already on this Mac` : ""}.`
             )}
           </p>
 

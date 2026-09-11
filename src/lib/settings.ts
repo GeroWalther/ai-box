@@ -307,3 +307,36 @@ export function resolveTextProvider(s: Settings): {
       return { baseUrl: s.customUrl, apiKey: s.customKey, model: s.customModel };
   }
 }
+
+/** Prefix marking a Screen Assist model that runs on this Mac via Ollama. */
+export const LOCAL_PREFIX = "ollama:";
+
+/**
+ * Where a Screen Assist model actually lives.
+ *
+ * The picker mixes two worlds — models on this Mac and models behind an
+ * OpenRouter key — so the id carries which one it is, and this is the single
+ * place that reads it. A local model needs no key and never leaves the machine;
+ * an OpenRouter one needs the key and does.
+ */
+export function assistProvider(s: Settings): {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  local: boolean;
+} {
+  if (s.assistModel.startsWith(LOCAL_PREFIX)) {
+    return {
+      baseUrl: s.ollamaUrl,
+      apiKey: "",
+      model: s.assistModel.slice(LOCAL_PREFIX.length),
+      local: true,
+    };
+  }
+  return {
+    baseUrl: "https://openrouter.ai/api/v1",
+    apiKey: s.openrouterKey,
+    model: s.assistModel,
+    local: false,
+  };
+}

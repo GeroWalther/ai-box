@@ -19,7 +19,7 @@ import {
 } from "./api";
 import { CONTROL_TOOLS, describe, runTool, type Step } from "./control";
 import { buildScreenAssistMessages, parseScreenAnswer, type ScreenAnswer } from "./presets";
-import type { Settings } from "./settings";
+import { assistProvider, type Settings } from "./settings";
 
 /** Audio captured from the microphone, ready to send. */
 export interface Clip {
@@ -43,6 +43,10 @@ export interface AskInput {
   onStep?: (step: Step, done: boolean) => void;
   /** Checked between steps: true ends the run where it stands. */
   stopped?: () => boolean;
+  /** Earlier exchanges in this sitting, oldest first. What makes "and now turn
+   *  it back on" mean anything — without it every question starts from nothing
+   *  and a follow-up is unanswerable. */
+  history?: { q: string; a: string }[];
 }
 
 export interface AskResult extends ScreenAnswer {
@@ -67,10 +71,11 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
   if (!question && !input.clip) {
     return { say: "", annotations: [], sawScreen: false, steps: [] };
   }
+  const provider = assistProvider(settings);
   // Say which key is missing rather than letting OpenRouter answer with a bare
   // 401, which reads as "your key is wrong" when the real cause is that this
-  // window never loaded it.
-  if (!settings.openrouterKey.trim()) {
+  // window never loaded it. A model running on this Mac needs no key at all.
+  if (!provider.local && !provider.apiKey.trim()) {
     throw new Error(
       "No OpenRouter key available. Open AI Box → Settings and check the key is saved."
     );
@@ -126,10 +131,14 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
     });
   }
 
-  const messages: any[] = [
-    { role: "system", content: system },
-    { role: "user", content },
-  ];
+  const messages: any[] = [{ role: "system", content: system }];
+  // Earlier turns go in as plain text. Their screenshots deliberately do not:
+  // the screen has moved on, and an old picture of it is worse than none.
+  for (const turn of input.history ?? []) {
+    messages.push({ role: "user", content: turn.q });
+    messages.push({ role: "assistant", content: turn.a });
+  }
+  messages.push({ role: "user", content });
 
   // What the switches are set to right now, so "turn Bluetooth off" when it is
   // already off gets an honest answer instead of a pointless toggle, and so the
@@ -161,9 +170,9 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
   try {
     for (let round = 0; round < limit; round++) {
       const msg = await chatCompletion({
-        baseUrl: "https://openrouter.ai/api/v1",
-        apiKey: settings.openrouterKey,
-        model: settings.assistModel,
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        model: provider.model,
         messages,
         tools: act ? (CONTROL_TOOLS as unknown as unknown[]) : [],
         // Low: this is a factual reading of a screen, not a creative task, and a
@@ -437,13 +446,14 @@ function blobToBase64(blob: Blob): Promise<string> {
  * audio-capable, rather than adding a second model setting to configure.
  */
 export async function transcribe(settings: Settings, clip: Clip): Promise<string> {
-  if (!settings.openrouterKey.trim()) {
+  const provider = assistProvider(settings);
+  if (!provider.local && !provider.apiKey.trim()) {
     throw new Error("Dictation needs your OpenRouter key — add it in Settings.");
   }
   const msg = await chatCompletion({
-    baseUrl: "https://openrouter.ai/api/v1",
-    apiKey: settings.openrouterKey,
-    model: settings.assistModel,
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    model: provider.model,
     messages: [
       {
         role: "system",

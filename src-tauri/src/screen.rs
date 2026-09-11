@@ -104,10 +104,48 @@ pub fn screen_size(app: tauri::AppHandle) -> Result<(f64, f64), String> {
 pub struct Voice {
     pub name: String,
     pub locale: String,
+    /// One of the handful worth offering by default — the voices a person would
+    /// actually choose to be read to by, as opposed to the other 170.
+    pub classic: bool,
     /// Apple's Premium and Enhanced voices sound dramatically better than the
     /// default ones, and are a free download the user has to opt into — so the
     /// UI needs to be able to point at them.
     pub quality: String,
+}
+
+/// Novelty and legacy voices, which are not voices in any useful sense.
+///
+/// macOS ships jokes (Bubbles, Zarvox, Bad News) alongside 1980s formant
+/// synthesisers (Albert, Fred, Ralph) in the same list as its real ones. They
+/// are unusable for reading an answer aloud, and because the list is otherwise
+/// alphabetical, "Albert" was winning the English default outright.
+const NOVELTY: &[&str] = &[
+    "Albert", "Bad News", "Bahh", "Bells", "Boing", "Bubbles", "Cellos", "Deranged", "Fred",
+    "Good News", "Grandma", "Grandpa", "Hysterical", "Jester", "Junior", "Kathy", "Organ",
+    "Pipe Organ", "Princess", "Ralph", "Superstar", "Trinoids", "Whisper", "Wobble", "Zarvox",
+];
+
+/// The shortlist, best first within each language.
+///
+/// Ordered deliberately rather than alphabetically: the first match for a
+/// language becomes the automatic choice, so Samantha reads English and Anna
+/// reads German without anyone opening a menu.
+const CLASSIC: &[&str] = &[
+    // English
+    "Samantha", "Alex", "Ava", "Allison", "Tom", "Susan", "Karen", "Daniel", "Serena", "Kate",
+    "Oliver", "Moira", "Fiona", "Tessa", "Rishi", "Reed", "Flo", "Sandy", "Eddy", "Rocko",
+    "Shelley",
+    // German
+    "Anna", "Markus", "Petra", "Viktor", "Helena",
+    // French, Spanish, Italian, Portuguese, Dutch, the Nordics
+    "Thomas", "Amélie", "Audrey", "Aurélie", "Marie", "Mónica", "Jorge", "Paulina", "Juan",
+    "Alice", "Luca", "Federica", "Joana", "Luciana", "Xander", "Ellen", "Alva", "Nora", "Sara",
+    "Satu", "Zosia", "Milena", "Yuna", "Kyoko", "Otoya", "Ting-Ting", "Sin-ji",
+];
+
+/// The name without the "(Enhanced)" or "(English (UK))" tail macOS appends.
+fn bare_name(name: &str) -> &str {
+    name.split(" (").next().unwrap_or(name).trim()
 }
 
 /// Voices `say` can actually use, English first.
@@ -135,6 +173,9 @@ pub fn list_voices() -> Vec<Voice> {
             if name.is_empty() || !locale.contains('_') {
                 return None;
             }
+            if NOVELTY.contains(&bare_name(&name)) {
+                return None;
+            }
             let quality = if name.contains("(Premium)") {
                 "premium"
             } else if name.contains("(Enhanced)") {
@@ -142,19 +183,32 @@ pub fn list_voices() -> Vec<Voice> {
             } else {
                 "default"
             };
-            Some(Voice { name, locale, quality: quality.into() })
+            let classic = CLASSIC.contains(&bare_name(&name));
+            Some(Voice { name, locale, classic, quality: quality.into() })
         })
         .collect();
-    // Best first: Premium, then Enhanced, then the rest — and English ahead of
-    // everything, since that is what the assistant answers in by default.
+    // Best first, because the FIRST match for a language is what gets used when
+    // nobody has picked a voice. Quality leads — a Premium voice is a different
+    // class of thing — and the shortlist breaks the tie in its own order, so an
+    // alphabetical accident can never decide how the assistant sounds.
     let rank = |v: &Voice| match v.quality.as_str() {
         "premium" => 0,
         "enhanced" => 1,
         _ => 2,
     };
+    let shortlist = |v: &Voice| {
+        CLASSIC
+            .iter()
+            .position(|c| *c == bare_name(&v.name))
+            .unwrap_or(CLASSIC.len())
+    };
     voices.sort_by(|a, b| {
         let en = |v: &Voice| if v.locale.starts_with("en") { 0 } else { 1 };
-        en(a).cmp(&en(b)).then(rank(a).cmp(&rank(b))).then(a.name.cmp(&b.name))
+        en(a)
+            .cmp(&en(b))
+            .then(rank(a).cmp(&rank(b)))
+            .then(shortlist(a).cmp(&shortlist(b)))
+            .then(a.name.cmp(&b.name))
     });
     voices
 }
@@ -234,9 +288,18 @@ pub const MARKS: &str = "screen-assist";
 pub const BAR: &str = "screen-assist-bar";
 
 /// Height reserved for the bar, in logical points. It grows on screen via CSS;
-/// this is the window it grows inside.
-const BAR_H: f64 = 340.0;
+/// this is the window it grows inside. Generous, because a run that acts fills
+/// it with a trail of steps as well as an answer, and anything taller than this
+/// window is simply cut off — the window does not grow with its content.
+const BAR_H: f64 = 560.0;
 const BAR_W: f64 = 760.0;
+
+/// Set once the user drags the bar somewhere they want it.
+///
+/// After that it stays put for the rest of the session: re-centring a window
+/// someone has just deliberately moved is the app arguing with them. It is not
+/// persisted — a fresh launch starts at the sensible default again.
+static BAR_MOVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Build both windows once, hidden.
 pub fn create_overlay(app: &tauri::AppHandle) -> Result<(), String> {
@@ -326,7 +389,9 @@ fn place_bar(win: &tauri::WebviewWindow) -> Result<(), String> {
 pub fn overlay_open(app: tauri::AppHandle, with_screen: bool, listening: bool) -> Result<(), String> {
     create_overlay(&app)?;
     let bar = app.get_webview_window(BAR).ok_or("no bar")?;
-    let _ = place_bar(&bar);
+    if !BAR_MOVED.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = place_bar(&bar);
+    }
     let _ = bar.show();
     // Key, but NOT activating: the panel style means the app behind stays
     // frontmost, so this never drags the AI Box main window over your work.
@@ -355,6 +420,12 @@ pub fn overlay_marks(app: tauri::AppHandle, annotations: serde_json::Value) -> R
     }
     app.emit_to(MARKS, "screen-assist://marks", annotations)
         .map_err(|e| e.to_string())
+}
+
+/// The user has dragged the bar; leave it where they put it.
+#[tauri::command]
+pub fn overlay_bar_moved() {
+    BAR_MOVED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Let a synthetic click pass straight through the ask bar.
@@ -446,10 +517,30 @@ mod tests {
     }
 
     #[test]
+    fn the_automatic_english_voice_is_not_a_1980s_joke() {
+        let voices = list_voices();
+        // No novelty synthesiser survives the filter at all.
+        for name in ["Albert", "Zarvox", "Bubbles", "Bad News", "Fred"] {
+            assert!(
+                !voices.iter().any(|v| bare_name(&v.name) == name),
+                "{name} should have been filtered out"
+            );
+        }
+        // And the first English voice — the one picked when nobody has chosen —
+        // is a real one. Alphabetical ordering used to hand this to Albert.
+        let first_en = voices
+            .iter()
+            .find(|v| v.locale.starts_with("en"))
+            .expect("some English voice");
+        assert!(first_en.classic, "the default English voice must be a real one");
+    }
+
+    #[test]
     fn quality_is_read_from_the_name_apple_gives() {
         let v = |n: &str| Voice {
             name: n.into(),
             locale: "en_US".into(),
+            classic: CLASSIC.contains(&bare_name(n)),
             quality: if n.contains("(Premium)") {
                 "premium".into()
             } else if n.contains("(Enhanced)") {

@@ -16,9 +16,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadSecrets, loadSettings, type Settings } from "../lib/settings";
-import { assistToChat, controlRequestAccess, controlTrusted, overlayClose, overlayMarks } from "../lib/api";
+import { loadSecrets, loadSettings, saveSettings, type Settings } from "../lib/settings";
+import {
+  assistToChat,
+  listVoices,
+  controlRequestAccess,
+  controlTrusted,
+  overlayBarMoved,
+  overlayClose,
+  overlayMarks,
+} from "../lib/api";
 import type { Step } from "../lib/control";
+import type { MacVoice } from "../lib/api";
+import { byLanguage, worthOffering } from "../lib/voices";
 import { ask, hush, say, Recorder, type AskResult } from "../lib/screenAssist";
 import { logError } from "../lib/log";
 
@@ -34,6 +44,7 @@ export default function ScreenAssist() {
   const [withScreen, setWithScreen] = useState(true);
   const [lastAsked, setLastAsked] = useState("");
   const [steps, setSteps] = useState<Step[]>([]);
+  const [voices, setVoices] = useState<MacVoice[]>([]);
   const [needsAccess, setNeedsAccess] = useState(false);
 
   // Set while a run is in flight; flipped by Stop and by Esc, and read between
@@ -44,6 +55,31 @@ export default function ScreenAssist() {
   const recorder = useRef(new Recorder());
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // This sitting's earlier exchanges, so a follow-up can say "and now turn it
+  // back on". Cleared when the overlay is dismissed, not between questions —
+  // closing it is what ends the conversation.
+  const history = useRef<{ q: string; a: string }[]>([]);
+
+  /** Make the panel key again and put the caret in the field.
+   *
+   *  Both halves are needed after a run that acted: the click that drove another
+   *  app took key status with it, so focusing the input alone would leave every
+   *  keystroke going to that app instead. */
+  const focusInput = useCallback(() => {
+    void getCurrentWindow().setFocus().catch(() => {});
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
+
+  /** Drag the whole overlay by its background, from anywhere on it. */
+  const dragFrom = useCallback((e: React.MouseEvent) => {
+    // Starting a window drag from a control would swallow the click that was
+    // meant to press it.
+    const el = e.target as HTMLElement;
+    if (el.closest("input, button, label, textarea, select, a")) return;
+    void overlayBarMoved().catch(() => {});
+    void getCurrentWindow().startDragging();
+  }, []);
+
   // API keys are deliberately NOT in localStorage — saveSettings strips them and
   // the real value lives in the OS keychain. loadSettings() therefore returns a
   // blank key, which is why this window has to rehydrate secrets the same way
@@ -51,12 +87,31 @@ export default function ScreenAssist() {
   // sitting right there on disk.
   const secrets = useRef<Partial<Settings>>({});
   useEffect(() => {
+    listVoices()
+      .then((all) => setVoices(worthOffering(all)))
+      .catch(() => setVoices([]));
+  }, []);
+
+  useEffect(() => {
     loadSecrets()
       .then((s) => {
         secrets.current = s;
         setSettings((prev) => ({ ...prev, ...s }));
       })
       .catch((e) => logError("assist.secrets", e));
+  }, []);
+
+  /**
+   * Change one setting from the overlay and keep it.
+   *
+   * Read-modify-write against what is on disk RIGHT NOW, not against this
+   * window's copy: the overlay is long-lived and its snapshot may be minutes
+   * stale, so writing the whole object back would quietly undo anything changed
+   * in the Settings panel since.
+   */
+  const persist = useCallback((patch: Partial<Settings>) => {
+    saveSettings({ ...loadSettings(), ...patch });
+    setSettings((prev) => ({ ...prev, ...patch }));
   }, []);
 
   /** Settings live in the main window; re-read them each time we open. */
@@ -89,6 +144,7 @@ export default function ScreenAssist() {
     setError("");
     setQuestion("");
     setSteps([]);
+    history.current = [];
     void hush();
     overlayClose().catch(() => {});
   }, []);
@@ -113,7 +169,7 @@ export default function ScreenAssist() {
         } else {
           // The window has only just been shown; focus after the paint or the
           // caret lands nowhere and the first keystrokes are lost.
-          requestAnimationFrame(() => inputRef.current?.focus());
+          focusInput();
         }
       }
     );
@@ -121,7 +177,7 @@ export default function ScreenAssist() {
       void un.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshSettings]);
+  }, [refreshSettings, focusInput]);
 
   // Push-to-talk released: stop and send whatever was said.
   useEffect(() => {
@@ -180,6 +236,7 @@ export default function ScreenAssist() {
         clip,
         withScreen,
         act: settings.assistAct,
+        history: history.current,
         stopped: () => stop.current,
         onStep: (step, done) =>
           setSteps((prev) => {
@@ -193,6 +250,9 @@ export default function ScreenAssist() {
       });
       setAnswer(result);
       setPhase("answered");
+      // A run that clicked took key status to the app it drove. Take it back so
+      // the next question can simply be typed.
+      focusInput();
       void say(settings, result.say, result.lang);
       // Filed under a "Screen Assist" chat session, so the overlay needs no
       // history of its own and these turn up in search and device sync.
@@ -201,6 +261,9 @@ export default function ScreenAssist() {
         () => {}
       );
       setLastAsked(asked);
+      // Three turns is enough for "now turn it back on" and short enough that
+      // an old answer never crowds out the screenshot that matters.
+      history.current = [...history.current, { q: asked, a: result.say }].slice(-3);
       // Only worth offering once the user has actually asked for something to
       // be done and been unable to have it done.
       if (settings.assistAct) {
@@ -250,61 +313,83 @@ export default function ScreenAssist() {
   return (
     <div className="sa-root">
       <div className="sa-dock">
-        {(phase === "asking" || thinking) && (
-          <div
-            className="sa-bar"
-            onMouseDown={(e) => {
-              // Drag by the background only. Starting a window drag from a
-              // control would swallow the click that was meant to press it.
-              const el = e.target as HTMLElement;
-              if (el.closest("input, button, label, textarea, select")) return;
-              void getCurrentWindow().startDragging();
-            }}
+        {/* The bar never goes away while the overlay is open, so a follow-up is
+            just typed — "and now turn it back on" — rather than reached for
+            through a button first. */}
+        <div className="sa-bar" onMouseDown={dragFrom}>
+          <button
+            className={recording ? "sa-mic recording" : "sa-mic"}
+            title={recording ? "Stop and send" : "Ask by voice"}
+            onClick={toggleRecording}
+            disabled={thinking || !canHear}
           >
-            <button
-              className={recording ? "sa-mic recording" : "sa-mic"}
-              title={recording ? "Stop and send" : "Ask by voice"}
-              onClick={toggleRecording}
-              disabled={thinking || !canHear}
-            >
-              <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round">
-                <rect x="9" y="2" width="6" height="12" rx="3" />
-                <path d="M5 11a7 7 0 0 0 14 0M12 18v4" />
-              </svg>
-            </button>
+            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round">
+              <rect x="9" y="2" width="6" height="12" rx="3" />
+              <path d="M5 11a7 7 0 0 0 14 0M12 18v4" />
+            </svg>
+          </button>
 
+          <input
+            ref={inputRef}
+            className="sa-input"
+            placeholder={
+              recording
+                ? "Listening… click the mic when you're done"
+                : phase === "answered"
+                  ? "Ask a follow-up…"
+                  : "Ask about this screen, or anything else…"
+            }
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !thinking) void submit(question, null);
+            }}
+            disabled={thinking}
+          />
+
+          {/* The voice, on screen rather than three panels away. Which language
+              you are about to be answered in is decided at the moment of
+              asking — it is not something to go and configure first. */}
+          {settings.assistSpeak && voices.length > 0 && (
+            <select
+              className="sa-voice"
+              title="Voice for the spoken answer"
+              value={settings.assistVoice}
+              onChange={(e) => persist({ assistVoice: e.target.value })}
+              disabled={thinking}
+            >
+              <option value="">Auto voice</option>
+              {byLanguage(voices).map(([label, list]) => (
+                <optgroup key={label} label={label}>
+                  {list.map((v) => (
+                    <option key={v.name} value={v.name}>
+                      {v.name.replace(/ \(.*\)$/, "")}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          )}
+
+          {/* The sticky toggle: on, and every question carries a fresh
+              screenshot without anyone reaching for a modifier key. */}
+          <label className="sa-screen" title="Attach a screenshot to every question">
             <input
-              ref={inputRef}
-              className="sa-input"
-              placeholder={recording ? "Listening… click the mic when you're done" : "Ask about this screen, or anything else…"}
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !thinking) void submit(question, null);
-              }}
+              type="checkbox"
+              checked={withScreen}
+              onChange={(e) => setWithScreen(e.target.checked)}
               disabled={thinking}
             />
+            <span>See screen</span>
+          </label>
 
-            {/* The sticky toggle: on, and every question carries a fresh
-                screenshot without anyone reaching for a modifier key. */}
-            <label className="sa-screen" title="Attach a screenshot to every question">
-              <input
-                type="checkbox"
-                checked={withScreen}
-                onChange={(e) => setWithScreen(e.target.checked)}
-                disabled={thinking}
-              />
-              <span>See screen</span>
-            </label>
-
-            <button className="sa-close" onClick={dismiss} title="Close (Esc)">
-              ✕
-            </button>
-          </div>
-        )}
+          <button className="sa-close" onClick={dismiss} title="Close (Esc)">
+            ✕
+          </button>
+        </div>
 
         {thinking && (
-          <div className="sa-answer thinking">
+          <div className="sa-answer thinking" onMouseDown={dragFrom}>
             <div className="sa-thinking-row">
               <span className="sa-dots"><i /><i /><i /></span>
               <span>
@@ -326,7 +411,7 @@ export default function ScreenAssist() {
         )}
 
         {phase === "answered" && (
-          <div className="sa-answer">
+          <div className="sa-answer" onMouseDown={dragFrom}>
             {error ? (
               <p className="sa-error">{error}</p>
             ) : (
@@ -368,8 +453,10 @@ export default function ScreenAssist() {
                       onClick={() => {
                         void hush();
                         setAnswer(null);
+                        setSteps([]);
+                        setQuestion("");
                         setPhase("asking");
-                        requestAnimationFrame(() => inputRef.current?.focus());
+                        focusInput();
                       }}
                     >
                       Ask again
