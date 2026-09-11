@@ -105,6 +105,11 @@ export interface Settings {
   /** Let Screen Assist USE the Mac — click, type, flip switches — instead of
    *  only describing what to do. Needs Accessibility permission, which macOS
    *  asks for the first time it is actually used. */
+  /** Models that declared the right capabilities and then refused to answer —
+   *  gated to approved apps, blocked by a data policy, unavailable here. None
+   *  of that is advertised, so it is learned by asking and remembered rather
+   *  than rediscovered by the user mid-question. */
+  assistRejected: string[];
   assistAct: boolean;
   /** How many actions one request may take before it has to stop and report.
    *  A ceiling, not a target: it exists so a confused model cannot click
@@ -213,6 +218,7 @@ export const DEFAULT_SETTINGS: Settings = {
   assistSpeak: true,
   assistVoice: "",
   assistRate: 190,
+  assistRejected: [],
   assistAct: true,
   assistMaxSteps: 12,
 

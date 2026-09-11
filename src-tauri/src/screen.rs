@@ -656,6 +656,40 @@ pub async fn list_assist_models(params: crate::video::KeyParams) -> Result<Vec<A
     Ok(models)
 }
 
+/// Ask a model to say one word, to find out whether it will answer at all.
+///
+/// Capabilities are advertised; permission is not. A model can declare image,
+/// audio and tools and still refuse every request — gated to approved apps,
+/// blocked by a data policy, unavailable in a region. None of that appears in
+/// the model list, and the only way to know is to ask, so the picker asks once
+/// when a model is chosen rather than letting the user discover it mid-question.
+///
+/// The prompt is one token and the reply capped at one, so a check costs
+/// essentially nothing.
+#[tauri::command]
+pub async fn probe_assist_model(params: crate::video::KeyParams, model: String) -> Result<(), String> {
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": "hi" }],
+        "max_tokens": 1,
+    });
+    let resp = reqwest::Client::new()
+        .post("https://openrouter.ai/api/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", params.api_key.trim()))
+        .header("HTTP-Referer", "https://ai-box.local")
+        .header("X-Title", "AI Box")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+    if resp.status().is_success() {
+        return Ok(());
+    }
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    Err(crate::friendly_http_error(status, &text))
+}
+
 /// Models already on this Mac that could actually do this job.
 ///
 /// Ollama reports what each model can do, so this asks rather than guessing from

@@ -1064,7 +1064,7 @@ struct ChatCompletionParams {
 /// with a guess sends people to fix the wrong thing: a 403 reading "this model
 /// is only available on agentic harnesses" became "check your API key", and the
 /// key was perfect.
-fn friendly_http_error(status: reqwest::StatusCode, body: &str) -> String {
+pub(crate) fn friendly_http_error(status: reqwest::StatusCode, body: &str) -> String {
     let code = status.as_u16();
     let hint = match code {
         401 => "Unauthorized — check your API key in Settings.",
@@ -2709,6 +2709,7 @@ pub fn run() {
             screen::overlay_close,
             screen::list_assist_models,
             screen::list_local_assist_models,
+            screen::probe_assist_model,
             screen::set_assist_hotkey,
             screen::overlay_pass_clicks,
             screen::overlay_bar_moved,

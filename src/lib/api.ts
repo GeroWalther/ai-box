@@ -449,6 +449,10 @@ export interface AssistModel {
 }
 export const listAssistModels = (apiKey: string) =>
   invokeCmd<AssistModel[]>("list_assist_models", { params: { apiKey } });
+/** Ask a model for one token, to find out whether it will answer at all.
+ *  Rejects with the provider's own reason when it refuses. */
+export const probeAssistModel = (apiKey: string, model: string) =>
+  invokeCmd<void>("probe_assist_model", { params: { apiKey }, model });
 /** Ollama models on this Mac that can see a screen and make tool calls. */
 export const listLocalAssistModels = (baseUrl: string) =>
   invokeCmd<string[]>("list_local_assist_models", { baseUrl });

@@ -11,6 +11,7 @@ import {
   listAssistModels,
   listLocalAssistModels,
   listVoices,
+  probeAssistModel,
   setAssistHotkey,
   speak,
   type AssistModel,
@@ -45,6 +46,9 @@ export default function AssistSettings({ settings, onChange }: Props) {
    *  focus, because the user grants it in System Settings — another app — and
    *  would otherwise come back to a panel still claiming it is missing. */
   const [canControl, setCanControl] = useState(true);
+  /** Set while a newly picked model is being checked, and to its refusal after. */
+  const [checking, setChecking] = useState(false);
+  const [refusal, setRefusal] = useState("");
 
   useEffect(() => {
     const check = () => void controlTrusted().then(setCanControl).catch(() => {});
@@ -91,11 +95,46 @@ export default function AssistSettings({ settings, onChange }: Props) {
 
   const selected = models.find((m) => m.id === settings.assistModel);
   const isLocal = settings.assistModel.startsWith(LOCAL_PREFIX);
+
+  /**
+   * Pick a model, then check it will actually answer.
+   *
+   * Capabilities are advertised, permission is not: a model can declare image,
+   * audio and tools and still refuse everything because it is gated to approved
+   * apps or blocked by a data policy. Finding that out here costs one token;
+   * finding it out later costs the user a failed question and a wrong guess
+   * about their API key.
+   */
+  async function pick(id: string) {
+    const previous = settings.assistModel;
+    onChange({ assistModel: id });
+    setRefusal("");
+    if (id.startsWith(LOCAL_PREFIX) || !settings.openrouterKey.trim()) return;
+
+    setChecking(true);
+    try {
+      await probeAssistModel(settings.openrouterKey, id);
+    } catch (e) {
+      // Remembered, so it stops being offered at all — and the previous model,
+      // which was working a moment ago, is put back rather than leaving the
+      // user on one that cannot answer.
+      setRefusal(String(e).replace(/^Error:\s*/, ""));
+      onChange({
+        assistModel: previous,
+        assistRejected: [...new Set([...(settings.assistRejected ?? []), id])],
+      });
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  const rejected = new Set(settings.assistRejected ?? []);
   // OpenRouter marks its no-charge variants with a :free suffix. Worth their own
   // group: "needs a key" and "costs money" are different questions, and the
   // answer to the second is the one people are actually asking.
-  const free = models.filter((m) => m.id.endsWith(":free") || m.promptPrice === 0);
-  const paid = models.filter((m) => !(m.id.endsWith(":free") || m.promptPrice === 0));
+  const usable = models.filter((m) => !rejected.has(m.id));
+  const free = usable.filter((m) => m.id.endsWith(":free") || m.promptPrice === 0);
+  const paid = usable.filter((m) => !(m.id.endsWith(":free") || m.promptPrice === 0));
   const premium = voices.filter((v) => v.quality !== "default");
 
   return (
@@ -135,7 +174,8 @@ export default function AssistSettings({ settings, onChange }: Props) {
               <label>Model</label>
               <select
                 value={settings.assistModel}
-                onChange={(e) => onChange({ assistModel: e.target.value })}
+                onChange={(e) => void pick(e.target.value)}
+                disabled={checking}
               >
                 {!models.length && !local.length && (
                   <option value={settings.assistModel}>{settings.assistModel}</option>
@@ -182,6 +222,14 @@ export default function AssistSettings({ settings, onChange }: Props) {
             </p>
           )}
 
+          {checking && <p className="hint">Checking that model will answer…</p>}
+          {refusal && (
+            <p className="hint error">
+              {refusal} Put back the model you had, and left that one out of the list
+              from now on.
+            </p>
+          )}
+
           {/* Said once, plainly, rather than as a badge on every row: the list is
               already filtered, so what matters is knowing WHY it is short. */}
           <p className="hint">
@@ -205,7 +253,7 @@ export default function AssistSettings({ settings, onChange }: Props) {
                 screen, takes your voice directly, and can act on what it finds.
               </>
             ) : (
-              `${models.length} hosted models qualify, read live from OpenRouter` +
+              `${usable.length} hosted models qualify, read live from OpenRouter` +
               `${local.length ? `, plus ${local.length} on this Mac` : ""}.`
             )}
           </p>

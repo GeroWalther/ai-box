@@ -16,9 +16,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadSecrets, loadSettings, saveSettings, type Settings } from "../lib/settings";
+import {
+  LOCAL_PREFIX,
+  loadSecrets,
+  loadSettings,
+  saveSettings,
+  type Settings,
+} from "../lib/settings";
 import {
   assistToChat,
+  listAssistModels,
+  listLocalAssistModels,
   listVoices,
   controlRequestAccess,
   controlTrusted,
@@ -28,7 +36,7 @@ import {
   overlayMarks,
 } from "../lib/api";
 import type { Step } from "../lib/control";
-import type { MacVoice } from "../lib/api";
+import type { AssistModel, MacVoice } from "../lib/api";
 import { byLanguage, worthOffering } from "../lib/voices";
 import { ask, hush, say, Recorder, type AskResult } from "../lib/screenAssist";
 import { logError } from "../lib/log";
@@ -45,6 +53,8 @@ export default function ScreenAssist() {
   const [withScreen, setWithScreen] = useState(true);
   const [steps, setSteps] = useState<Step[]>([]);
   const [voices, setVoices] = useState<MacVoice[]>([]);
+  const [models, setModels] = useState<AssistModel[]>([]);
+  const [localModels, setLocalModels] = useState<string[]>([]);
   const [showSettings, setShowSettings] = useState(false);
 
   /** The live phase, for listeners that outlive a render. */
@@ -93,6 +103,18 @@ export default function ScreenAssist() {
   // the main window does. Without this every request 401s with a key that is
   // sitting right there on disk.
   const secrets = useRef<Partial<Settings>>({});
+  // Fetched when the settings panel is first opened rather than on mount: the
+  // list costs a request, and most questions never touch it.
+  useEffect(() => {
+    if (!showSettings || models.length || !settings.openrouterKey) return;
+    listAssistModels(settings.openrouterKey)
+      .then(setModels)
+      .catch(() => setModels([]));
+    listLocalAssistModels(settings.ollamaUrl)
+      .then(setLocalModels)
+      .catch(() => setLocalModels([]));
+  }, [showSettings, models.length, settings.openrouterKey, settings.ollamaUrl]);
+
   useEffect(() => {
     listVoices()
       .then((all) => setVoices(worthOffering(all)))
@@ -288,8 +310,23 @@ export default function ScreenAssist() {
       }
     } catch (e) {
       logError("assist.ask", e);
-      setError(String(e));
+      const message = String(e);
+      setError(message);
       setPhase("answered");
+      // A model that refuses outright is not a passing failure: it is gated,
+      // or blocked by a data policy, and it will refuse every time. Remember it
+      // so both pickers stop offering it, rather than letting the user rediscover
+      // this on their next question.
+      if (/\(HTTP 40[34]\)/.test(message) && !settings.assistModel.startsWith(LOCAL_PREFIX)) {
+        persist({
+          assistRejected: [
+            ...new Set([...(loadSettings().assistRejected ?? []), settings.assistModel]),
+          ],
+        });
+        setError(
+          `${message}\n\nI won't offer that model again — pick another one under ⚙.`
+        );
+      }
     }
   }
 
@@ -324,6 +361,8 @@ export default function ScreenAssist() {
 
   const canHear = true; // enforced by the picker; a deaf model simply ignores audio
   const thinking = phase === "thinking";
+  const rejected = new Set(settings.assistRejected ?? []);
+  const usableModels = models.filter((m) => !rejected.has(m.id));
 
   return (
     <div className="sa-root">
@@ -347,6 +386,41 @@ export default function ScreenAssist() {
               />
               <span>See my screen</span>
             </label>
+
+            {models.length + localModels.length > 0 && (
+              <label className="sa-opt wide">
+                <span>Model</span>
+                <select
+                  value={settings.assistModel}
+                  onChange={(e) => persist({ assistModel: e.target.value })}
+                  disabled={thinking}
+                >
+                  {/* The current one is always present, even if it has since
+                      been rejected — a picker that cannot show what is selected
+                      is worse than one showing a bad choice. */}
+                  {!usableModels.some((m) => m.id === settings.assistModel) &&
+                    !settings.assistModel.startsWith(LOCAL_PREFIX) && (
+                      <option value={settings.assistModel}>{settings.assistModel}</option>
+                    )}
+                  {localModels.length > 0 && (
+                    <optgroup label="On this Mac">
+                      {localModels.map((m) => (
+                        <option key={m} value={LOCAL_PREFIX + m}>
+                          {m}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <optgroup label="Hosted">
+                    {usableModels.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name || m.id}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+              </label>
+            )}
 
             <label className="sa-opt">
               <input

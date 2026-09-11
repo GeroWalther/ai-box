@@ -314,7 +314,7 @@ html[data-overlay="marks"] {
   word-break: break-word;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.sa-error { margin: 0; color: #ff8f86; font-size: 13.5px; line-height: 1.5; }
+.sa-error { margin: 0; color: #ff8f86; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; }
 
 .sa-foot {
   display: flex;
