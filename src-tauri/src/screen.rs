@@ -664,22 +664,71 @@ pub async fn list_assist_models(params: crate::video::KeyParams) -> Result<Vec<A
     Ok(models)
 }
 
-/// Ask a model to say one word, to find out whether it will answer at all.
+/// An 8×8 PNG and a fifth of a second of silence: the smallest request that is
+/// still shaped like a real one.
 ///
-/// Capabilities are advertised; permission is not. A model can declare image,
-/// audio and tools and still refuse every request — gated to approved apps,
-/// blocked by a data policy, unavailable in a region. None of that appears in
-/// the model list, and the only way to know is to ask, so the picker asks once
-/// when a model is chosen rather than letting the user discover it mid-question.
+/// Built rather than pasted in as base64 blobs, so it is obvious what is being
+/// sent and there is nothing to get subtly wrong by hand.
+fn probe_image() -> String {
+    let img = image::RgbImage::from_pixel(8, 8, image::Rgb([200, 200, 200]));
+    let mut png = std::io::Cursor::new(Vec::new());
+    let _ = image::DynamicImage::ImageRgb8(img).write_to(&mut png, image::ImageFormat::Png);
+    base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+}
+
+fn probe_audio() -> String {
+    const RATE: u32 = 16_000;
+    let samples = RATE / 5; // 200ms
+    let data_len = samples * 2;
+    let mut wav = Vec::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&RATE.to_le_bytes());
+    wav.extend_from_slice(&(RATE * 2).to_le_bytes()); // byte rate
+    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.resize(44 + data_len as usize, 0);
+    base64::engine::general_purpose::STANDARD.encode(&wav)
+}
+
+/// Send a model the shape of request Screen Assist really makes, and see if it
+/// comes back.
 ///
-/// The prompt is one token and the reply capped at one, so a check costs
-/// essentially nothing.
+/// Capabilities are advertised; behaviour is not. A model can declare image,
+/// audio and tools and still refuse — gated to approved apps, or rejecting the
+/// exact message shape this app sends. Probing with "hi" proved only that the
+/// key worked; this sends a picture, a moment of audio and a tool definition
+/// together, which is the thing that actually has to succeed.
+///
+/// The picture is 8×8 and the audio is silence, so the whole check costs a few
+/// hundred tokens.
 #[tauri::command]
 pub async fn probe_assist_model(params: crate::video::KeyParams, model: String) -> Result<(), String> {
     let body = serde_json::json!({
         "model": model,
-        "messages": [{ "role": "user", "content": "hi" }],
-        "max_tokens": 1,
+        "max_tokens": 8,
+        "messages": [{
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "Reply with the word ok." },
+                { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{}", probe_image()) } },
+                { "type": "input_audio", "input_audio": { "data": probe_audio(), "format": "wav" } },
+            ],
+        }],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "noop",
+                "description": "Never call this.",
+                "parameters": { "type": "object", "properties": {} },
+            },
+        }],
     });
     let resp = reqwest::Client::new()
         .post("https://openrouter.ai/api/v1/chat/completions")

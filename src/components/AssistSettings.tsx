@@ -53,6 +53,8 @@ export default function AssistSettings({ settings, onChange }: Props) {
   /** Set while a newly picked model is being checked, and to its refusal after. */
   const [checking, setChecking] = useState(false);
   const [refusal, setRefusal] = useState("");
+  /** Progress of a sweep over the whole list: [done, total]. */
+  const [sweep, setSweep] = useState<[number, number] | null>(null);
 
   useEffect(() => {
     const check = () => {
@@ -132,6 +134,45 @@ export default function AssistSettings({ settings, onChange }: Props) {
       });
     } finally {
       setChecking(false);
+    }
+  }
+
+  /**
+   * Try every listed model, and keep the ones that answer.
+   *
+   * The list is filtered on what models CLAIM. This is the only way to know what
+   * they do: some are gated to approved apps, some reject the exact message
+   * shape this app sends. One click here and the picker afterwards contains
+   * nothing that will fail on the user mid-question.
+   */
+  async function checkAll() {
+    const todo = models.filter((m) => !rejected.has(m.id));
+    const total = todo.length;
+    setSweep([0, total]);
+    setRefusal("");
+    const bad: string[] = [];
+    let done = 0;
+    // Four at a time: enough to finish quickly, gentle enough not to trip the
+    // per-key rate limit and fail models that are perfectly fine.
+    const lanes = Array.from({ length: 4 }, async () => {
+      for (;;) {
+        const m = todo.shift();
+        if (!m) return;
+        await probeAssistModel(settings.openrouterKey, m.id).catch(() => {
+          bad.push(m.id);
+        });
+        setSweep([++done, total]);
+      }
+    });
+    await Promise.all(lanes);
+    setSweep(null);
+    if (bad.length) {
+      onChange({ assistRejected: [...new Set([...(settings.assistRejected ?? []), ...bad])] });
+      setRefusal(
+        `${bad.length} of ${total} models could not handle a real request and were removed.`
+      );
+    } else {
+      setRefusal("");
     }
   }
 
@@ -228,6 +269,16 @@ export default function AssistSettings({ settings, onChange }: Props) {
               hear, so they mean typed questions.
             </p>
           )}
+
+          <div className="row-inline">
+            <button className="btn" onClick={() => void checkAll()} disabled={!!sweep || checking}>
+              {sweep ? `Testing ${sweep[0]}/${sweep[1]}…` : "Test every model"}
+            </button>
+            <span className="hint">
+              Sends each one a real request — a picture, a moment of audio and a tool
+              — and drops the ones that fail.
+            </span>
+          </div>
 
           {checking && <p className="hint">Checking that model will answer…</p>}
           {refusal && (
