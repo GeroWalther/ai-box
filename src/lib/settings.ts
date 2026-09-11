@@ -108,7 +108,9 @@ export interface Settings {
   assistAct: boolean;
   /** How many actions one request may take before it has to stop and report.
    *  A ceiling, not a target: it exists so a confused model cannot click
-   *  around the machine indefinitely. */
+   *  around the machine indefinitely. 0 removes the ceiling entirely — it then
+   *  runs until it is done or until Escape stops it, which is what a long job
+   *  needs and what an unattended Mac should not be left on. */
   assistMaxSteps: number;
 
   // Phone / remote access (companion server). The token pairs a device; the

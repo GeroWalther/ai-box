@@ -148,7 +148,10 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
   }
 
   const steps: Step[] = [];
-  const limit = act ? Math.max(1, settings.assistMaxSteps ?? 12) : 1;
+  // 0 means no ceiling: the run ends when the model says it is done, or when
+  // the user presses Escape. Nothing else stops it, by the user's choice.
+  const max = settings.assistMaxSteps ?? 12;
+  const limit = act ? (max <= 0 ? Infinity : max) : 1;
   let cutShort = false;
   let sawScreen = !!screenshot;
 

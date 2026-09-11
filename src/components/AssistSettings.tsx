@@ -243,10 +243,21 @@ export default function AssistSettings({ settings, onChange }: Props) {
                 <option value="12">12 actions</option>
                 <option value="20">20 actions</option>
                 <option value="40">40 actions</option>
+                <option value="0">Never — until the job is done</option>
               </select>
               <p className="hint">
-                A ceiling, not a target — it stops and reports rather than clicking
-                around your Mac indefinitely if it gets lost.
+                {settings.assistMaxSteps > 0 ? (
+                  <>
+                    A ceiling, not a target — it stops and reports rather than clicking
+                    around your Mac indefinitely if it gets lost.
+                  </>
+                ) : (
+                  <>
+                    No ceiling: it keeps going until the job is done or you stop it.
+                    Escape halts it from anywhere, even once another app has the
+                    keyboard — worth staying at the Mac for a long one.
+                  </>
+                )}
               </p>
             </div>
           )}
