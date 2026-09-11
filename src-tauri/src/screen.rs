@@ -302,8 +302,10 @@ pub const BAR: &str = "screen-assist-bar";
 /// screen. The page reports its real height and `overlay_fit` shrinks the
 /// window to it.
 const BAR_H: f64 = 92.0;
-/// The tallest it may grow to, when an answer has a long trail of steps.
-const BAR_MAX_H: f64 = 620.0;
+/// The tallest it may grow to. Must clear the tallest the page can actually be
+/// — the answer card's own 420px cap, plus the bar, plus the settings panel —
+/// or the window would clip content the page thinks it is showing.
+const BAR_MAX_H: f64 = 760.0;
 const BAR_W: f64 = 760.0;
 
 /// Set once the user drags the bar somewhere they want it.

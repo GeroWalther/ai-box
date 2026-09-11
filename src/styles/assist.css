@@ -69,7 +69,7 @@ html[data-overlay="marks"] {
   left: 50%;
   bottom: 0;
   transform: translateX(-50%);
-  width: min(720px, 96vw);
+  width: 720px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -170,7 +170,7 @@ html[data-overlay="marks"] {
    nothing around and vanishes without reflowing the question field. */
 .sa-panel {
   align-self: flex-end;
-  width: min(320px, 90vw);
+  width: 320px;
   padding: 11px 13px;
   border-radius: 14px;
   background: rgba(28, 30, 38, 0.92);
@@ -217,7 +217,14 @@ html[data-overlay="marks"] {
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
   color: #eef0f5;
-  max-height: 46vh;
+  /* In pixels, NOT vh. The window is resized to fit this content, so a height
+     measured against the window feeds back into itself: the window shrinks, 46vh
+     shrinks with it, the content shrinks, the window shrinks again — collapsing
+     until a long answer is cut off after two lines. Worse, it settled at a
+     different size depending on whether the settings panel happened to be open,
+     which is what made the same answer look big in one state and clipped in the
+     other. */
+  max-height: 420px;
   overflow-y: auto;
   animation: sa-rise 0.18s ease-out;
 }
