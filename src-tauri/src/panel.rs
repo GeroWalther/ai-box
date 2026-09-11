@@ -273,3 +273,19 @@ pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> Result<f64, Str
         Ok(height)
     }
 }
+
+
+/// Where the pointer is, in screen points with a top-left origin.
+///
+/// `NSEvent.mouseLocation` is a class method — no event monitor, no block, no
+/// hook. Asking costs a message send, which is what makes it reasonable to ask
+/// a few times a second while the overlay is open.
+pub fn pointer(screen_height: f64) -> Option<(f64, f64)> {
+    unsafe {
+        let cls = AnyClass::get(c"NSEvent")?;
+        let p: NsPoint = objc2::msg_send![cls, mouseLocation];
+        // Cocoa measures up from the bottom of the main display; everything else
+        // in this app measures down from the top.
+        Some((p.x, screen_height - p.y))
+    }
+}

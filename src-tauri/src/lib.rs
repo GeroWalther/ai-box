@@ -2785,7 +2785,7 @@ pub fn run() {
             screen::overlay_pass_clicks,
             screen::overlay_bar_moved,
             screen::overlay_take_keyboard,
-            screen::overlay_fit,
+            screen::overlay_hot_rect,
             screen::overlay_escape,
             control::control_trusted,
             control::control_request_access,

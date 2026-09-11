@@ -509,9 +509,10 @@ export const requestScreenAccess = () => invokeCmd<boolean>("request_screen_acce
 export const openSettingsPane = (pane: string) =>
   invokeCmd<string>("open_settings_pane", { pane });
 
-/** Shrink the bar window to the height the page needs, so its transparent
- *  region stops swallowing clicks meant for whatever is underneath. */
-export const overlayFit = (height: number) => invokeCmd<void>("overlay_fit", { height });
+/** Tell the window which part of it the page actually draws in, so it can let
+ *  clicks through everywhere else without ever resizing. */
+export const overlayHotRect = (x: number, y: number, width: number, height: number) =>
+  invokeCmd<void>("overlay_hot_rect", { x, y, width, height });
 /** Take the keyboard into the bar's web view, from wherever it is. */
 export const overlayTakeKeyboard = () => invokeCmd<void>("overlay_take_keyboard");
 /** Remember that the user dragged the bar, so it stops being re-centred. */

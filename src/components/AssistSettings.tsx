@@ -279,6 +279,10 @@ export default function AssistSettings({ settings, onChange }: Props) {
             second key. Off, it opens the bar for typing and you speak by holding{" "}
             {settings.assistHotkey.split("+")[0]}&nbsp;M instead.
           </p>
+          <p className="hint">
+            Either way, <b>⌘ {HOTKEYS.find((h) => h.value === settings.assistHotkey)?.label ?? "the shortcut"}</b>{" "}
+            opens the bar without touching the microphone, for when you want to type.
+          </p>
 
           <label className="video-check">
             <input

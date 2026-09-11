@@ -295,18 +295,22 @@ pub const MARKS: &str = "screen-assist";
 /// The small ask/answer bar. Focusable, but non-activating.
 pub const BAR: &str = "screen-assist-bar";
 
-/// The bar window's height, in logical points, before the page has measured
-/// itself. Everything beyond the bar is TRANSPARENT but still part of the
-/// window, and a transparent window still swallows clicks — so a window sized
-/// for the tallest possible answer puts an invisible wall over the user's
-/// screen. The page reports its real height and `overlay_fit` shrinks the
-/// window to it.
-const BAR_H: f64 = 92.0;
-/// How much of the screen the bar may take at most. The page caps its own
-/// content against the same screen, so this is a backstop rather than the thing
-/// that decides — a window shorter than its content would clip an answer the
-/// page believes it is showing.
-const BAR_MAX_SCREEN_FRACTION: f64 = 0.92;
+/// The bar window's height, in logical points. FIXED, on purpose.
+///
+/// Everything above the bar is transparent, and a transparent window still
+/// swallows clicks — so this window used to be resized to fit its content. But a
+/// window that resizes whenever its content changes composites whenever its
+/// content changes, and that is seen as a flash: opening the settings panel,
+/// every phase of a question. The window is one size now and the POINTER
+/// decides what it takes: see `overlay_hot_rect`.
+const BAR_H: f64 = 640.0;
+
+/// The region the page actually draws in, in window points from the window's
+/// top-left. Everything outside it is transparent and must let clicks through.
+static HOT_RECT: std::sync::Mutex<Option<(f64, f64, f64, f64)>> = std::sync::Mutex::new(None);
+/// Whether the pointer was last seen inside that region, so the window is only
+/// told when the answer changes rather than on every tick.
+static POINTER_INSIDE: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
 const BAR_W: f64 = 760.0;
 
 /// Set once the user drags the bar somewhere they want it.
@@ -423,6 +427,7 @@ pub fn overlay_open(app: tauri::AppHandle, with_screen: bool, listening: bool) -
     let _ = crate::panel::make_key(&bar);
     #[cfg(not(target_os = "macos"))]
     let _ = bar.set_focus();
+    watch_pointer(app.clone());
     app.emit_to(
         BAR,
         "screen-assist://open",
@@ -449,47 +454,71 @@ pub fn overlay_marks(app: tauri::AppHandle, annotations: serde_json::Value) -> R
         .map_err(|e| e.to_string())
 }
 
-/// Shrink the window to the height the page actually needs.
+/// The region of the overlay the page actually draws in.
 ///
-/// The overlay draws a small bar at the bottom of a window that would otherwise
-/// be sized for the largest answer it might ever show. The rest is transparent —
-/// and a transparent window is still a window: it takes every click in that
-/// region and does nothing with it, so the user cannot reach what is underneath
-/// without dismissing the bar first.
-///
-/// The bottom edge is held still while the height changes, so the bar stays
-/// where it is on screen (and where the user dragged it to) and grows upward.
+/// Reported by the page in window points, and the whole basis for deciding what
+/// the window takes and what it lets through: the pointer is checked against it
+/// a few times a second while the bar is open, and the window ignores the mouse
+/// everywhere else. That replaced resizing the window to fit its content, which
+/// worked but composited on every change — seen as a flash.
 #[tauri::command]
-pub fn overlay_fit(app: tauri::AppHandle, height: f64) -> Result<(), String> {
-    let bar = app.get_webview_window(BAR).ok_or("no bar")?;
-    let screen_h = bar
-        .current_monitor()
-        .ok()
-        .flatten()
-        .map(|m| m.size().height as f64 / m.scale_factor())
-        .unwrap_or(900.0);
-    let wanted = height.clamp(48.0, screen_h * BAR_MAX_SCREEN_FRACTION);
+pub fn overlay_hot_rect(x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    let mut rect = HOT_RECT.lock().map_err(|_| "hot rect")?;
+    *rect = Some((x, y, width, height));
+    Ok(())
+}
 
-    #[cfg(target_os = "macos")]
-    {
-        crate::panel::set_height(&bar, wanted)?;
-        return Ok(());
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let scale = bar.scale_factor().unwrap_or(1.0);
-        let size = bar.outer_size().map_err(|e| e.to_string())?;
-        let pos = bar.outer_position().map_err(|e| e.to_string())?;
-        let current = size.height as f64 / scale;
-        if (current - wanted).abs() < 2.0 {
-            return Ok(());
+/// Follow the pointer while the bar is open, letting clicks through everywhere
+/// the page is not drawing.
+///
+/// Twelve times a second, not sixty: the cost of being a frame late to a border
+/// crossing is nothing, and asking `NSEvent` where the pointer is costs one
+/// message send. It stops by itself when the bar is hidden.
+fn watch_pointer(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            let Some(bar) = app.get_webview_window(BAR) else { return };
+            if !bar.is_visible().unwrap_or(false) {
+                let _ = bar.set_ignore_cursor_events(false);
+                if let Ok(mut inside) = POINTER_INSIDE.lock() {
+                    *inside = None;
+                }
+                return;
+            }
+            let Some(hot) = HOT_RECT.lock().ok().and_then(|r| *r) else { continue };
+            let scale = bar.scale_factor().unwrap_or(1.0);
+            let Ok(pos) = bar.outer_position() else { continue };
+            let screen_h = bar
+                .current_monitor()
+                .ok()
+                .flatten()
+                .map(|m| m.size().height as f64 / m.scale_factor())
+                .unwrap_or(900.0);
+
+            #[cfg(target_os = "macos")]
+            let Some((px, py)) = crate::panel::pointer(screen_h) else { continue };
+            #[cfg(not(target_os = "macos"))]
+            let (px, py) = (0.0, 0.0);
+
+            let left = pos.x as f64 / scale + hot.0;
+            let top = pos.y as f64 / scale + hot.1;
+            let inside =
+                px >= left && px <= left + hot.2 && py >= top && py <= top + hot.3;
+
+            // Only when it changes: a window-server round trip every tick would
+            // be wasteful, and toggling a window's mouse handling repeatedly is
+            // exactly the kind of churn this whole approach exists to avoid.
+            let mut was = match POINTER_INSIDE.lock() {
+                Ok(w) => w,
+                Err(_) => continue,
+            };
+            if *was != Some(inside) {
+                *was = Some(inside);
+                let _ = bar.set_ignore_cursor_events(!inside);
+            }
         }
-        let top = pos.y as f64 / scale + (current - wanted);
-        bar.set_size(tauri::LogicalSize::new(BAR_W, wanted))
-            .map_err(|e| e.to_string())?;
-        bar.set_position(tauri::LogicalPosition::new(pos.x as f64 / scale, top))
-            .map_err(|e| e.to_string())
-    }
+    });
 }
 
 /// Take the keyboard, from wherever it currently is.
@@ -980,9 +1009,25 @@ pub fn set_assist_hotkey(
     let talk_shortcut: tauri_plugin_global_shortcut::Shortcut = talk
         .parse()
         .map_err(|e| format!("Could not parse {talk}: {e}"))?;
+
+    // Open without the microphone. When the main shortcut is push-to-talk there
+    // is otherwise no way to reach the bar just to type into it — you would have
+    // to hold the key, say nothing, and let it fail.
+    let quiet = format!("CommandOrControl+{accelerator}");
+    let quiet_shortcut: tauri_plugin_global_shortcut::Shortcut = quiet
+        .parse()
+        .map_err(|e| format!("Could not parse {quiet}: {e}"))?;
     let handler = move |app: &tauri::AppHandle, shortcut: &tauri_plugin_global_shortcut::Shortcut, event: tauri_plugin_global_shortcut::ShortcutEvent| {
         let pressed = event.state() == ShortcutState::Pressed;
         let is_talk = *shortcut == talk_shortcut;
+
+        // The quiet one opens the bar for typing, whatever the main key does.
+        if *shortcut == quiet_shortcut {
+            if pressed {
+                let _ = overlay_open(app.clone(), shortcut.mods.shift(), false);
+            }
+            return;
+        }
 
         // Hold to talk, release to send — for the dedicated talk key, and for
         // the main shortcut too when the user has asked for that. Holding a key
@@ -1005,7 +1050,12 @@ pub fn set_assist_hotkey(
     };
 
     gs.on_shortcuts(
-        [accelerator.as_str(), with_screen.as_str(), talk.as_str()],
+        [
+            accelerator.as_str(),
+            with_screen.as_str(),
+            talk.as_str(),
+            quiet.as_str(),
+        ],
         handler,
     )
     .map_err(|e| format!("Could not bind {accelerator}: {e}"))?;

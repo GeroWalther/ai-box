@@ -37,7 +37,7 @@ import {
   overlayClose,
   overlayEscape,
   overlayMarks,
-  overlayFit,
+  overlayHotRect,
   overlayTakeKeyboard,
 } from "../lib/api";
 import type { Step } from "../lib/control";
@@ -66,7 +66,7 @@ export default function ScreenAssist() {
   const phaseRef = useRef<Phase>("idle");
   useEffect(() => {
     phaseRef.current = phase;
-  }, [phase, answer, steps.length, showSettings]);
+  }, [phase]);
   const [needsAccess, setNeedsAccess] = useState(false);
 
   // Set while a run is in flight; flipped by Stop and by Esc, and read between
@@ -95,73 +95,32 @@ export default function ScreenAssist() {
     settingsRef.current = settings;
   }, [settings]);
 
-  // Keep the window exactly as tall as what is drawn in it. Everything outside
-  // the bar is transparent, and a transparent window still takes every click
-  // that lands on it — so a window sized for the tallest possible answer puts an
-  // invisible wall between the user and their own screen.
+  // Tell the window which part of it the page actually draws in. Everything
+  // else is transparent and must let clicks through — and REPORTING that region,
+  // rather than resizing the window to match it, is what stopped the overlay
+  // compositing (and so flashing) every time its content changed.
   useEffect(() => {
     const dock = dockRef.current;
     if (!dock || phase === "idle") return;
-    // The screen is the only real limit on how tall the answer may be, and it
-    // does not change as the window resizes — so capping against it cannot feed
-    // back into the measurement the way a `vh` cap did.
-    const ceiling = Math.max(200, (window.screen?.availHeight ?? 900) - 220);
-    const card = dock.querySelector<HTMLElement>(".sa-answer");
-    if (card) card.style.maxHeight = `${ceiling}px`;
-
-    // Coalesced to one resize per frame, and never two at once. A ResizeObserver
-    // fires for every intermediate layout — a panel opening, text reflowing,
-    // steps arriving — and each resize of a transparent window is a visible
-    // repaint. Unthrottled, that is a flicker rather than a resize.
     let queued = 0;
-    let shrink: ReturnType<typeof setTimeout> | undefined;
-    let busy = false;
-    let last = 0;
-
-    const apply = async (h: number) => {
-      if (busy) return;
-      busy = true;
-      last = h;
-      try {
-        await overlayFit(h);
-      } catch {
-        /* the window will be fitted again on the next change */
-      } finally {
-        busy = false;
-      }
-    };
-
-    const fit = () => {
+    const report = () => {
       if (queued) return;
       queued = requestAnimationFrame(() => {
         queued = 0;
-        const h = Math.ceil(dock.getBoundingClientRect().height) + 8;
-        if (h <= 8 || Math.abs(h - last) < 6) return;
-        if (h > last) {
-          // Growing has to be immediate or the answer is clipped while it waits.
-          clearTimeout(shrink);
-          void apply(h);
-          return;
+        const r = dock.getBoundingClientRect();
+        if (r.height > 0) {
+          void overlayHotRect(r.left, r.top, r.width, r.height).catch(() => {});
         }
-        // Shrinking can wait. A question runs through three layouts in a second
-        // — empty bar, thinking, answer — and following each one down means
-        // three resizes where the last one was the only one that mattered.
-        clearTimeout(shrink);
-        shrink = setTimeout(() => {
-          const settled = Math.ceil(dock.getBoundingClientRect().height) + 8;
-          if (settled > 8 && Math.abs(settled - last) >= 6) void apply(settled);
-        }, 220);
       });
     };
-    fit();
-    const observer = new ResizeObserver(fit);
+    report();
+    const observer = new ResizeObserver(report);
     observer.observe(dock);
     return () => {
       observer.disconnect();
       if (queued) cancelAnimationFrame(queued);
-      clearTimeout(shrink);
     };
-  }, [phase]);
+  }, [phase, answer, steps.length, showSettings]);
 
   // This sitting's earlier exchanges, so a follow-up can say "and now turn it
   // back on". Cleared when the overlay is dismissed, not between questions —
