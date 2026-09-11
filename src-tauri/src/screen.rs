@@ -295,11 +295,15 @@ pub const MARKS: &str = "screen-assist";
 /// The small ask/answer bar. Focusable, but non-activating.
 pub const BAR: &str = "screen-assist-bar";
 
-/// Height reserved for the bar, in logical points. It grows on screen via CSS;
-/// this is the window it grows inside. Generous, because a run that acts fills
-/// it with a trail of steps as well as an answer, and anything taller than this
-/// window is simply cut off — the window does not grow with its content.
-const BAR_H: f64 = 560.0;
+/// The bar window's height, in logical points, before the page has measured
+/// itself. Everything beyond the bar is TRANSPARENT but still part of the
+/// window, and a transparent window still swallows clicks — so a window sized
+/// for the tallest possible answer puts an invisible wall over the user's
+/// screen. The page reports its real height and `overlay_fit` shrinks the
+/// window to it.
+const BAR_H: f64 = 92.0;
+/// The tallest it may grow to, when an answer has a long trail of steps.
+const BAR_MAX_H: f64 = 620.0;
 const BAR_W: f64 = 760.0;
 
 /// Set once the user drags the bar somewhere they want it.
@@ -385,8 +389,15 @@ fn place_bar(win: &tauri::WebviewWindow) -> Result<(), String> {
     let scale = monitor.scale_factor();
     let sw = monitor.size().width as f64 / scale;
     let sh = monitor.size().height as f64 / scale;
+    // Its CURRENT height, not the starting one: the window is resized to fit its
+    // content, so anchoring to a constant would drift further from the bottom
+    // every time an answer had made it taller.
+    let height = win
+        .outer_size()
+        .map(|s| s.height as f64 / scale)
+        .unwrap_or(BAR_H);
     let x = monitor.position().x as f64 / scale + (sw - BAR_W) / 2.0;
-    let y = monitor.position().y as f64 / scale + sh - BAR_H - 60.0;
+    let y = monitor.position().y as f64 / scale + sh - height - 60.0;
     win.set_position(tauri::LogicalPosition::new(x, y))
         .map_err(|e| e.to_string())
 }
@@ -432,6 +443,36 @@ pub fn overlay_marks(app: tauri::AppHandle, annotations: serde_json::Value) -> R
         let _ = marks.show();
     }
     app.emit_to(MARKS, "screen-assist://marks", annotations)
+        .map_err(|e| e.to_string())
+}
+
+/// Shrink the window to the height the page actually needs.
+///
+/// The overlay draws a small bar at the bottom of a window that would otherwise
+/// be sized for the largest answer it might ever show. The rest is transparent —
+/// and a transparent window is still a window: it takes every click in that
+/// region and does nothing with it, so the user cannot reach what is underneath
+/// without dismissing the bar first.
+///
+/// The bottom edge is held still while the height changes, so the bar stays
+/// where it is on screen (and where the user dragged it to) and grows upward.
+#[tauri::command]
+pub fn overlay_fit(app: tauri::AppHandle, height: f64) -> Result<(), String> {
+    let bar = app.get_webview_window(BAR).ok_or("no bar")?;
+    let scale = bar.scale_factor().unwrap_or(1.0);
+    let size = bar.outer_size().map_err(|e| e.to_string())?;
+    let pos = bar.outer_position().map_err(|e| e.to_string())?;
+
+    let current = size.height as f64 / scale;
+    let wanted = height.clamp(48.0, BAR_MAX_H);
+    // A point or two of jitter as text reflows is not worth a window resize.
+    if (current - wanted).abs() < 2.0 {
+        return Ok(());
+    }
+    let top = pos.y as f64 / scale + (current - wanted);
+    bar.set_size(tauri::LogicalSize::new(BAR_W, wanted))
+        .map_err(|e| e.to_string())?;
+    bar.set_position(tauri::LogicalPosition::new(pos.x as f64 / scale, top))
         .map_err(|e| e.to_string())
 }
 

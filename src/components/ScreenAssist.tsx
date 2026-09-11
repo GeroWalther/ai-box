@@ -37,6 +37,7 @@ import {
   overlayClose,
   overlayEscape,
   overlayMarks,
+  overlayFit,
   overlayTakeKeyboard,
 } from "../lib/api";
 import type { Step } from "../lib/control";
@@ -75,6 +76,24 @@ export default function ScreenAssist() {
 
   const recorder = useRef(new Recorder());
   const inputRef = useRef<HTMLInputElement>(null);
+  const dockRef = useRef<HTMLDivElement>(null);
+
+  // Keep the window exactly as tall as what is drawn in it. Everything outside
+  // the bar is transparent, and a transparent window still takes every click
+  // that lands on it — so a window sized for the tallest possible answer puts an
+  // invisible wall between the user and their own screen.
+  useEffect(() => {
+    const dock = dockRef.current;
+    if (!dock || phase === "idle") return;
+    const fit = () => {
+      const h = Math.ceil(dock.getBoundingClientRect().height) + 8;
+      if (h > 8) void overlayFit(h).catch(() => {});
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(dock);
+    return () => observer.disconnect();
+  }, [phase]);
 
   // This sitting's earlier exchanges, so a follow-up can say "and now turn it
   // back on". Cleared when the overlay is dismissed, not between questions —
@@ -399,7 +418,7 @@ export default function ScreenAssist() {
 
   return (
     <div className="sa-root">
-      <div className="sa-dock">
+      <div className="sa-dock" ref={dockRef}>
         {/* The bar never goes away while the overlay is open, so a follow-up is
             just typed — "and now turn it back on" — rather than reached for
             through a button first. */}
