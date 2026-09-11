@@ -102,16 +102,25 @@ html[data-overlay="marks"] {
   to   { opacity: 1; transform: none; }
 }
 
-.sa-input {
+/* The bar is painted dark whatever the app's theme, so its field must be too.
+   Written against .sa-bar rather than on its own, because the global input rule
+   is `input:not([type])` — one specificity point higher than a bare class, so a
+   plain `.sa-input` lost and the field came out as a white box with a border
+   sitting inside a dark HUD. */
+.sa-bar .sa-input {
   flex: 1;
+  width: auto;
   background: none;
   border: none;
   outline: none;
+  border-radius: 0;
   color: #f2f4f8;
   font-size: 15px;
   padding: 5px 2px;
+  caret-color: var(--sa-mark);
 }
-.sa-input::placeholder { color: rgba(255, 255, 255, 0.42); }
+.sa-bar .sa-input::placeholder { color: rgba(255, 255, 255, 0.42); }
+.sa-bar .sa-input:focus { box-shadow: none; border: none; }
 
 .sa-mic,
 .sa-close {
@@ -185,7 +194,7 @@ html[data-overlay="marks"] {
 .sa-opt input[type="checkbox"] { margin: 0; accent-color: var(--sa-mark); }
 .sa-opt.wide { justify-content: space-between; gap: 12px; }
 .sa-opt.wide > span { color: rgba(255, 255, 255, 0.6); }
-.sa-opt select {
+.sa-panel .sa-opt select {
   flex: 1;
   min-width: 0;
   max-width: 190px;

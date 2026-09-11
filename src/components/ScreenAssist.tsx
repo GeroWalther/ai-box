@@ -90,6 +90,10 @@ export default function ScreenAssist() {
 
   /** Drag the whole overlay by its background, from anywhere on it. */
   const dragFrom = useCallback((e: React.MouseEvent) => {
+    // Whatever was clicked, this window wants the keyboard now. The panel is
+    // non-activating, so key status can be sitting in another app entirely and
+    // the field would take the click and then swallow every keystroke.
+    void getCurrentWindow().setFocus().catch(() => {});
     // Starting a window drag from a control would swallow the click that was
     // meant to press it.
     const el = e.target as HTMLElement;
@@ -333,6 +337,14 @@ export default function ScreenAssist() {
 
   async function startRecording() {
     if (recorder.current.recording) return;
+    if (settings.assistModel.startsWith(LOCAL_PREFIX)) {
+      setError(
+        "This model runs on your Mac and cannot hear — no local model can. Type your " +
+          "question, or pick a hosted model under ⚙."
+      );
+      setPhase("answered");
+      return;
+    }
     try {
       await recorder.current.start();
       setRecording(true);
@@ -360,7 +372,9 @@ export default function ScreenAssist() {
 
   if (phase === "idle") return null;
 
-  const canHear = true; // enforced by the picker; a deaf model simply ignores audio
+  // Hosted models in the picker all hear; local ones never do. The mic says so
+  // rather than letting someone hold a key and get an error for their trouble.
+  const canHear = !settings.assistModel.startsWith(LOCAL_PREFIX);
   const thinking = phase === "thinking";
   const rejected = new Set(settings.assistRejected ?? []);
   const usableModels = models.filter((m) => !rejected.has(m.id));
@@ -483,7 +497,13 @@ export default function ScreenAssist() {
         <div className="sa-bar" onMouseDown={dragFrom}>
           <button
             className={recording ? "sa-mic recording" : "sa-mic"}
-            title={recording ? "Stop and send" : "Ask by voice"}
+            title={
+              canHear
+                ? recording
+                  ? "Stop and send"
+                  : "Ask by voice"
+                : "This model runs on your Mac and cannot hear — type instead"
+            }
             onClick={toggleRecording}
             disabled={thinking || !canHear}
           >

@@ -76,6 +76,15 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
     return { say: "", annotations: [], sawScreen: false, steps: [] };
   }
   const provider = assistProvider(settings);
+  // No local model takes audio. Sending it anyway gets "Failed to load image or
+  // audio file" out of Ollama, which reads like a broken app rather than a
+  // model that simply has no ears.
+  if (provider.local && input.clip) {
+    throw new Error(
+      `${provider.model} runs on this Mac and cannot hear — no local model can. ` +
+        "Type the question instead, or pick a hosted model under ⚙."
+    );
+  }
   // Say which key is missing rather than letting OpenRouter answer with a bare
   // 401, which reads as "your key is wrong" when the real cause is that this
   // window never loaded it. A model running on this Mac needs no key at all.
