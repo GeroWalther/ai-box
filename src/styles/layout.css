@@ -256,6 +256,9 @@
   overflow: hidden;
 }
 .sidebar-new {
+  /* Held at its natural height: it shares a column with a scrolling list, and a
+     flex child squashes before its sibling scrolls. */
+  flex: none;
   margin: 10px 12px 6px;
   padding: 9px 12px;
   background: var(--accent-soft);
