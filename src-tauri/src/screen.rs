@@ -508,6 +508,33 @@ pub fn overlay_close(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_probe_reply_must_carry_a_real_answer() {
+        let good = serde_json::json!({ "content": "{\"say\":\"A window with a sidebar.\"}" });
+        assert!(answers_in_shape(&good));
+        // Fenced JSON is still JSON; the parser strips to the braces.
+        let fenced = serde_json::json!({ "content": "```json\n{\"say\":\"Hello\"}\n```" });
+        assert!(answers_in_shape(&fenced));
+        // Prose, an empty say, and no content at all are all failures.
+        for bad in [
+            serde_json::json!({ "content": "I can see a window with a sidebar." }),
+            serde_json::json!({ "content": "{\"say\":\"  \"}" }),
+            serde_json::json!({ "content": "" }),
+            serde_json::json!({ "reasoning": "thinking..." }),
+        ] {
+            assert!(!answers_in_shape(&bad), "should have failed: {bad}");
+        }
+    }
+
+    #[test]
+    fn the_probe_image_is_screenshot_sized_not_a_swatch() {
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(probe_image())
+            .expect("valid base64");
+        let img = image::load_from_memory(&png).expect("valid png");
+        assert_eq!((img.width(), img.height()), (640, 400));
+    }
+
     use super::*;
 
     #[test]
@@ -664,87 +691,229 @@ pub async fn list_assist_models(params: crate::video::KeyParams) -> Result<Vec<A
     Ok(models)
 }
 
-/// An 8×8 PNG and a fifth of a second of silence: the smallest request that is
-/// still shaped like a real one.
+/// A screenshot-shaped PNG for the probe.
 ///
-/// Built rather than pasted in as base64 blobs, so it is obvious what is being
-/// sent and there is nothing to get subtly wrong by hand.
+/// 640×400 of plausible window furniture rather than a few grey pixels. The
+/// size is the point: a real screenshot is about 1,500 tokens, and models exist
+/// that answer an 8×8 square instantly and then stall for minutes on the real
+/// thing. A probe that cannot tell those apart is worse than none.
 fn probe_image() -> String {
-    let img = image::RgbImage::from_pixel(8, 8, image::Rgb([200, 200, 200]));
+    let mut img = image::RgbImage::from_pixel(640, 400, image::Rgb([246, 246, 248]));
+    // A title bar, a sidebar and a button: enough structure that a vision model
+    // has something to describe.
+    for (x, y, rect) in [
+        (0u32, 0u32, (640u32, 28u32)),
+        (0, 28, (160, 372)),
+        (420, 330, (180, 44)),
+    ] {
+        for dy in 0..rect.1 {
+            for dx in 0..rect.0 {
+                if x + dx < 640 && y + dy < 400 {
+                    img.put_pixel(x + dx, y + dy, image::Rgb([70, 80, 110]));
+                }
+            }
+        }
+    }
     let mut png = std::io::Cursor::new(Vec::new());
     let _ = image::DynamicImage::ImageRgb8(img).write_to(&mut png, image::ImageFormat::Png);
     base64::engine::general_purpose::STANDARD.encode(png.into_inner())
 }
 
-fn probe_audio() -> String {
-    const RATE: u32 = 16_000;
-    let samples = RATE / 5; // 200ms
-    let data_len = samples * 2;
-    let mut wav = Vec::with_capacity(44 + data_len as usize);
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
-    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
-    wav.extend_from_slice(&RATE.to_le_bytes());
-    wav.extend_from_slice(&(RATE * 2).to_le_bytes()); // byte rate
-    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
-    wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_len.to_le_bytes());
-    wav.resize(44 + data_len as usize, 0);
-    base64::engine::general_purpose::STANDARD.encode(&wav)
+/// A real spoken sentence, synthesised by macOS, as 16 kHz mono WAV.
+///
+/// Silence would prove only that the request shape was accepted. This proves the
+/// model actually hears: it is asked to repeat what it heard, and the answer has
+/// to come back. Falls back to nothing if `say` or `afconvert` are unavailable,
+/// in which case the audio leg of the check is skipped rather than failing every
+/// model on a broken toolchain.
+fn probe_audio() -> Option<String> {
+    let dir = std::env::temp_dir();
+    let aiff = dir.join(format!("ai-box-probe-{}.aiff", uuid::Uuid::new_v4()));
+    let wav = aiff.with_extension("wav");
+    let ok = std::process::Command::new("/usr/bin/say")
+        .args(["-o".as_ref(), aiff.as_os_str(), "Reply with the word ok".as_ref()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let converted = ok
+        && std::process::Command::new("/usr/bin/afconvert")
+            .args([
+                "-f".as_ref(),
+                "WAVE".as_ref(),
+                "-d".as_ref(),
+                "LEI16@16000".as_ref(),
+                "-c".as_ref(),
+                "1".as_ref(),
+                aiff.as_os_str(),
+                wav.as_os_str(),
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+    let data = if converted { std::fs::read(&wav).ok() } else { None };
+    let _ = std::fs::remove_file(&aiff);
+    let _ = std::fs::remove_file(&wav);
+    data.map(|b| base64::engine::general_purpose::STANDARD.encode(b))
 }
 
-/// Send a model the shape of request Screen Assist really makes, and see if it
-/// comes back.
+/// Does this model actually work here?
 ///
-/// Capabilities are advertised; behaviour is not. A model can declare image,
-/// audio and tools and still refuse — gated to approved apps, or rejecting the
-/// exact message shape this app sends. Probing with "hi" proved only that the
-/// key worked; this sends a picture, a moment of audio and a tool definition
-/// together, which is the thing that actually has to succeed.
+/// Advertised capabilities are a filter, not a guarantee, and a request shaped
+/// like a real one is the only thing that settles it. Two calls:
 ///
-/// The picture is 8×8 and the audio is silence, so the whole check costs a few
-/// hundred tokens.
+///   1. a screenshot-sized image and a spoken question, answered in the JSON
+///      shape Screen Assist parses — this catches models that cannot see, cannot
+///      hear, ignore the format, or take minutes over a real image
+///   2. the same image with a tool and something to do — which catches models
+///      that chat happily and never call anything, so acting silently does
+///      nothing at all
+///
+/// Both have to pass. A model that fails either is not "mostly working": it is
+/// broken at whichever thing the user tries first.
 #[tauri::command]
 pub async fn probe_assist_model(params: crate::video::KeyParams, model: String) -> Result<(), String> {
-    let body = serde_json::json!({
-        "model": model,
-        "max_tokens": 8,
-        "messages": [{
-            "role": "user",
-            "content": [
-                { "type": "text", "text": "Reply with the word ok." },
-                { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{}", probe_image()) } },
-                { "type": "input_audio", "input_audio": { "data": probe_audio(), "format": "wav" } },
+    let image = probe_image();
+    let audio = probe_audio();
+    let client = reqwest::Client::builder()
+        // A model that cannot answer a screenshot inside a minute is unusable
+        // as a live overlay, whatever it would eventually have said.
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut content = vec![
+        serde_json::json!({ "type": "text", "text": "What is in this picture? Answer in one short sentence." }),
+        serde_json::json!({ "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{image}") } }),
+    ];
+    if let Some(audio) = &audio {
+        content.push(serde_json::json!({
+            "type": "input_audio",
+            "input_audio": { "data": audio, "format": "wav" },
+        }));
+    }
+
+    let answer = probe_call(
+        &client,
+        &params.api_key,
+        serde_json::json!({
+            "model": model,
+            "max_tokens": 300,
+            "temperature": 0.2,
+            "messages": [
+                { "role": "system", "content":
+                  "Reply with ONLY a JSON object: {\"say\":\"...\",\"lang\":\"en\",\"annotations\":[]}. \
+No prose around it, no code fence." },
+                { "role": "user", "content": content },
             ],
-        }],
-        "tools": [{
-            "type": "function",
-            "function": {
-                "name": "noop",
-                "description": "Never call this.",
-                "parameters": { "type": "object", "properties": {} },
-            },
-        }],
-    });
-    let resp = reqwest::Client::new()
+        }),
+    )
+    .await?;
+    if !answers_in_shape(&answer) {
+        return Err(
+            "That model did not answer in the format Screen Assist reads, so its answers \
+would come out empty."
+                .into(),
+        );
+    }
+
+    let acted = probe_call(
+        &client,
+        &params.api_key,
+        serde_json::json!({
+            "model": model,
+            "max_tokens": 300,
+            "temperature": 0.2,
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "system",
+                    "description": "Flip a system switch: bluetooth, wifi, volume, open_app.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": { "type": "string" },
+                            "value": { "type": "string" },
+                        },
+                        "required": ["action"],
+                    },
+                },
+            }],
+            "messages": [
+                { "role": "system", "content":
+                  "You can use this Mac with the tools you are given. When the user asks for \
+something to be DONE, do it with a tool rather than describing it." },
+                { "role": "user", "content": [
+                    { "type": "text", "text": "Turn Bluetooth off." },
+                    { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{image}") } },
+                ] },
+            ],
+        }),
+    )
+    .await?;
+    if acted["tool_calls"]
+        .as_array()
+        .map(|c| c.is_empty())
+        .unwrap_or(true)
+    {
+        return Err(
+            "That model answers questions but will not call a tool, so it could never act \
+on your Mac."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// One probe request, returning choices[0].message.
+async fn probe_call(
+    client: &reqwest::Client,
+    api_key: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let resp = client
         .post("https://openrouter.ai/api/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", params.api_key.trim()))
+        .header("Authorization", format!("Bearer {}", api_key.trim()))
         .header("HTTP-Referer", "https://ai-box.local")
         .header("X-Title", "AI Box")
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
-    if resp.status().is_success() {
-        return Ok(());
+        .map_err(|e| {
+            if e.is_timeout() {
+                "That model took over a minute on one screenshot, which is too slow to ask \
+a question of."
+                    .to_string()
+            } else {
+                format!("Request failed: {e}")
+            }
+        })?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(crate::friendly_http_error(status, &text));
     }
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    Err(crate::friendly_http_error(status, &text))
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    // Some providers answer 200 with no choices at all; treat that as the
+    // failure it is rather than panicking on a missing field.
+    json["choices"][0]["message"]
+        .as_object()
+        .map(|m| serde_json::Value::Object(m.clone()))
+        .ok_or_else(|| "That model returned an empty response.".to_string())
+}
+
+/// Does the reply contain the JSON object Screen Assist parses?
+fn answers_in_shape(message: &serde_json::Value) -> bool {
+    let text = message["content"].as_str().unwrap_or("").trim();
+    let (Some(start), Some(end)) = (text.find('{'), text.rfind('}')) else {
+        return false;
+    };
+    if end <= start {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(&text[start..=end])
+        .ok()
+        .and_then(|v| v["say"].as_str().map(|s| !s.trim().is_empty()))
+        .unwrap_or(false)
 }
 
 /// Models already on this Mac that could actually do this job.
