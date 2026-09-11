@@ -173,6 +173,25 @@ export default function AssistSettings({ settings, onChange }: Props) {
 
           {hotkeyError && <p className="hint error">{hotkeyError}</p>}
 
+          {local.length === 0 && (
+            <p className="hint">
+              No model on this Mac qualifies. Ollama reports what each one can do, and
+              a local model needs vision and tool support — <code>qwen2.5vl</code> has
+              both, plain <code>qwen2.5</code> has no eyes. Local models still cannot
+              hear, so they mean typed questions.
+            </p>
+          )}
+
+          {/* Said once, plainly, rather than as a badge on every row: the list is
+              already filtered, so what matters is knowing WHY it is short. */}
+          <p className="hint">
+            Every model listed can do all three things this needs: <b>see</b> your
+            screen, <b>hear</b> a spoken question, and <b>act</b> through tool calls.
+            Models missing any one of them are left out — a model with no ears makes
+            push-to-talk silently useless, and one without tool calls can describe
+            your screen forever but never touch it.
+          </p>
+
           <p className="hint">
             {isLocal ? (
               <>
@@ -186,9 +205,8 @@ export default function AssistSettings({ settings, onChange }: Props) {
                 screen, takes your voice directly, and can act on what it finds.
               </>
             ) : (
-              `${models.length} hosted models can see, hear and act — read live from ` +
-              `OpenRouter${local.length ? `, plus ${local.length} on this Mac` : ""}. ` +
-              `Anything missing one of the three is left out rather than offered.`
+              `${models.length} hosted models qualify, read live from OpenRouter` +
+              `${local.length ? `, plus ${local.length} on this Mac` : ""}.`
             )}
           </p>
 

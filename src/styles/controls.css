@@ -114,6 +114,37 @@ input[type="range"]:focus {
   margin: 0;
   font-size: 18px;
 }
+/* Tabs. The row scrolls sideways rather than wrapping, so a narrow window gets
+   a shorter row instead of a two-line one that shifts the body down. */
+.modal-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.modal-tabs::-webkit-scrollbar { display: none; }
+.modal-tab {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 12px 9px;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.modal-tab:hover { color: var(--text); }
+.modal-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 500;
+}
+
 .modal-body {
   padding: 8px 20px 16px;
   overflow-y: auto;
