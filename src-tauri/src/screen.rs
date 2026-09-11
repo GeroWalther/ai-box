@@ -525,15 +525,45 @@ pub fn overlay_bar_moved() {
 /// Toggled per action rather than for the whole run, so between steps the Stop
 /// button is a real button again.
 #[tauri::command]
-pub fn overlay_pass_clicks(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+pub fn overlay_pass_clicks(
+    app: tauri::AppHandle,
+    on: bool,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<(), String> {
     let bar = app.get_webview_window(BAR).ok_or("no bar")?;
-    bar.set_ignore_cursor_events(on).map_err(|e| e.to_string())?;
-    if on {
-        // The window server applies this on its own clock; without the pause the
-        // first click can still land on a bar that is already click-through.
-        std::thread::sleep(std::time::Duration::from_millis(60));
+    if !on {
+        return bar.set_ignore_cursor_events(false).map_err(|e| e.to_string());
     }
+
+    // Only when the click would actually land on the bar. Making the window
+    // deaf to the mouse for every action meant Stop could not be pressed during
+    // the very thing it exists to interrupt — and most clicks are nowhere near
+    // the bar, so most of the time there is nothing to get out of the way of.
+    if let (Some(x), Some(y)) = (x, y) {
+        if !covers(&bar, x, y) {
+            return Ok(());
+        }
+    }
+    bar.set_ignore_cursor_events(true).map_err(|e| e.to_string())?;
+    // The window server applies this on its own clock; without the pause the
+    // first click can still land on a bar that is already click-through.
+    std::thread::sleep(std::time::Duration::from_millis(60));
     Ok(())
+}
+
+/// Is this screen point (logical, top-left origin) on top of the bar?
+fn covers(bar: &tauri::WebviewWindow, x: f64, y: f64) -> bool {
+    let scale = bar.scale_factor().unwrap_or(1.0);
+    let (Ok(pos), Ok(size)) = (bar.outer_position(), bar.outer_size()) else {
+        // Unknown geometry: assume it is in the way rather than click the bar.
+        return true;
+    };
+    let left = pos.x as f64 / scale;
+    let top = pos.y as f64 / scale;
+    let right = left + size.width as f64 / scale;
+    let bottom = top + size.height as f64 / scale;
+    x >= left && x <= right && y >= top && y <= bottom
 }
 
 /// Escape belongs to Screen Assist while its bar is open.

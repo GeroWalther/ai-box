@@ -89,7 +89,6 @@ html[data-overlay="marks"] {
   background: rgba(30, 32, 40, 0.97);
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
-  animation: sa-rise 0.18s ease-out;
   /* Drag the bar by its background to move it anywhere on screen. */
   cursor: grab;
 }
@@ -100,10 +99,10 @@ html[data-overlay="marks"] {
 .sa-bar label { cursor: auto; }
 .sa-bar button,
 .sa-bar label { cursor: pointer; }
-@keyframes sa-rise {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: none; }
-}
+/* No entrance animation. It was the one thing in the overlay that could be seen
+   starting over, so any re-render — a settings panel opening, a resize, a React
+   reconciliation — read as the whole bar flashing. An overlay that appears
+   instantly cannot flicker. */
 
 /* The bar is painted dark whatever the app's theme, so its field must be too.
    Written against .sa-bar rather than on its own, because the global input rule
@@ -183,7 +182,6 @@ html[data-overlay="marks"] {
   display: flex;
   flex-direction: column;
   gap: 9px;
-  animation: sa-rise 0.16s ease-out;
 }
 .sa-opt {
   display: flex;
@@ -226,7 +224,6 @@ html[data-overlay="marks"] {
      The only real limit is the screen, applied in JS where the screen height is
      actually known. */
   overflow-y: auto;
-  animation: sa-rise 0.18s ease-out;
 }
 .sa-answer.thinking {
   display: flex;

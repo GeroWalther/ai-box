@@ -516,8 +516,10 @@ export const overlayFit = (height: number) => invokeCmd<void>("overlay_fit", { h
 export const overlayTakeKeyboard = () => invokeCmd<void>("overlay_take_keyboard");
 /** Remember that the user dragged the bar, so it stops being re-centred. */
 export const overlayBarMoved = () => invokeCmd<void>("overlay_bar_moved");
-/** Let clicks pass through the ask bar, so it cannot press its own UI. */
-export const overlayPassClicks = (on: boolean) => invokeCmd<void>("overlay_pass_clicks", { on });
+/** Let clicks pass through the ask bar, so it cannot press its own UI — but only
+ *  when the click would land on it, or Stop becomes unpressable mid-run. */
+export const overlayPassClicks = (on: boolean, x?: number, y?: number) =>
+  invokeCmd<void>("overlay_pass_clicks", { on, x: x ?? null, y: y ?? null });
 /** Take Escape globally while the bar is open — the panel is non-activating, so
  *  a local key handler stops hearing it the moment anything else takes focus. */
 export const overlayEscape = (active: boolean) => invokeCmd<void>("overlay_escape", { active });

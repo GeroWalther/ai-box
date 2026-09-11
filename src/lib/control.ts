@@ -205,6 +205,22 @@ async function pointScale(): Promise<{ w: number; h: number }> {
   return { w, h };
 }
 
+/**
+ * Where on screen this tool is about to act, if anywhere.
+ *
+ * The overlay only has to get out of the way when the pointer lands on it, and
+ * that is rare — so knowing the point means Stop stays pressable through almost
+ * every run, instead of the bar going deaf for each action.
+ */
+export async function targetPoint(
+  name: string,
+  a: any
+): Promise<{ x: number; y: number } | null> {
+  if (!["click", "drag", "move_pointer", "scroll"].includes(name)) return null;
+  const { w, h } = await pointScale();
+  return { x: toPoints(a?.x, w), y: toPoints(a?.y, h) };
+}
+
 /** 0–1000 → screen points, clamped so a hallucinated 1400 lands on the edge. */
 function toPoints(v: unknown, span: number): number {
   const n = Number(v);

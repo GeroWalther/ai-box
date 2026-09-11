@@ -17,7 +17,7 @@ import {
   stopSpeaking,
   type MacVoice,
 } from "./api";
-import { CONTROL_TOOLS, describe, runTool, type Step } from "./control";
+import { CONTROL_TOOLS, describe, runTool, targetPoint, type Step } from "./control";
 import { buildScreenAssistMessages, parseScreenAnswer, type ScreenAnswer } from "./presets";
 import { assistProvider, type Settings } from "./settings";
 
@@ -230,10 +230,12 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
           steps.push(pending);
           input.onStep?.(pending, false);
 
-          // The bar sits over the screen being clicked. It stops taking the
-          // mouse for the length of this one action and takes it back straight
-          // after, so between steps the Stop button is a real button again.
-          await overlayPassClicks(true).catch(() => {});
+          // The bar only has to get out of the way when the pointer would land
+          // on it. Told where the action is going, it stays clickable the rest
+          // of the time — which is what makes Stop pressable DURING a run
+          // rather than only in the gaps between steps.
+          const at = await targetPoint(call.function.name, args).catch(() => null);
+          await overlayPassClicks(true, at?.x, at?.y).catch(() => {});
           let done: Step;
           try {
             done = await runTool(call.function.name, args);

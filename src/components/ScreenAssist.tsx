@@ -73,6 +73,9 @@ export default function ScreenAssist() {
   // steps. A ref rather than state because the loop is already running and would
   // never see a re-render.
   const stop = useRef(false);
+  /** The same fact as `stop`, in state — a ref changes nothing on screen, so the
+   *  button kept saying "Stop" after it had been pressed and looked dead. */
+  const [stopping, setStopping] = useState(false);
 
   const recorder = useRef(new Recorder());
   const inputRef = useRef<HTMLInputElement>(null);
@@ -279,6 +282,7 @@ export default function ScreenAssist() {
 
   const dismiss = useCallback(() => {
     stop.current = true;
+    setStopping(false);
     void overlayEscape(false).catch(() => {});
     recorder.current.cancel();
     setRecording(false);
@@ -344,9 +348,7 @@ export default function ScreenAssist() {
     const un = listen("screen-assist://escape", () => {
       if (phaseRef.current === "thinking" && !stop.current) {
         stop.current = true;
-        setSteps((prev) =>
-          prev.length ? prev : [{ tool: "stop", message: "Stopping…", ok: true }]
-        );
+        setStopping(true);
         return;
       }
       dismiss();
@@ -381,6 +383,7 @@ export default function ScreenAssist() {
     setSteps([]);
     setNeedsAccess(false);
     stop.current = false;
+    setStopping(false);
     const live = settingsRef.current;
     try {
       const result = await ask(live, {
@@ -676,8 +679,15 @@ export default function ScreenAssist() {
               {/* Reachable the whole time it is driving the Mac. Esc does the
                   same thing, but a visible button is what someone reaches for
                   when they want it to stop NOW. */}
-              <button className="sa-stop" onClick={() => { stop.current = true; }}>
-                {stop.current ? "Stopping…" : "Stop"}
+              <button
+                className="sa-stop"
+                disabled={stopping}
+                onClick={() => {
+                  stop.current = true;
+                  setStopping(true);
+                }}
+              >
+                {stopping ? "Stopping…" : "Stop"}
               </button>
             </div>
             {steps.length > 1 && <Trail steps={steps.slice(0, -1)} />}
