@@ -1013,7 +1013,14 @@ pub fn set_assist_hotkey(
     // Open without the microphone. When the main shortcut is push-to-talk there
     // is otherwise no way to reach the bar just to type into it — you would have
     // to hold the key, say nothing, and let it fail.
-    let quiet = format!("CommandOrControl+{accelerator}");
+    //
+    // T for type, next to M for microphone, and sharing their modifier. NOT
+    // Command with the main key: ⌘⌥Space is already macOS's "search in Finder",
+    // and registering it opened the bar AND a Finder window every time.
+    let quiet = accelerator
+        .rsplit_once('+')
+        .map(|(mods, _)| format!("{mods}+T"))
+        .unwrap_or_else(|| "Alt+T".into());
     let quiet_shortcut: tauri_plugin_global_shortcut::Shortcut = quiet
         .parse()
         .map_err(|e| format!("Could not parse {quiet}: {e}"))?;
@@ -1049,16 +1056,33 @@ pub fn set_assist_hotkey(
         }
     };
 
-    gs.on_shortcuts(
-        [
-            accelerator.as_str(),
-            with_screen.as_str(),
-            talk.as_str(),
-            quiet.as_str(),
-        ],
-        handler,
-    )
-    .map_err(|e| format!("Could not bind {accelerator}: {e}"))?;
+    // Registered one at a time. `on_shortcuts` is all-or-nothing, so a single
+    // combination already taken by the system — and there is no way to know in
+    // advance which are — would leave the user with NO working shortcut rather
+    // than three working ones.
+    let handler = std::sync::Arc::new(handler);
+    let mut failed = Vec::new();
+    for key in [
+        accelerator.as_str(),
+        with_screen.as_str(),
+        talk.as_str(),
+        quiet.as_str(),
+    ] {
+        let handler = handler.clone();
+        if gs
+            .on_shortcut(key, move |app, shortcut, event| handler(app, shortcut, event))
+            .is_err()
+        {
+            failed.push(key.to_string());
+        }
+    }
+    // The main shortcut failing is worth saying; a secondary one is not worth
+    // stopping for, since the primary way in still works.
+    if failed.contains(&accelerator) {
+        return Err(format!(
+            "Could not bind {accelerator} — another app already has it."
+        ));
+    }
     Ok(())
 }
 

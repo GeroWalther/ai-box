@@ -280,8 +280,9 @@ export default function AssistSettings({ settings, onChange }: Props) {
             {settings.assistHotkey.split("+")[0]}&nbsp;M instead.
           </p>
           <p className="hint">
-            Either way, <b>⌘ {HOTKEYS.find((h) => h.value === settings.assistHotkey)?.label ?? "the shortcut"}</b>{" "}
-            opens the bar without touching the microphone, for when you want to type.
+            Either way, <b>{settings.assistHotkey.split("+")[0]}&nbsp;T</b> opens the bar
+            for typing without touching the microphone — T for type, next to{" "}
+            {settings.assistHotkey.split("+")[0]}&nbsp;M for microphone.
           </p>
 
           <label className="video-check">

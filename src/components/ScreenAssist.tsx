@@ -76,6 +76,23 @@ export default function ScreenAssist() {
   /** The same fact as `stop`, in state — a ref changes nothing on screen, so the
    *  button kept saying "Stop" after it had been pressed and looked dead. */
   const [stopping, setStopping] = useState(false);
+  /** Which run the UI is showing. A stopped run's answer must not arrive later
+   *  and overwrite what the user was told when they pressed Stop. */
+  const runId = useRef(0);
+
+  /** Stop now: say so immediately rather than waiting for the model to return. */
+  const halt = useCallback(() => {
+    stop.current = true;
+    setStopping(true);
+    // The request already in flight cannot be recalled, but the user should not
+    // be made to watch it finish. The run is abandoned here and its eventual
+    // answer is discarded by the id check in `submit`.
+    runId.current += 1;
+    setSteps((prev) => prev);
+    setAnswer({ say: "Stopped.", annotations: [], sawScreen: false, steps: [], cutShort: true });
+    setPhase("answered");
+    void hush();
+  }, []);
 
   const recorder = useRef(new Recorder());
   const inputRef = useRef<HTMLInputElement>(null);
@@ -306,8 +323,7 @@ export default function ScreenAssist() {
   useEffect(() => {
     const un = listen("screen-assist://escape", () => {
       if (phaseRef.current === "thinking" && !stop.current) {
-        stop.current = true;
-        setStopping(true);
+        halt();
         return;
       }
       dismiss();
@@ -315,7 +331,7 @@ export default function ScreenAssist() {
     return () => {
       void un.then((f) => f());
     };
-  }, [dismiss]);
+  }, [dismiss, halt]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -325,7 +341,7 @@ export default function ScreenAssist() {
         // their own Mac being driven and the urgent need is to make it stop,
         // not to lose the window that says what happened.
         if (phase === "thinking" && !stop.current) {
-          stop.current = true;
+          halt();
           return;
         }
         dismiss();
@@ -333,10 +349,13 @@ export default function ScreenAssist() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dismiss, phase]);
+  }, [dismiss, phase, halt]);
+
+
 
   async function submit(text: string, clip: Awaited<ReturnType<Recorder["stop"]>>) {
     if (!text.trim() && !clip) return;
+    const run = ++runId.current;
     setPhase("thinking");
     setError("");
     setSteps([]);
@@ -362,6 +381,7 @@ export default function ScreenAssist() {
             return next;
           }),
       });
+      if (run !== runId.current) return; // stopped; the user has moved on
       setAnswer(result);
       setPhase("answered");
       // A run that clicked took key status to the app it drove. Take it back so
@@ -385,6 +405,7 @@ export default function ScreenAssist() {
           .catch(() => {});
       }
     } catch (e) {
+      if (run !== runId.current) return; // stopped; the failure is moot
       logError("assist.ask", e);
       const message = String(e);
       setError(message);
@@ -641,10 +662,7 @@ export default function ScreenAssist() {
               <button
                 className="sa-stop"
                 disabled={stopping}
-                onClick={() => {
-                  stop.current = true;
-                  setStopping(true);
-                }}
+                onClick={halt}
               >
                 {stopping ? "Stopping…" : "Stop"}
               </button>
