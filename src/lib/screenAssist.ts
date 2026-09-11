@@ -55,6 +55,11 @@ export interface AskResult extends ScreenAnswer {
   steps: Step[];
   /** True when the run hit the step limit or the user stopped it. */
   cutShort?: boolean;
+  /** Set when the screen was asked for and could not be captured. Carried all
+   *  the way out rather than folded into the answer: the model happily answers
+   *  "I cannot see your screen", which reads as a limitation of the assistant
+   *  rather than as a permission the user can go and grant. */
+  captureError?: string;
 }
 
 /**
@@ -180,9 +185,9 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
       if (!act || calls.length === 0) {
         const answer = parseScreenAnswer(msg.content ?? null);
         if (captureError && !answer.say) {
-          answer.say = "I couldn't capture the screen. " + captureError;
+          answer.say = "I couldn't capture the screen.";
         }
-        return { ...answer, sawScreen, steps, cutShort };
+        return { ...answer, sawScreen, steps, cutShort, captureError: captureError ?? undefined };
       }
 
       messages.push(msg);

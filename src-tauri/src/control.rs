@@ -38,8 +38,13 @@ extern "C" {
 
 // core-graphics exposes mouse and keyboard constructors but not the scroll one,
 // so it is declared here against the same framework the crate already links.
+// The screen-recording pair is here for the same reason: macOS can be ASKED
+// whether it will allow a screenshot, which beats taking one and guessing at
+// why it came back empty.
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
     fn CGEventCreateScrollWheelEvent2(
         source: core_graphics::sys::CGEventSourceRef,
         units: u32,
@@ -94,6 +99,25 @@ fn require_access() -> Result<(), String> {
     } else {
         Err(NO_ACCESS.into())
     }
+}
+
+/// Will macOS let AI Box see the screen?
+///
+/// Asked rather than inferred. Without this a missing permission shows up as a
+/// screenshot that fails — or worse, one that silently contains only the
+/// desktop — and the assistant answers as though the screen were empty.
+#[tauri::command]
+pub fn screen_access() -> bool {
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+/// Ask macOS for screen access, showing its prompt the first time.
+///
+/// After the first refusal macOS never prompts again, so the UI still has to
+/// offer a way into System Settings.
+#[tauri::command]
+pub fn request_screen_access() -> bool {
+    unsafe { CGRequestScreenCaptureAccess() }
 }
 
 /// True if AI Box can drive the Mac right now.
@@ -599,6 +623,28 @@ Install Homebrew from brew.sh first."
     }
 }
 
+/// Open the System Settings pane for a permission we need.
+///
+/// Sending someone hunting through System Settings for the right row is how a
+/// fixable permission problem becomes a broken feature. The pane names are
+/// Apple's own anchors, so this lands on the exact list.
+#[tauri::command]
+pub fn open_settings_pane(pane: String) -> Result<String, String> {
+    let anchor = match pane.as_str() {
+        "screen" => "Privacy_ScreenCapture",
+        "accessibility" => "Privacy_Accessibility",
+        "microphone" => "Privacy_Microphone",
+        "bluetooth" => "Privacy_Bluetooth",
+        "automation" => "Privacy_Automation",
+        other => return Err(format!("no settings pane called {other:?}")),
+    };
+    sh(
+        "/usr/bin/open",
+        &[&format!("x-apple.systempreferences:com.apple.preference.security?{anchor}")],
+    )?;
+    Ok("Opened System Settings.".into())
+}
+
 /// What the switches say right now, so the model can answer "is Bluetooth on?"
 /// without clicking anything, and knows the starting state before it flips one.
 #[tauri::command]
@@ -634,6 +680,7 @@ pub fn control_status() -> serde_json::Value {
         "appearance": if dark.trim().eq_ignore_ascii_case("true") { "dark" } else { "light" },
         "frontmostApp": front,
         "canControl": trusted(false),
+        "canSeeScreen": screen_access(),
     })
 }
 

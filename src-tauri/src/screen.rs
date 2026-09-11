@@ -48,7 +48,15 @@ pub async fn capture_screen(app: tauri::AppHandle) -> Result<String, String> {
         tokio::time::sleep(std::time::Duration::from_millis(140)).await;
     }
 
-    let result = capture_to_base64().await;
+    // Asked up front: a capture without permission fails in ways that are hard
+    // to tell from a real error, and this names the cause exactly.
+    let result = if crate::control::screen_access() {
+        capture_to_base64().await
+    } else {
+        Err("AI Box is not allowed to see your screen. Open System Settings → \
+Privacy & Security → Screen & System Audio Recording and switch AI Box on."
+            .to_string())
+    };
 
     for w in restore {
         let _ = w.show();

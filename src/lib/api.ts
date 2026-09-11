@@ -493,8 +493,17 @@ export interface ControlStatus {
   appearance: string;
   frontmostApp: string;
   canControl: boolean;
+  canSeeScreen: boolean;
 }
 export const controlStatus = () => invokeCmd<ControlStatus>("control_status");
+/** Will macOS let AI Box take a screenshot? */
+export const screenAccess = () => invokeCmd<boolean>("screen_access");
+/** Ask for screen access, showing the macOS prompt the first time only. */
+export const requestScreenAccess = () => invokeCmd<boolean>("request_screen_access");
+/** Open the System Settings pane for a permission: "screen", "accessibility",
+ *  "microphone", "bluetooth", "automation". */
+export const openSettingsPane = (pane: string) =>
+  invokeCmd<string>("open_settings_pane", { pane });
 
 /** Remember that the user dragged the bar, so it stops being re-centred. */
 export const overlayBarMoved = () => invokeCmd<void>("overlay_bar_moved");

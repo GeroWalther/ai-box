@@ -30,6 +30,7 @@ import {
   listVoices,
   controlRequestAccess,
   controlTrusted,
+  openSettingsPane,
   overlayBarMoved,
   overlayClose,
   overlayEscape,
@@ -556,14 +557,21 @@ export default function ScreenAssist() {
               <>
                 {steps.length > 0 && <Trail steps={steps} />}
                 <p className="sa-say">{answer?.say}</p>
+                {/* A failed capture used to vanish: the model answers "I can't
+                    see your screen", which reads as the assistant being limited
+                    rather than as one switch the user can go and flip. */}
+                {answer?.captureError && (
+                  <p className="sa-grant">
+                    I couldn&apos;t take a screenshot, so that was answered blind.
+                    <button onClick={() => void openSettingsPane("screen")}>
+                      Open Screen Recording settings
+                    </button>
+                  </p>
+                )}
                 {needsAccess && (
                   <p className="sa-grant">
                     To let me click and type, switch AI Box on under Accessibility.
-                    <button
-                      onClick={() => {
-                        void controlRequestAccess();
-                      }}
-                    >
+                    <button onClick={() => void controlRequestAccess()}>
                       Open System Settings
                     </button>
                   </p>

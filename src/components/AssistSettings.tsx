@@ -11,7 +11,10 @@ import {
   listAssistModels,
   listLocalAssistModels,
   listVoices,
+  openSettingsPane,
   probeAssistModel,
+  requestScreenAccess,
+  screenAccess,
   setAssistHotkey,
   speak,
   type AssistModel,
@@ -46,12 +49,16 @@ export default function AssistSettings({ settings, onChange }: Props) {
    *  focus, because the user grants it in System Settings — another app — and
    *  would otherwise come back to a panel still claiming it is missing. */
   const [canControl, setCanControl] = useState(true);
+  const [canSeeScreen, setCanSeeScreen] = useState(true);
   /** Set while a newly picked model is being checked, and to its refusal after. */
   const [checking, setChecking] = useState(false);
   const [refusal, setRefusal] = useState("");
 
   useEffect(() => {
-    const check = () => void controlTrusted().then(setCanControl).catch(() => {});
+    const check = () => {
+      void controlTrusted().then(setCanControl).catch(() => {});
+      void screenAccess().then(setCanSeeScreen).catch(() => {});
+    };
     check();
     window.addEventListener("focus", check);
     return () => window.removeEventListener("focus", check);
@@ -302,6 +309,24 @@ export default function AssistSettings({ settings, onChange }: Props) {
             Esc or Stop halts it instantly. It will not buy, send, post or delete things,
             or touch passwords — for those it says so and leaves it to you.
           </p>
+
+          {!canSeeScreen && (
+            <p className="hint error">
+              macOS hasn&apos;t given AI Box permission to see your screen, so every
+              question is answered blind.{" "}
+              <button
+                type="button"
+                className="linkish"
+                onClick={() => {
+                  void requestScreenAccess();
+                  void openSettingsPane("screen");
+                }}
+              >
+                Open Screen Recording settings
+              </button>
+              , switch AI Box on, and restart it.
+            </p>
+          )}
 
           {settings.assistAct && !canControl && (
             <p className="hint error">
