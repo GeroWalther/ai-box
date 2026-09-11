@@ -1205,8 +1205,31 @@ async fn chat_completion(params: ChatCompletionParams) -> Result<serde_json::Val
             return Err(friendly_http_error(s, &t));
         }
         let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        return Ok(json["choices"][0]["message"].clone());
+        let choice = &json["choices"][0];
+        // A local model that ran out of room says so in a way nobody would
+        // recognise: HTTP 200, an empty answer, and finish_reason "length".
+        // Ollama's default window is 4096 tokens and one screenshot is about
+        // 4000 of them, so a vision question hits this every single time.
+        if choice["finish_reason"].as_str() == Some("length")
+            && choice["message"]["content"]
+                .as_str()
+                .map(|c| c.trim().is_empty())
+                .unwrap_or(true)
+        {
+            return Err(ran_out_of_context(&params.model));
+        }
+        return Ok(choice["message"].clone());
     }
+}
+
+/// What to do when a model answered with nothing because the prompt filled it.
+fn ran_out_of_context(model: &str) -> String {
+    let short = model.split(':').next().unwrap_or(model);
+    format!(
+        "{model} ran out of context before it could answer. A screenshot is about 4,000 \
+tokens and Ollama gives a model 4,096 by default. Make a roomier copy and pick that \
+instead:\n\n    printf 'FROM {model}\\nPARAMETER num_ctx 32768\\n' | ollama create {short}-screen -f -"
+    )
 }
 
 /// Expand a leading ~ to the user's home directory.
@@ -2817,6 +2840,15 @@ mod tests {
         assert!(out.contains("agentic harnesses"), "lost the real reason: {out}");
         // And it must not send the user off to check a key that is fine.
         assert!(!out.contains("API key"), "misleading hint: {out}");
+    }
+
+    #[test]
+    fn an_exhausted_context_is_explained_not_left_blank() {
+        let out = ran_out_of_context("qwen3-vl:8b");
+        assert!(out.contains("ran out of context"), "{out}");
+        // The way out has to be in the message: nobody guesses num_ctx.
+        assert!(out.contains("num_ctx 32768"), "{out}");
+        assert!(out.contains("qwen3-vl-screen"), "names the copy to create: {out}");
     }
 
     #[test]
