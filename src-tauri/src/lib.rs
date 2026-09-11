@@ -1087,16 +1087,52 @@ pub(crate) fn friendly_http_error(status: reqwest::StatusCode, body: &str) -> St
 }
 
 /// The human sentence out of an OpenAI-shaped error body, if there is one.
+///
+/// OpenRouter's own message is sometimes a placeholder — "Provider returned
+/// error" says nothing at all — while the upstream provider's real complaint
+/// sits in `metadata.raw` underneath it. When that happens the raw text is what
+/// the user needs, so it is pulled up and the placeholder dropped.
 fn provider_message(body: &str) -> Option<String> {
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
-    let msg = json["error"]["message"]
+    let err = &json["error"];
+    let msg = err["message"]
         .as_str()
-        .or_else(|| json["message"].as_str())?
+        .or_else(|| json["message"].as_str())
+        .unwrap_or("")
         .trim();
-    if msg.is_empty() {
-        return None;
-    }
-    Some(msg.chars().take(240).collect())
+
+    let raw = err["metadata"]["raw"]
+        .as_str()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(|r| {
+            // The raw field is often JSON again, one level down.
+            serde_json::from_str::<serde_json::Value>(r)
+                .ok()
+                .and_then(|v| {
+                    v["error"]["message"]
+                        .as_str()
+                        .or_else(|| v["message"].as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| r.to_string())
+        });
+    let provider = err["metadata"]["provider_name"].as_str().unwrap_or("").trim();
+
+    let detail = match (msg.is_empty(), raw) {
+        (true, None) => return None,
+        (false, None) => msg.to_string(),
+        (true, Some(r)) => r,
+        // A placeholder plus a real complaint: keep the complaint.
+        (false, Some(r)) if msg.eq_ignore_ascii_case("Provider returned error") => r,
+        (false, Some(r)) => format!("{msg} — {r}"),
+    };
+    let detail = if provider.is_empty() {
+        detail
+    } else {
+        format!("{detail} ({provider})")
+    };
+    Some(detail.chars().take(300).collect())
 }
 
 /// Transient errors worth retrying: rate limits and server errors.
@@ -2781,6 +2817,17 @@ mod tests {
         assert!(out.contains("agentic harnesses"), "lost the real reason: {out}");
         // And it must not send the user off to check a key that is fine.
         assert!(!out.contains("API key"), "misleading hint: {out}");
+    }
+
+    #[test]
+    fn a_placeholder_gives_way_to_the_providers_real_complaint() {
+        let body = r#"{"error":{"message":"Provider returned error","code":400,
+            "metadata":{"provider_name":"Chutes",
+            "raw":"{\"error\":{\"message\":\"audio input is not supported\"}}"}}}"#;
+        let out = friendly_http_error(reqwest::StatusCode::BAD_REQUEST, body);
+        assert!(out.contains("audio input is not supported"), "{out}");
+        assert!(out.contains("Chutes"), "should name the provider: {out}");
+        assert!(!out.contains("Provider returned error"), "placeholder kept: {out}");
     }
 
     #[test]
