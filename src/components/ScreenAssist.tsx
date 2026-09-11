@@ -66,7 +66,7 @@ export default function ScreenAssist() {
   const phaseRef = useRef<Phase>("idle");
   useEffect(() => {
     phaseRef.current = phase;
-  }, [phase]);
+  }, [phase, answer, steps.length, showSettings]);
   const [needsAccess, setNeedsAccess] = useState(false);
 
   // Set while a run is in flight; flipped by Stop and by Esc, and read between
@@ -99,6 +99,13 @@ export default function ScreenAssist() {
   useEffect(() => {
     const dock = dockRef.current;
     if (!dock || phase === "idle") return;
+    // The screen is the only real limit on how tall the answer may be, and it
+    // does not change as the window resizes — so capping against it cannot feed
+    // back into the measurement the way a `vh` cap did.
+    const ceiling = Math.max(200, (window.screen?.availHeight ?? 900) - 220);
+    const card = dock.querySelector<HTMLElement>(".sa-answer");
+    if (card) card.style.maxHeight = `${ceiling}px`;
+
     const fit = () => {
       const h = Math.ceil(dock.getBoundingClientRect().height) + 8;
       if (h > 8) void overlayFit(h).catch(() => {});

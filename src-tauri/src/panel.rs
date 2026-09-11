@@ -199,3 +199,71 @@ pub fn focus_webview(window: &tauri::WebviewWindow) -> Result<(), String> {
     }
     Ok(())
 }
+
+// AppKit geometry, declared here because the app has no Foundation binding and
+// needs exactly three structs.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NsPoint {
+    x: f64,
+    y: f64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NsSize {
+    width: f64,
+    height: f64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NsRect {
+    origin: NsPoint,
+    size: NsSize,
+}
+
+unsafe impl objc2::Encode for NsPoint {
+    const ENCODING: objc2::Encoding =
+        objc2::Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]);
+}
+unsafe impl objc2::Encode for NsSize {
+    const ENCODING: objc2::Encoding =
+        objc2::Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING]);
+}
+unsafe impl objc2::Encode for NsRect {
+    const ENCODING: objc2::Encoding =
+        objc2::Encoding::Struct("CGRect", &[NsPoint::ENCODING, NsSize::ENCODING]);
+}
+
+/// Change the window's height, keeping its bottom edge exactly where it is.
+///
+/// Two things make this better than Tauri's `set_size` + `set_position`. It is
+/// ONE window-server update rather than two, so the overlay does not flash as it
+/// resizes — a visible flicker every time the settings panel opened. And in
+/// Cocoa the frame origin is the BOTTOM-left corner, so holding it fixed anchors
+/// the bar where it sits and grows the window upward, with no repositioning
+/// arithmetic to get wrong.
+///
+/// Returns the height it settled on, in points.
+pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> Result<f64, String> {
+    let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut AnyObject;
+    if ptr.is_null() {
+        return Err("no NSWindow behind this window".into());
+    }
+    unsafe {
+        let obj = &*ptr;
+        let frame: NsRect = objc2::msg_send![obj, frame];
+        // A point or two of jitter as text reflows is not worth a redraw.
+        if (frame.size.height - height).abs() < 2.0 {
+            return Ok(frame.size.height);
+        }
+        let next = NsRect {
+            origin: frame.origin,
+            size: NsSize {
+                width: frame.size.width,
+                height,
+            },
+        };
+        let _: () = objc2::msg_send![obj, setFrame: next, display: true];
+        Ok(height)
+    }
+}

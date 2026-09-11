@@ -302,10 +302,11 @@ pub const BAR: &str = "screen-assist-bar";
 /// screen. The page reports its real height and `overlay_fit` shrinks the
 /// window to it.
 const BAR_H: f64 = 92.0;
-/// The tallest it may grow to. Must clear the tallest the page can actually be
-/// — the answer card's own 420px cap, plus the bar, plus the settings panel —
-/// or the window would clip content the page thinks it is showing.
-const BAR_MAX_H: f64 = 760.0;
+/// How much of the screen the bar may take at most. The page caps its own
+/// content against the same screen, so this is a backstop rather than the thing
+/// that decides — a window shorter than its content would clip an answer the
+/// page believes it is showing.
+const BAR_MAX_SCREEN_FRACTION: f64 = 0.92;
 const BAR_W: f64 = 760.0;
 
 /// Set once the user drags the bar somewhere they want it.
@@ -461,21 +462,34 @@ pub fn overlay_marks(app: tauri::AppHandle, annotations: serde_json::Value) -> R
 #[tauri::command]
 pub fn overlay_fit(app: tauri::AppHandle, height: f64) -> Result<(), String> {
     let bar = app.get_webview_window(BAR).ok_or("no bar")?;
-    let scale = bar.scale_factor().unwrap_or(1.0);
-    let size = bar.outer_size().map_err(|e| e.to_string())?;
-    let pos = bar.outer_position().map_err(|e| e.to_string())?;
+    let screen_h = bar
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.size().height as f64 / m.scale_factor())
+        .unwrap_or(900.0);
+    let wanted = height.clamp(48.0, screen_h * BAR_MAX_SCREEN_FRACTION);
 
-    let current = size.height as f64 / scale;
-    let wanted = height.clamp(48.0, BAR_MAX_H);
-    // A point or two of jitter as text reflows is not worth a window resize.
-    if (current - wanted).abs() < 2.0 {
+    #[cfg(target_os = "macos")]
+    {
+        crate::panel::set_height(&bar, wanted)?;
         return Ok(());
     }
-    let top = pos.y as f64 / scale + (current - wanted);
-    bar.set_size(tauri::LogicalSize::new(BAR_W, wanted))
-        .map_err(|e| e.to_string())?;
-    bar.set_position(tauri::LogicalPosition::new(pos.x as f64 / scale, top))
-        .map_err(|e| e.to_string())
+    #[cfg(not(target_os = "macos"))]
+    {
+        let scale = bar.scale_factor().unwrap_or(1.0);
+        let size = bar.outer_size().map_err(|e| e.to_string())?;
+        let pos = bar.outer_position().map_err(|e| e.to_string())?;
+        let current = size.height as f64 / scale;
+        if (current - wanted).abs() < 2.0 {
+            return Ok(());
+        }
+        let top = pos.y as f64 / scale + (current - wanted);
+        bar.set_size(tauri::LogicalSize::new(BAR_W, wanted))
+            .map_err(|e| e.to_string())?;
+        bar.set_position(tauri::LogicalPosition::new(pos.x as f64 / scale, top))
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Take the keyboard, from wherever it currently is.
