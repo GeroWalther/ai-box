@@ -99,6 +99,9 @@ input[type="range"]:focus {
 }
 .modal-head,
 .modal-foot {
+  /* Same reason as the tab row: fixed furniture around a scrolling body must
+     not give up its height to make room for the body. */
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -117,6 +120,10 @@ input[type="range"]:focus {
 /* Tabs. The row scrolls sideways rather than wrapping, so a narrow window gets
    a shorter row instead of a two-line one that shifts the body down. */
 .modal-tabs {
+  /* Never shrink: it shares a column with a scrolling body, and a flex child
+     gives up its own height before its sibling scrolls — which squashed the row
+     to half a line of text. */
+  flex: none;
   display: flex;
   gap: 2px;
   padding: 8px 12px 0;
@@ -132,11 +139,15 @@ input[type="range"]:focus {
   color: var(--muted);
   font: inherit;
   font-size: 13px;
-  padding: 7px 12px 9px;
+  padding: 7px 12px 8px;
+  /* The underline sits INSIDE the row. It used to be pulled a pixel below with
+     a negative margin, to sit on the row's own border — but the row scrolls
+     sideways, and a scroll container clips whatever hangs outside it, so the
+     underline and the bottom of every label were cut off. */
   border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
   cursor: pointer;
   white-space: nowrap;
+  line-height: 1.5;
 }
 .modal-tab:hover { color: var(--text); }
 .modal-tab.active {
