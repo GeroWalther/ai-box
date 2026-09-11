@@ -9,6 +9,12 @@
   <true/>
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
+  <!-- The microphone, for push-to-talk and dictation. Under the hardened
+       runtime this is not optional: without it macOS refuses audio input to a
+       signed build outright, which is why a dev build could hear and the
+       installed one could not. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
   <!-- Screen Assist acts on the Mac through Apple Events (volume, appearance,
        opening and quitting apps). Under the hardened runtime this is refused
        without the entitlement, silently. -->

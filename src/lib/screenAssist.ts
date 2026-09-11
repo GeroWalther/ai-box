@@ -11,7 +11,6 @@ import {
   controlStatus,
   controlTrusted,
   listVoices,
-  overlayActing,
   overlayPassClicks,
   speak,
   stopSpeaking,
@@ -164,9 +163,6 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
   let cutShort = false;
   let sawScreen = !!screenshot;
 
-  // Escape belongs to the user for as long as this runs, wherever the focus has
-  // wandered to. Released again in the finally at the bottom.
-  if (act) await overlayActing(true).catch(() => {});
   try {
     for (let round = 0; round < limit; round++) {
       const msg = await chatCompletion({
@@ -286,7 +282,8 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
     const answer = parseScreenAnswer(wrap.content ?? null);
     return { ...answer, sawScreen, steps, cutShort: true };
   } finally {
-    if (act) await overlayActing(false).catch(() => {});
+    // A run that ended badly must never leave the bar unable to take a click.
+    await overlayPassClicks(false).catch(() => {});
   }
 }
 

@@ -496,5 +496,6 @@ export const controlStatus = () => invokeCmd<ControlStatus>("control_status");
 export const overlayBarMoved = () => invokeCmd<void>("overlay_bar_moved");
 /** Let clicks pass through the ask bar, so it cannot press its own UI. */
 export const overlayPassClicks = (on: boolean) => invokeCmd<void>("overlay_pass_clicks", { on });
-/** Take over Escape globally for the duration of a run, as the stop key. */
-export const overlayActing = (active: boolean) => invokeCmd<void>("overlay_acting", { active });
+/** Take Escape globally while the bar is open — the panel is non-activating, so
+ *  a local key handler stops hearing it the moment anything else takes focus. */
+export const overlayEscape = (active: boolean) => invokeCmd<void>("overlay_escape", { active });

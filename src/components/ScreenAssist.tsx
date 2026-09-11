@@ -24,6 +24,7 @@ import {
   controlTrusted,
   overlayBarMoved,
   overlayClose,
+  overlayEscape,
   overlayMarks,
 } from "../lib/api";
 import type { Step } from "../lib/control";
@@ -45,6 +46,12 @@ export default function ScreenAssist() {
   const [steps, setSteps] = useState<Step[]>([]);
   const [voices, setVoices] = useState<MacVoice[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+
+  /** The live phase, for listeners that outlive a render. */
+  const phaseRef = useRef<Phase>("idle");
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
   const [needsAccess, setNeedsAccess] = useState(false);
 
   // Set while a run is in flight; flipped by Stop and by Esc, and read between
@@ -137,6 +144,7 @@ export default function ScreenAssist() {
 
   const dismiss = useCallback(() => {
     stop.current = true;
+    void overlayEscape(false).catch(() => {});
     recorder.current.cancel();
     setRecording(false);
     setPhase("idle");
@@ -162,6 +170,7 @@ export default function ScreenAssist() {
         setQuestion("");
         setWithScreen(s.assistAutoCapture || e.payload?.withScreen === true);
         setPhase("asking");
+        void overlayEscape(true).catch(() => {});
         if (e.payload?.listening) {
           // Push-to-talk: the key is already down, so start recording now
           // rather than making the user click a mic they did not reach for.
@@ -190,20 +199,27 @@ export default function ScreenAssist() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [withScreen, settings]);
 
-  // Escape pressed anywhere on the Mac while a run is in flight. The overlay's
-  // own key handler cannot hear it: the first click hands focus to the app being
-  // driven, so this arrives from the global shortcut instead.
+  // Escape, pressed anywhere on the Mac. It arrives from the global shortcut
+  // rather than a keydown here, because the first click of a run hands focus to
+  // the app being driven and this window stops hearing keys at all.
+  //
+  // One key, two meanings, in the order a person expects: stop what you are
+  // doing, and if you are not doing anything, go away.
   useEffect(() => {
-    const un = listen("screen-assist://stop", () => {
-      stop.current = true;
-      setSteps((prev) =>
-        prev.length ? prev : [{ tool: "stop", message: "Stopping…", ok: true }]
-      );
+    const un = listen("screen-assist://escape", () => {
+      if (phaseRef.current === "thinking" && !stop.current) {
+        stop.current = true;
+        setSteps((prev) =>
+          prev.length ? prev : [{ tool: "stop", message: "Stopping…", ok: true }]
+        );
+        return;
+      }
+      dismiss();
     });
     return () => {
       void un.then((f) => f());
     };
-  }, []);
+  }, [dismiss]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {

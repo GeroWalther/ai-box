@@ -451,14 +451,18 @@ pub fn overlay_pass_clicks(app: tauri::AppHandle, on: bool) -> Result<(), String
     Ok(())
 }
 
-/// Escape means STOP while Screen Assist is driving the Mac.
+/// Escape belongs to Screen Assist while its bar is open.
 ///
-/// It has to be global: the first click hands key focus to whatever app is being
-/// driven, so the overlay's own keydown handler stops hearing anything. For the
-/// few seconds a run lasts, Escape is taken from that app and means "stop this"
-/// — which is what someone pressing it at that moment intends.
+/// It has to be global rather than a keydown handler in the overlay: the panel
+/// is non-activating, and the moment the assistant clicks something — or the
+/// user does — key focus is in another app and the overlay stops hearing
+/// anything at all. That is exactly when Escape matters most, whether it means
+/// "stop driving my Mac" or just "close this".
+///
+/// Taken when the bar opens and given straight back when it closes, so the only
+/// seconds it is borrowed are seconds the user is looking at the bar.
 #[tauri::command]
-pub fn overlay_acting(app: tauri::AppHandle, active: bool) -> Result<(), String> {
+pub fn overlay_escape(app: tauri::AppHandle, active: bool) -> Result<(), String> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
     let gs = app.global_shortcut();
@@ -474,7 +478,7 @@ pub fn overlay_acting(app: tauri::AppHandle, active: bool) -> Result<(), String>
     let _ = gs.unregister("Escape");
     gs.on_shortcut("Escape", |app, _shortcut, event| {
         if event.state() == ShortcutState::Pressed {
-            let _ = app.emit_to(BAR, "screen-assist://stop", ());
+            let _ = app.emit_to(BAR, "screen-assist://escape", ());
         }
     })
     .map_err(|e| format!("Could not take over Escape: {e}"))
@@ -483,6 +487,8 @@ pub fn overlay_acting(app: tauri::AppHandle, active: bool) -> Result<(), String>
 /// Dismiss everything.
 #[tauri::command]
 pub fn overlay_close(app: tauri::AppHandle) -> Result<(), String> {
+    // Whatever route got us here, Escape goes back to the rest of the Mac.
+    let _ = overlay_escape(app.clone(), false);
     if let Some(bar) = app.get_webview_window(BAR) {
         let _ = bar.hide();
     }
