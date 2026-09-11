@@ -577,8 +577,13 @@ pub struct AssistModel {
     pub prompt_price: f64,
 }
 
-/// Models that can at least see, newest first, with the ones that can also hear
-/// marked. The caller decides which tier it needs.
+/// Models that can do the whole job, newest first.
+///
+/// All three capabilities are required, not preferred. Screen Assist shows a
+/// screenshot (image in), takes the question as held-key audio (audio in), and
+/// acts through tool calls — a model missing any one of those does not half
+/// work, it fails at the moment the user tries the thing it cannot do. Better
+/// to leave it out of the menu than to let someone pick it and find out.
 #[tauri::command]
 pub async fn list_assist_models(params: crate::video::KeyParams) -> Result<Vec<AssistModel>, String> {
     let client = reqwest::Client::new();
@@ -614,7 +619,15 @@ pub async fn list_assist_models(params: crate::video::KeyParams) -> Result<Vec<A
             if id.is_empty() || id.ends_with(":batch") {
                 return None;
             }
-            if !has(arch, "input_modalities", "image") || !has(arch, "output_modalities", "text") {
+            if !has(arch, "input_modalities", "image")
+                || !has(arch, "input_modalities", "audio")
+                || !has(arch, "output_modalities", "text")
+            {
+                return None;
+            }
+            // Acting is tool calls. A model that cannot make them can still
+            // describe a screen, but it can never do anything on it.
+            if !has(m, "supported_parameters", "tools") {
                 return None;
             }
             Some(AssistModel {
@@ -622,7 +635,7 @@ pub async fn list_assist_models(params: crate::video::KeyParams) -> Result<Vec<A
                 name: m["name"].as_str().unwrap_or("").to_string(),
                 created: m["created"].as_u64().unwrap_or(0),
                 sees: true,
-                hears: has(arch, "input_modalities", "audio"),
+                hears: true,
                 prompt_price: m["pricing"]["prompt"]
                     .as_str()
                     .and_then(|s| s.parse::<f64>().ok())
@@ -635,6 +648,74 @@ pub async fn list_assist_models(params: crate::video::KeyParams) -> Result<Vec<A
         .collect();
     models.sort_by(|a, b| b.created.cmp(&a.created));
     Ok(models)
+}
+
+/// Models already on this Mac that could actually do this job.
+///
+/// Ollama reports what each model can do, so this asks rather than guessing from
+/// the name — "qwen2.5" and "qwen2.5vl" differ by two characters and by whether
+/// there are eyes behind them.
+///
+/// Audio is not required here, unlike the hosted list: essentially no local
+/// model takes audio, so requiring it would empty the menu. A local model means
+/// typed questions, which the frontend says plainly.
+#[tauri::command]
+pub async fn list_local_assist_models(base_url: String) -> Result<Vec<String>, String> {
+    let root = base_url
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .trim_end_matches('/')
+        .to_string();
+    let client = reqwest::Client::new();
+    let tags: serde_json::Value = client
+        .get(format!("{root}/api/tags"))
+        .send()
+        .await
+        .map_err(|e| format!("Could not reach Ollama at {root}: {e}"))?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let names: Vec<String> = tags["models"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut usable = Vec::new();
+    for name in names {
+        let shown: serde_json::Value = match client
+            .post(format!("{root}/api/show"))
+            .json(&serde_json::json!({ "model": name }))
+            .send()
+            .await
+        {
+            Ok(r) => match r.json().await {
+                Ok(v) => v,
+                // An older Ollama that does not report capabilities is not a
+                // reason to hide every local model; let it through and let the
+                // frontend's warning do the work.
+                Err(_) => {
+                    usable.push(name);
+                    continue;
+                }
+            },
+            Err(_) => continue,
+        };
+        let caps = shown["capabilities"].as_array().cloned().unwrap_or_default();
+        if caps.is_empty() {
+            usable.push(name);
+            continue;
+        }
+        let can = |want: &str| caps.iter().any(|c| c.as_str() == Some(want));
+        if can("vision") && can("tools") {
+            usable.push(name);
+        }
+    }
+    Ok(usable)
 }
 
 // ---- the global hotkey ----------------------------------------------------

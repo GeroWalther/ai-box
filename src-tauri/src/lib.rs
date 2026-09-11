@@ -2686,6 +2686,7 @@ pub fn run() {
             screen::assist_to_chat,
             screen::overlay_close,
             screen::list_assist_models,
+            screen::list_local_assist_models,
             screen::set_assist_hotkey,
             screen::overlay_pass_clicks,
             screen::overlay_bar_moved,

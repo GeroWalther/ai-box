@@ -9,7 +9,7 @@ import {
   controlRequestAccess,
   controlTrusted,
   listAssistModels,
-  listOllamaModels,
+  listLocalAssistModels,
   listVoices,
   setAssistHotkey,
   speak,
@@ -37,9 +37,8 @@ const HOTKEYS = [
 export default function AssistSettings({ settings, onChange }: Props) {
   const [voices, setVoices] = useState<MacVoice[]>([]);
   const [models, setModels] = useState<AssistModel[]>([]);
-  /** Models already on this Mac. Free, private, and they work with no key —
-   *  but only the vision ones can see a screen, which is why they are labelled
-   *  rather than filtered: Ollama does not say which is which. */
+  /** Models on this Mac that can see a screen and make tool calls. Ollama
+   *  reports both, so this list is filtered on fact rather than on the name. */
   const [local, setLocal] = useState<string[]>([]);
   const [hotkeyError, setHotkeyError] = useState("");
   /** Whether macOS lets AI Box drive the mouse and keyboard. Re-checked on
@@ -70,7 +69,7 @@ export default function AssistSettings({ settings, onChange }: Props) {
   }, [settings.openrouterKey]);
 
   useEffect(() => {
-    listOllamaModels(settings.ollamaUrl)
+    listLocalAssistModels(settings.ollamaUrl)
       .then(setLocal)
       .catch(() => setLocal([]));
   }, [settings.ollamaUrl]);
@@ -155,7 +154,6 @@ export default function AssistSettings({ settings, onChange }: Props) {
                     {free.map((m) => (
                       <option key={m.id} value={m.id}>
                         {m.name || m.id}
-                        {m.hears ? " · hears" : ""}
                       </option>
                     ))}
                   </optgroup>
@@ -165,7 +163,6 @@ export default function AssistSettings({ settings, onChange }: Props) {
                     {paid.map((m) => (
                       <option key={m.id} value={m.id}>
                         {m.name || m.id}
-                        {m.hears ? " · hears" : ""}
                       </option>
                     ))}
                   </optgroup>
@@ -179,23 +176,19 @@ export default function AssistSettings({ settings, onChange }: Props) {
           <p className="hint">
             {isLocal ? (
               <>
-                Runs on this Mac. Free, and the screenshot never leaves it — but it
-                has to be a <b>vision</b> model (llava, llama3.2-vision, qwen2-vl,
-                gemma3) or it cannot see the screen, and none of them can hear, so
-                voice questions will need a hosted model.
+                Runs on this Mac: free, and the screenshot never leaves it. It can
+                see and it can act, but no local model can <i>hear</i> — so this one
+                is typed questions only.
               </>
             ) : selected ? (
               <>
-                ${(selected.promptPrice * 1e6).toFixed(2)} / M input tokens.{" "}
-                {selected.hears ? (
-                  "Takes your voice directly, so speaking needs no separate transcription."
-                ) : (
-                  <b>This model can&apos;t hear — voice questions won&apos;t work, only typing.</b>
-                )}
+                ${(selected.promptPrice * 1e6).toFixed(2)} / M input tokens. Sees the
+                screen, takes your voice directly, and can act on what it finds.
               </>
             ) : (
-              `${models.length} hosted models can see a screenshot, read live from ` +
-              `OpenRouter${local.length ? `, plus ${local.length} already on this Mac` : ""}.`
+              `${models.length} hosted models can see, hear and act — read live from ` +
+              `OpenRouter${local.length ? `, plus ${local.length} on this Mac` : ""}. ` +
+              `Anything missing one of the three is left out rather than offered.`
             )}
           </p>
 

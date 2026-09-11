@@ -442,12 +442,16 @@ export interface AssistModel {
   created: number;
   /** Accepts a screenshot. Every model in this list does. */
   sees: boolean;
-  /** Accepts microphone audio, so speech needs no separate transcription. */
+  /** Accepts microphone audio. Every model in this list does — one that cannot
+   *  hear is filtered out rather than offered and discovered later. */
   hears: boolean;
   promptPrice: number;
 }
 export const listAssistModels = (apiKey: string) =>
   invokeCmd<AssistModel[]>("list_assist_models", { params: { apiKey } });
+/** Ollama models on this Mac that can see a screen and make tool calls. */
+export const listLocalAssistModels = (baseUrl: string) =>
+  invokeCmd<string[]>("list_local_assist_models", { baseUrl });
 
 /** Record an overlay exchange in Agentic Chat; `focus` continues it there. */
 export const assistToChat = (
