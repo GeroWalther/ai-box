@@ -1059,22 +1059,44 @@ struct ChatCompletionParams {
 }
 
 /// Map a provider HTTP error to an actionable message instead of a raw dump.
+///
+/// The provider's own sentence always survives when there is one. Replacing it
+/// with a guess sends people to fix the wrong thing: a 403 reading "this model
+/// is only available on agentic harnesses" became "check your API key", and the
+/// key was perfect.
 fn friendly_http_error(status: reqwest::StatusCode, body: &str) -> String {
     let code = status.as_u16();
     let hint = match code {
-        401 | 403 => "Unauthorized — check your API key in Settings.",
+        401 => "Unauthorized — check your API key in Settings.",
+        403 => "Refused by the provider.",
         404 => "Model or endpoint not found — pick a different model / check the base URL.",
         402 => "Payment required — your provider account is out of credit.",
         429 => "Rate limited — wait a moment and try again.",
         500..=599 => "The provider had a server error — try again shortly.",
         _ => "",
     };
-    if hint.is_empty() {
-        let snippet: String = body.chars().take(300).collect();
-        format!("HTTP {code}: {snippet}")
-    } else {
-        format!("{hint} (HTTP {code})")
+    match (hint.is_empty(), provider_message(body)) {
+        (true, None) => {
+            let snippet: String = body.chars().take(300).collect();
+            format!("HTTP {code}: {snippet}")
+        }
+        (true, Some(msg)) => format!("HTTP {code}: {msg}"),
+        (false, None) => format!("{hint} (HTTP {code})"),
+        (false, Some(msg)) => format!("{hint} {msg} (HTTP {code})"),
     }
+}
+
+/// The human sentence out of an OpenAI-shaped error body, if there is one.
+fn provider_message(body: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(body).ok()?;
+    let msg = json["error"]["message"]
+        .as_str()
+        .or_else(|| json["message"].as_str())?
+        .trim();
+    if msg.is_empty() {
+        return None;
+    }
+    Some(msg.chars().take(240).collect())
 }
 
 /// Transient errors worth retrying: rate limits and server errors.
@@ -2748,6 +2770,29 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_refusal_keeps_the_reason_the_provider_gave() {
+        let body = r#"{"error":{"message":"model X is only available on agentic harnesses","code":403}}"#;
+        let out = friendly_http_error(reqwest::StatusCode::FORBIDDEN, body);
+        assert!(out.contains("agentic harnesses"), "lost the real reason: {out}");
+        // And it must not send the user off to check a key that is fine.
+        assert!(!out.contains("API key"), "misleading hint: {out}");
+    }
+
+    #[test]
+    fn a_real_auth_failure_still_points_at_the_key() {
+        let body = r#"{"error":{"message":"No auth credentials found"}}"#;
+        let out = friendly_http_error(reqwest::StatusCode::UNAUTHORIZED, body);
+        assert!(out.contains("API key"), "{out}");
+        assert!(out.contains("No auth credentials found"), "{out}");
+    }
+
+    #[test]
+    fn an_unparseable_body_does_not_lose_the_hint() {
+        let out = friendly_http_error(reqwest::StatusCode::TOO_MANY_REQUESTS, "<html>nope</html>");
+        assert!(out.contains("Rate limited"), "{out}");
+    }
+
     use super::*;
 
     /// The exact body OpenRouter returned for the prompt "Luxury Hotels &
