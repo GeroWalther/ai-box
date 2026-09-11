@@ -78,6 +78,20 @@ export default function ScreenAssist() {
   const inputRef = useRef<HTMLInputElement>(null);
   const dockRef = useRef<HTMLDivElement>(null);
 
+  /**
+   * The live settings, for everything that runs from a listener.
+   *
+   * The hotkey listener is registered once and holds the closure it was created
+   * with, so `settings` inside it is frozen at whatever it was when this window
+   * mounted. That is how push-to-talk came to refuse a spoken question with
+   * "this model cannot hear" while the panel above it plainly showed a hosted
+   * model: the mic was still looking at a local model chosen ten minutes ago.
+   */
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
   // Keep the window exactly as tall as what is drawn in it. Everything outside
   // the bar is transparent, and a transparent window still takes every click
   // that lands on it — so a window sized for the tallest possible answer puts an
@@ -169,6 +183,7 @@ export default function ScreenAssist() {
    */
   const persist = useCallback((patch: Partial<Settings>) => {
     saveSettings({ ...loadSettings(), ...patch });
+    settingsRef.current = { ...settingsRef.current, ...patch };
     setSettings((prev) => ({ ...prev, ...patch }));
   }, []);
 
@@ -177,6 +192,7 @@ export default function ScreenAssist() {
   useEffect(() => {
     const un = listen<Partial<Settings>>(SETTINGS_EVENT, (e) => {
       if (e.payload && typeof e.payload === "object") {
+        settingsRef.current = mergeBroadcast(settingsRef.current, e.payload);
         setSettings((prev) => mergeBroadcast(prev, e.payload));
       }
     });
@@ -189,11 +205,15 @@ export default function ScreenAssist() {
   const refreshSettings = useCallback(() => {
     const s = { ...loadSettings(), ...secrets.current };
     setSettings(s);
+    // Synchronously too: the hotkey may start recording in the very next line,
+    // before React has re-rendered, and it must not act on the previous model.
+    settingsRef.current = s;
     // Re-read the keychain too: a key added since this window was created would
     // otherwise stay invisible to the overlay until the whole app restarted.
     void loadSecrets()
       .then((sec) => {
         secrets.current = sec;
+        settingsRef.current = { ...settingsRef.current, ...sec };
         setSettings((prev) => ({ ...prev, ...sec }));
       })
       .catch(() => {});
@@ -310,12 +330,13 @@ export default function ScreenAssist() {
     setSteps([]);
     setNeedsAccess(false);
     stop.current = false;
+    const live = settingsRef.current;
     try {
-      const result = await ask(settings, {
+      const result = await ask(live, {
         text,
         clip,
         withScreen,
-        act: settings.assistAct,
+        act: live.assistAct,
         history: history.current,
         stopped: () => stop.current,
         onStep: (step, done) =>
@@ -333,7 +354,7 @@ export default function ScreenAssist() {
       // A run that clicked took key status to the app it drove. Take it back so
       // the next question can simply be typed.
       focusInput();
-      void say(settings, result.say, result.lang);
+      void say(live, result.say, result.lang);
       // Filed under a "Screen Assist" chat session, so the overlay needs no
       // history of its own and these turn up in search and device sync.
       const asked = text.trim() || "(spoken question)";
@@ -345,7 +366,7 @@ export default function ScreenAssist() {
       history.current = [...history.current, { q: asked, a: result.say }].slice(-3);
       // Only worth offering once the user has actually asked for something to
       // be done and been unable to have it done.
-      if (settings.assistAct) {
+      if (live.assistAct) {
         controlTrusted()
           .then((ok) => setNeedsAccess(!ok))
           .catch(() => {});
@@ -359,10 +380,10 @@ export default function ScreenAssist() {
       // or blocked by a data policy, and it will refuse every time. Remember it
       // so both pickers stop offering it, rather than letting the user rediscover
       // this on their next question.
-      if (/\(HTTP 40[34]\)/.test(message) && !settings.assistModel.startsWith(LOCAL_PREFIX)) {
+      if (/\(HTTP 40[34]\)/.test(message) && !live.assistModel.startsWith(LOCAL_PREFIX)) {
         persist({
           assistRejected: [
-            ...new Set([...(loadSettings().assistRejected ?? []), settings.assistModel]),
+            ...new Set([...(loadSettings().assistRejected ?? []), live.assistModel]),
           ],
         });
         setError(
@@ -374,7 +395,7 @@ export default function ScreenAssist() {
 
   async function startRecording() {
     if (recorder.current.recording) return;
-    if (settings.assistModel.startsWith(LOCAL_PREFIX)) {
+    if (settingsRef.current.assistModel.startsWith(LOCAL_PREFIX)) {
       setError(
         "This model runs on your Mac and cannot hear — no local model can. Type your " +
           "question, or pick a hosted model under ⚙."
