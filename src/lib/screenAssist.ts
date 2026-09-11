@@ -354,7 +354,8 @@ export class Recorder {
   private chunks: BlobPart[] = [];
   private stream: MediaStream | null = null;
 
-  /** Formats OpenRouter accepts, best first. */
+  /** Containers to record in, best first. What is SENT is always WAV — see
+   *  `stop` — so this only decides what the browser captures into. */
   private static readonly CANDIDATES = [
     { mime: "audio/webm;codecs=opus", format: "webm" },
     { mime: "audio/webm", format: "webm" },
@@ -403,6 +404,16 @@ export class Recorder {
     // A tap rather than a hold produces a few hundred bytes of silence; sending
     // that wastes a call and gets a confused answer back.
     if (blob.size < 1200) return null;
+
+    // Converted to WAV rather than sent as recorded. The OpenAI audio schema
+    // names exactly two formats, wav and mp3; Google happily takes the WebM
+    // this webview produces, and a strict provider rejects the whole message
+    // with "data did not match any variant of untagged enum
+    // ChatCompletionRequestUserMessageContent" — which reads like a bug in the
+    // app rather than an unsupported container. Converting once here means the
+    // recording works everywhere instead of on whichever provider is lenient.
+    const wav = await toWav(blob).catch(() => null);
+    if (wav) return wav;
     return { data: await blobToBase64(blob), format: this.format };
   }
 
@@ -418,6 +429,74 @@ export class Recorder {
   get recording(): boolean {
     return this.recorder?.state === "recording";
   }
+}
+
+/**
+ * Decode whatever the browser recorded and re-encode it as 16 kHz mono WAV.
+ *
+ * Mono because speech is, and 16 kHz because that is what speech models resample
+ * to anyway — together they keep a WAV, which is uncompressed, roughly the size
+ * of the compressed original rather than ten times it.
+ */
+async function toWav(blob: Blob): Promise<Clip> {
+  const AudioCtx: typeof AudioContext =
+    window.AudioContext ?? (window as any).webkitAudioContext;
+  const ctx = new AudioCtx();
+  try {
+    const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+    const pcm = resampleToMono(decoded, 16000);
+    return { data: await blobToBase64(encodeWav(pcm, 16000)), format: "wav" };
+  } finally {
+    void ctx.close();
+  }
+}
+
+/** Average the channels together and resample, linearly, to `rate`. */
+function resampleToMono(buffer: AudioBuffer, rate: number): Float32Array {
+  const channels: Float32Array[] = [];
+  for (let c = 0; c < buffer.numberOfChannels; c++) channels.push(buffer.getChannelData(c));
+
+  const ratio = buffer.sampleRate / rate;
+  const out = new Float32Array(Math.max(1, Math.floor(buffer.length / ratio)));
+  for (let i = 0; i < out.length; i++) {
+    const at = i * ratio;
+    const low = Math.floor(at);
+    const high = Math.min(low + 1, buffer.length - 1);
+    const t = at - low;
+    let sum = 0;
+    for (const ch of channels) sum += ch[low] * (1 - t) + ch[high] * t;
+    out[i] = sum / channels.length;
+  }
+  return out;
+}
+
+/** 16-bit PCM WAV, the one container every provider in the OpenAI schema takes. */
+function encodeWav(samples: Float32Array, rate: number): Blob {
+  const bytes = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(bytes);
+  const ascii = (at: number, text: string) => {
+    for (let i = 0; i < text.length; i++) view.setUint8(at + i, text.charCodeAt(i));
+  };
+  ascii(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  ascii(8, "WAVEfmt ");
+  view.setUint32(16, 16, true); // fmt chunk size
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true); // byte rate
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+  ascii(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+
+  for (let i = 0; i < samples.length; i++) {
+    // Clamped before scaling: a sample just past ±1 would otherwise wrap round
+    // to the opposite extreme and click.
+    const v = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+  }
+  return new Blob([bytes], { type: "audio/wav" });
 }
 
 function blobToBase64(blob: Blob): Promise<string> {
