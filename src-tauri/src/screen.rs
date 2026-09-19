@@ -84,7 +84,44 @@ System Settings → Privacy & Security → Screen Recording, then restart it."
     if bytes.is_empty() {
         return Err("Screen capture produced an empty image. Check Screen Recording permission.".into());
     }
-    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+    Ok(base64::engine::general_purpose::STANDARD.encode(&shrink(bytes)))
+}
+
+/// The widest a screenshot is sent at, in pixels.
+///
+/// A Retina capture is 2× what the user is actually looking at, and that second
+/// factor of two costs FOUR times the pixels for nothing anyone can read. The
+/// difference is not marginal: measured on an M4 Pro against a local vision
+/// model, the same screen took 49 seconds at 3024px and 13 at 1512 — 4,049
+/// prompt tokens against 1,477 — and the answers were if anything better at the
+/// smaller size, because the model was not tiling a 6-megapixel image.
+///
+/// It is the same saving on a hosted model, where those tokens are the bill.
+const MAX_SHOT_WIDTH: u32 = 1512;
+
+/// Scale a capture down to something worth sending, if it is bigger.
+///
+/// Returns the original bytes unchanged on any failure: a screenshot that is
+/// merely larger than ideal is worth far more than no screenshot at all.
+fn shrink(bytes: Vec<u8>) -> Vec<u8> {
+    let Ok(img) = image::load_from_memory(&bytes) else {
+        return bytes;
+    };
+    if img.width() <= MAX_SHOT_WIDTH {
+        return bytes;
+    }
+    let height = (img.height() as f64 * (MAX_SHOT_WIDTH as f64 / img.width() as f64)).round() as u32;
+    // Lanczos3 rather than nearest: small UI text has to survive the trip, and
+    // that is most of what the model is being asked to read.
+    let small = img.resize_exact(MAX_SHOT_WIDTH, height.max(1), image::imageops::FilterType::Lanczos3);
+    let mut out = std::io::Cursor::new(Vec::new());
+    if small
+        .write_to(&mut out, image::ImageFormat::Png)
+        .is_err()
+    {
+        return bytes;
+    }
+    out.into_inner()
 }
 
 /// Logical size of the display the overlay covers, so the frontend can map the
