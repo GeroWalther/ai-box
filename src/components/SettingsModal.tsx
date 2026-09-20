@@ -5,7 +5,13 @@
 // which keys it holds, what your phone can reach — and stacking them meant
 // scrolling past three unrelated panels to reach the one you came for.
 import { useState } from "react";
-import { DIRECT_PROVIDERS, type Settings } from "../lib/settings";
+import {
+  DIRECT_PROVIDERS,
+  LOCAL_PREFIX,
+  directProviderOf,
+  type Settings,
+} from "../lib/settings";
+import { useDirectModels } from "../hooks/useDirectModels";
 import AgentSettings from "./AgentSettings";
 import AssistSettings from "./AssistSettings";
 import Diagnostics from "./Diagnostics";
@@ -27,8 +33,19 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "about", label: "Diagnostics" },
 ];
 
+/** Where a chosen model's request actually goes, in words. */
+function billedBy(model: string): string {
+  if (model.startsWith(LOCAL_PREFIX)) return "this Mac — nothing is billed";
+  const direct = directProviderOf(model);
+  return direct ? `${direct.label}, on your key` : "OpenRouter";
+}
+
 export default function SettingsModal({ settings, onChange, onClose }: Props) {
   const [tab, setTab] = useState<Tab>("general");
+  // Only to show each key's state: how many models it brought back, or that it
+  // was refused. A key that types cleanly and silently does nothing is the
+  // failure this is here to prevent.
+  const directModels = useDirectModels(settings);
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -101,21 +118,51 @@ export default function SettingsModal({ settings, onChange, onClose }: Props) {
                   every picker, billed by them rather than through OpenRouter. Leave
                   one blank and nothing changes.
                 </p>
-                {DIRECT_PROVIDERS.map((p) => (
-                  <div className="field" key={p.id}>
-                    <label>{p.label}</label>
-                    <input
-                      type="password"
-                      placeholder={`Key from ${p.hint}`}
-                      value={String(settings[p.key] ?? "")}
-                      onChange={(e) => onChange({ [p.key]: e.target.value.trim() })}
-                    />
-                  </div>
-                ))}
+                {DIRECT_PROVIDERS.map((p) => {
+                  const key = String(settings[p.key] ?? "").trim();
+                  const found = directModels[p.id];
+                  return (
+                    <div className="field" key={p.id}>
+                      <label>{p.label}</label>
+                      <input
+                        type="password"
+                        placeholder={`Key from ${p.hint}`}
+                        value={key}
+                        onChange={(e) => onChange({ [p.key]: e.target.value.trim() })}
+                      />
+                      {key !== "" && (
+                        <p className={found && found.length === 0 ? "hint error" : "hint"}>
+                          {found === undefined
+                            ? "Checking the key…"
+                            : found.length
+                              ? `${found.length} models available.`
+                              : "That key was refused, or has no models on it."}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
                 <p className="hint">
                   Kept in the macOS keychain, like the OpenRouter key — never in a file
                   and never sent anywhere but that provider.
                 </p>
+
+                <h3>Which key pays</h3>
+                <p className="hint">
+                  There is nothing to choose here: <b>the model decides</b>. Every model
+                  in every picker is labelled with where it comes from, and picking it
+                  picks the key. That way the two can never disagree.
+                </p>
+                <ul className="whichkey">
+                  <li>
+                    <span>Chat &amp; Write</span>
+                    <b>{billedBy(settings.openrouterModel)}</b>
+                  </li>
+                  <li>
+                    <span>Screen Assist</span>
+                    <b>{billedBy(settings.assistModel)}</b>
+                  </li>
+                </ul>
               </section>
 
               <p className="hint">

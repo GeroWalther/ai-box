@@ -300,3 +300,28 @@ input[type="range"]:focus {
   border-bottom: 1px solid var(--border);
   background: var(--bg-2);
 }
+
+/* "Which key pays": the current answer, not a control. Rows rather than prose
+   because the question is asked per surface — chat and Screen Assist can sit on
+   different providers, and usually do. */
+.whichkey {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.whichkey li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  font-size: 13px;
+}
+.whichkey span { color: var(--muted); }
+.whichkey b { color: var(--text); text-align: right; }
