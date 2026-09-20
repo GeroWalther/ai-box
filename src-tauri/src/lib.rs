@@ -9,6 +9,7 @@ use tauri::ipc::Channel;
 
 mod comfy;
 mod control;
+mod providers;
 mod guard;
 mod pty;
 mod panel;
@@ -329,6 +330,21 @@ async fn list_ollama_models(base_url: String) -> Result<Vec<String>, String> {
         })
         .unwrap_or_default();
     Ok(models)
+}
+
+/// What a provider will serve on the user's own key.
+///
+/// One call per provider, made live: a model released next month shows up
+/// without a release of this app.
+#[tauri::command]
+async fn list_provider_models(
+    provider: String,
+    api_key: String,
+) -> Result<Vec<providers::ProviderModel>, String> {
+    let Some(direct) = providers::Direct::from_prefix(&provider) else {
+        return Err(format!("no provider called {provider:?}"));
+    };
+    providers::list_models(direct, &api_key).await
 }
 
 /// Pull an Ollama model, streaming progress lines to the frontend.
@@ -1158,7 +1174,28 @@ const MAX_ATTEMPTS: u32 = 3;
 /// Retries transient failures (429/5xx/network) with backoff.
 #[tauri::command]
 async fn chat_completion(params: ChatCompletionParams) -> Result<serde_json::Value, String> {
-    let url = format!("{}/chat/completions", params.base_url.trim_end_matches('/'));
+    // A prefixed model id names the provider to talk to directly, on the user's
+    // own key. Anything unprefixed is OpenRouter (or Ollama, or a custom base
+    // URL) and takes the path it always did.
+    let (direct, bare_model) = providers::split(&params.model);
+    if let Some(provider) = direct {
+        if provider == providers::Direct::Anthropic {
+            // Not OpenAI-shaped at all: translated, both ways.
+            return providers::anthropic_chat(
+                &params.api_key,
+                &bare_model,
+                &params.messages,
+                &params.tools,
+                params.temperature,
+            )
+            .await;
+        }
+    }
+    let url = match direct {
+        Some(provider) => provider.chat_url().to_string(),
+        None => format!("{}/chat/completions", params.base_url.trim_end_matches('/')),
+    };
+    let params = ChatCompletionParams { model: bare_model, ..params };
     let mut body = serde_json::json!({
         "model": params.model,
         "messages": params.messages,
@@ -2781,6 +2818,7 @@ pub fn run() {
             screen::list_assist_models,
             screen::list_local_assist_models,
             screen::probe_assets,
+            list_provider_models,
             screen::set_assist_hotkey,
             screen::overlay_pass_clicks,
             screen::overlay_bar_moved,

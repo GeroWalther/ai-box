@@ -457,6 +457,18 @@ export interface ProbeAssets {
 }
 /** The screenshot and spoken question a model check is run with. */
 export const probeAssets = () => invokeCmd<ProbeAssets>("probe_assets");
+
+export interface ProviderModel {
+  id: string;
+  name: string;
+  sees: boolean;
+  hears: boolean;
+  tools: boolean;
+}
+/** What a direct provider will serve on the user's own key. Read live, so a
+ *  model released next month needs no release of this app. */
+export const listProviderModels = (provider: string, apiKey: string) =>
+  invokeCmd<ProviderModel[]>("list_provider_models", { provider, apiKey });
 /** Ollama models on this Mac that can see a screen and make tool calls. */
 export const listLocalAssistModels = (baseUrl: string) =>
   invokeCmd<string[]>("list_local_assist_models", { baseUrl });

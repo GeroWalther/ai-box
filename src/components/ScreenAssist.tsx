@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
+  DIRECT_PROVIDERS,
   LOCAL_PREFIX,
   loadSecrets,
   loadSettings,
@@ -29,6 +30,7 @@ import {
   assistToChat,
   listAssistModels,
   listLocalAssistModels,
+  listProviderModels,
   listVoices,
   controlRequestAccess,
   controlTrusted,
@@ -186,6 +188,30 @@ export default function ScreenAssist() {
     listLocalAssistModels(settings.ollamaUrl)
       .then(setLocalModels)
       .catch(() => setLocalModels([]));
+    // And whichever providers have a key of their own — same rule as the hosted
+    // list: see, hear and act, or it is not offered.
+    for (const p of DIRECT_PROVIDERS) {
+      const key = String(settings[p.key] ?? "").trim();
+      if (!key) continue;
+      listProviderModels(p.id, key)
+        .then((list) =>
+          setModels((prev) => [
+            ...prev,
+            ...list
+              .filter((m) => m.sees && m.hears && m.tools)
+              .filter((m) => !prev.some((p) => p.id === m.id))
+              .map((m) => ({
+                id: m.id,
+                name: m.name,
+                created: 0,
+                sees: m.sees,
+                hears: m.hears,
+                promptPrice: 0,
+              })),
+          ])
+        )
+        .catch(() => {});
+    }
   }, [showSettings, models.length, settings.openrouterKey, settings.ollamaUrl]);
 
   useEffect(() => {

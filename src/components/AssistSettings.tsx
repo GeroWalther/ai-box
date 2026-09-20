@@ -4,13 +4,14 @@
 // in this file: the installed macOS voices, and the models that can actually see
 // a screenshot. Both change without this app being rebuilt.
 import { useEffect, useState } from "react";
-import { LOCAL_PREFIX, type Settings } from "../lib/settings";
+import { DIRECT_PROVIDERS, LOCAL_PREFIX, type Settings } from "../lib/settings";
 import { checkModel } from "../lib/screenAssist";
 import {
   controlRequestAccess,
   controlTrusted,
   listAssistModels,
   listLocalAssistModels,
+  listProviderModels,
   listVoices,
   openSettingsPane,
   requestScreenAccess,
@@ -44,6 +45,8 @@ export default function AssistSettings({ settings, onChange }: Props) {
   /** Models on this Mac that can see a screen and make tool calls. Ollama
    *  reports both, so this list is filtered on fact rather than on the name. */
   const [local, setLocal] = useState<string[]>([]);
+  /** Models from providers the user has given a key to, keyed by provider id. */
+  const [direct, setDirect] = useState<Record<string, AssistModel[]>>({});
   const [hotkeyError, setHotkeyError] = useState("");
   /** Whether macOS lets AI Box drive the mouse and keyboard. Re-checked on
    *  focus, because the user grants it in System Settings — another app — and
@@ -84,6 +87,36 @@ export default function AssistSettings({ settings, onChange }: Props) {
       .then(setLocal)
       .catch(() => setLocal([]));
   }, [settings.ollamaUrl]);
+
+  // Direct providers, each only if its key is set. The same rule applies as to
+  // everything else here: a model has to see, hear and act, so most of what
+  // these providers offer never reaches the list.
+  useEffect(() => {
+    for (const p of DIRECT_PROVIDERS) {
+      const key = String(settings[p.key] ?? "").trim();
+      if (!key) {
+        setDirect((prev) => (prev[p.id] ? { ...prev, [p.id]: [] } : prev));
+        continue;
+      }
+      listProviderModels(p.id, key)
+        .then((models) =>
+          setDirect((prev) => ({
+            ...prev,
+            [p.id]: models
+              .filter((m) => m.sees && m.hears && m.tools)
+              .map((m) => ({
+                id: m.id,
+                name: m.name,
+                created: 0,
+                sees: m.sees,
+                hears: m.hears,
+                promptPrice: 0,
+              })),
+          }))
+        )
+        .catch(() => setDirect((prev) => ({ ...prev, [p.id]: [] })));
+    }
+  }, [settings.anthropicKey, settings.openaiKey, settings.googleKey]);
 
   // Bind the shortcut whenever it changes, and report a clash rather than
   // leaving the user with a key that silently does nothing.
@@ -196,6 +229,19 @@ export default function AssistSettings({ settings, onChange }: Props) {
                     ))}
                   </optgroup>
                 )}
+                {DIRECT_PROVIDERS.map((p) => {
+                  const models = (direct[p.id] ?? []).filter((m) => !rejected.has(m.id));
+                  if (!models.length) return null;
+                  return (
+                    <optgroup key={p.id} label={`${p.label} — your own key`}>
+                      {models.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
                 {free.length > 0 && (
                   <optgroup label="Free tier — needs an OpenRouter key">
                     {free.map((m) => (

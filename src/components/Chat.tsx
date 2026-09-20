@@ -28,6 +28,7 @@ import { lineDiffText } from "../lib/diff";
 import DiffPreview from "./DiffPreview";
 import ModelManager from "./ModelManager";
 import ModelSelect from "./ModelSelect";
+import { useDirectModels } from "../hooks/useDirectModels";
 import Markdown from "./Markdown";
 import SidebarList, { SidebarSlot } from "./SidebarList";
 
@@ -223,6 +224,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     models: orModels,
     refresh: refreshOR,
   } = useOpenrouterModels(settings.openrouterKey);
+  const directModels = useDirectModels(settings);
   const active = sessions.find((s) => s.id === activeId) || sessions[0];
   const messages = active?.messages ?? [];
 
@@ -879,6 +881,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
                   settings={settings}
                   ollamaModels={ollamaModels}
                   orModels={orModels}
+                  directModels={directModels}
                   onChange={onChange}
                   onRefresh={() => {
                     refreshOR();

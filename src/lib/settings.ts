@@ -20,6 +20,12 @@ export interface Settings {
 
   // OpenRouter (BYOK)
   openrouterKey: string;
+  /** Direct provider keys, used instead of OpenRouter for models prefixed with
+   *  that provider's name. Each is optional and independent: a key that is set
+   *  adds its models to the pickers, and one that is not changes nothing. */
+  anthropicKey: string;
+  openaiKey: string;
+  googleKey: string;
   openrouterModel: string;
 
   // Local Ollama
@@ -160,6 +166,9 @@ export const DEFAULT_SETTINGS: Settings = {
   sidebarCollapsed: false,
 
   openrouterKey: "",
+  anthropicKey: "",
+  openaiKey: "",
+  googleKey: "",
   openrouterModel: "anthropic/claude-fable-5",
 
   ollamaUrl: "http://localhost:11434/v1",
@@ -243,7 +252,13 @@ const LEGACY_STORAGE_KEY = "novel-studio.settings";
 
 // API keys are secrets — kept in the OS keychain at rest (desktop) or injected by
 // the Mac (phone), never written to localStorage.
-const SECRET_FIELDS = ["openrouterKey", "customKey"] as const;
+const SECRET_FIELDS = [
+  "openrouterKey",
+  "customKey",
+  "anthropicKey",
+  "openaiKey",
+  "googleKey",
+] as const;
 
 export function loadSettings(): Settings {
   try {
@@ -327,6 +342,16 @@ export function resolveTextProvider(s: Settings): {
   apiKey: string;
   model: string;
 } {
+  // A model chosen from a direct provider carries that provider's prefix, and
+  // it wins over the provider dropdown: picking "anthropic:claude-opus-5" IS
+  // choosing Anthropic, and asking the user to set a second switch to agree
+  // with their own choice would only create a way to get it wrong.
+  if (s.provider === "openrouter") {
+    const direct = directProviderOf(s.openrouterModel);
+    if (direct) {
+      return { baseUrl: "", apiKey: String(s[direct.key] ?? ""), model: s.openrouterModel };
+    }
+  }
   switch (s.provider) {
     case "openrouter":
       return {
@@ -343,6 +368,26 @@ export function resolveTextProvider(s: Settings): {
 
 /** Prefix marking a Screen Assist model that runs on this Mac via Ollama. */
 export const LOCAL_PREFIX = "ollama:";
+
+/** The providers reachable with a key of their own, rather than OpenRouter's. */
+export const DIRECT_PROVIDERS = [
+  { id: "anthropic", label: "Anthropic", key: "anthropicKey", hint: "console.anthropic.com" },
+  { id: "openai", label: "OpenAI", key: "openaiKey", hint: "platform.openai.com" },
+  { id: "google", label: "Google Gemini", key: "googleKey", hint: "aistudio.google.com" },
+] as const satisfies readonly {
+  id: string;
+  label: string;
+  key: keyof Settings;
+  hint: string;
+}[];
+
+export type DirectProvider = (typeof DIRECT_PROVIDERS)[number];
+
+/** The provider a model id belongs to, or null for OpenRouter's own. */
+export function directProviderOf(model: string): DirectProvider | null {
+  const prefix = model.split(":")[0];
+  return DIRECT_PROVIDERS.find((p) => p.id === prefix) ?? null;
+}
 
 /**
  * Where a Screen Assist model actually lives.
@@ -364,6 +409,18 @@ export function assistProvider(s: Settings): {
       apiKey: "",
       model: s.assistModel.slice(LOCAL_PREFIX.length),
       local: true,
+    };
+  }
+  // A direct provider carries its own key. The model id keeps its prefix: Rust
+  // reads it to decide where to send the request and how to shape it, and
+  // Anthropic in particular is not OpenAI-shaped at all.
+  const direct = directProviderOf(s.assistModel);
+  if (direct) {
+    return {
+      baseUrl: "",
+      apiKey: String(s[direct.key] ?? ""),
+      model: s.assistModel,
+      local: false,
     };
   }
   return {

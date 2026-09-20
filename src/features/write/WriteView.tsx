@@ -9,6 +9,7 @@ import { EditorContent, BubbleMenu, type Editor } from "@tiptap/react";
 import ExportMenu from "../../components/ExportMenu";
 import FindReplace from "../../components/FindReplace";
 import ModelSelect from "../../components/ModelSelect";
+import { useDirectModels } from "../../hooks/useDirectModels";
 import Outline from "../../components/Outline";
 import ProofreadReview from "../../components/ProofreadReview";
 import PromptBar from "../../components/PromptBar";
@@ -75,6 +76,7 @@ interface Props {
 
 export default function WriteView(props: Props) {
   const { editor, settings, onChangeSettings } = props;
+  const directModels = useDirectModels(settings);
   const [bibleOpen, setBibleOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -231,6 +233,7 @@ export default function WriteView(props: Props) {
                 settings={settings}
                 ollamaModels={props.ollamaModels}
                 orModels={props.orModels}
+                directModels={directModels}
                 onChange={onChangeSettings}
                 onRefresh={props.onRefreshModels}
                 onManageModels={props.onManageModels}

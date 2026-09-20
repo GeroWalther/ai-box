@@ -5,7 +5,7 @@
 // which keys it holds, what your phone can reach — and stacking them meant
 // scrolling past three unrelated panels to reach the one you came for.
 import { useState } from "react";
-import type { Settings } from "../lib/settings";
+import { DIRECT_PROVIDERS, type Settings } from "../lib/settings";
 import AgentSettings from "./AgentSettings";
 import AssistSettings from "./AssistSettings";
 import Diagnostics from "./Diagnostics";
@@ -90,6 +90,31 @@ export default function SettingsModal({ settings, onChange, onClose }: Props) {
                 <p className="hint">
                   Local models run through Ollama — install them with <b>Local models</b>{" "}
                   next to any model picker. No URLs to configure.
+                </p>
+              </section>
+
+              <section>
+                <h3>Straight to a provider (optional)</h3>
+                <p className="hint">
+                  Credit already sitting on an Anthropic, OpenAI or Google account is
+                  reachable directly. A key here adds that provider&apos;s models to
+                  every picker, billed by them rather than through OpenRouter. Leave
+                  one blank and nothing changes.
+                </p>
+                {DIRECT_PROVIDERS.map((p) => (
+                  <div className="field" key={p.id}>
+                    <label>{p.label}</label>
+                    <input
+                      type="password"
+                      placeholder={`Key from ${p.hint}`}
+                      value={String(settings[p.key] ?? "")}
+                      onChange={(e) => onChange({ [p.key]: e.target.value.trim() })}
+                    />
+                  </div>
+                ))}
+                <p className="hint">
+                  Kept in the macOS keychain, like the OpenRouter key — never in a file
+                  and never sent anywhere but that provider.
                 </p>
               </section>
 
