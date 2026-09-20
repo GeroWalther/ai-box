@@ -216,14 +216,15 @@ html[data-overlay="marks"] {
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
   color: #eef0f5;
-  /* No cap of its own: the window grows to fit the answer, so the answer is
-     shown whole. A cap in `vh` was worse than a cap — it is measured against the
-     window that is being sized to this content, so the two chased each other
-     down until a long answer was cut off after two lines, and settled somewhere
-     different depending on whether the settings panel was open.
-     The only real limit is the screen, applied in JS where the screen height is
-     actually known. */
+  /* Capped against the WINDOW, which no longer resizes — so `vh` is a constant
+     here and cannot feed back into anything. Capping against the screen instead
+     (which is what this did) let the card grow taller than the window it lives
+     in: nothing ever overflowed, so nothing ever scrolled, and a long answer was
+     simply clipped by the window edge with its beginning unreachable. */
+  max-height: calc(100vh - 124px);
   overflow-y: auto;
+  /* Scrolling the answer must not scroll the page behind it. */
+  overscroll-behavior: contain;
 }
 .sa-answer.thinking {
   display: flex;
@@ -327,6 +328,28 @@ html[data-overlay="marks"] {
   word-break: break-word;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+/* A scrollbar that is actually visible. macOS hides overlay scrollbars until
+   something scrolls, which on a floating panel reads as "this cannot scroll" —
+   the one thing the user needs to know when an answer runs long. */
+.sa-answer::-webkit-scrollbar {
+  width: 11px;
+}
+.sa-answer::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sa-answer::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.26);
+  border-radius: 6px;
+  /* Drawn inside its own padding so the bar reads as a slim pill rather than a
+     block glued to the edge. */
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.sa-answer::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.42);
+  background-clip: padding-box;
+}
+
 .sa-error { margin: 0; color: #ff8f86; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; }
 
 .sa-foot {

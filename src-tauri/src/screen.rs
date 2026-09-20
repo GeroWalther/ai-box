@@ -340,7 +340,7 @@ pub const BAR: &str = "screen-assist-bar";
 /// content changes, and that is seen as a flash: opening the settings panel,
 /// every phase of a question. The window is one size now and the POINTER
 /// decides what it takes: see `overlay_hot_rect`.
-const BAR_H: f64 = 640.0;
+const BAR_H: f64 = 760.0;
 
 /// The region the page actually draws in, in window points from the window's
 /// top-left. Everything outside it is transparent and must let clicks through.
