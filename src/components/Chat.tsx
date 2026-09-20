@@ -881,7 +881,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
                   settings={settings}
                   ollamaModels={ollamaModels}
                   orModels={orModels}
-                  directModels={directModels}
+                  directModels={directModels.models}
                   onChange={onChange}
                   onRefresh={() => {
                     refreshOR();

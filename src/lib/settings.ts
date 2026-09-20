@@ -20,9 +20,12 @@ export interface Settings {
 
   // OpenRouter (BYOK)
   openrouterKey: string;
-  /** Direct provider keys, used instead of OpenRouter for models prefixed with
-   *  that provider's name. Each is optional and independent: a key that is set
-   *  adds its models to the pickers, and one that is not changes nothing. */
+  /** Which provider the app is currently using. ONE at a time: every picker
+   *  shows that provider's models and the local ones, and nothing else. Keys
+   *  for the others stay saved, so switching back is a single click. */
+  activeProvider: ProviderId;
+  /** Keys for the direct providers. Stored independently of which one is
+   *  active, so a provider set up once never has to be set up again. */
   anthropicKey: string;
   openaiKey: string;
   googleKey: string;
@@ -166,6 +169,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sidebarCollapsed: false,
 
   openrouterKey: "",
+  activeProvider: "openrouter",
   anthropicKey: "",
   openaiKey: "",
   googleKey: "",
@@ -369,24 +373,72 @@ export function resolveTextProvider(s: Settings): {
 /** Prefix marking a Screen Assist model that runs on this Mac via Ollama. */
 export const LOCAL_PREFIX = "ollama:";
 
-/** The providers reachable with a key of their own, rather than OpenRouter's. */
-export const DIRECT_PROVIDERS = [
-  { id: "anthropic", label: "Anthropic", key: "anthropicKey", hint: "console.anthropic.com" },
-  { id: "openai", label: "OpenAI", key: "openaiKey", hint: "platform.openai.com" },
-  { id: "google", label: "Google Gemini", key: "googleKey", hint: "aistudio.google.com" },
+/**
+ * Every provider the app can be pointed at.
+ *
+ * One is active at a time. OpenRouter is one option among four rather than a
+ * layer above them: it is the one key that reaches everything, and the others
+ * are there for credit the user already holds. Mixing them in one list would
+ * mean two ways to reach the same model at two different prices, which is a
+ * question nobody wants to be asked mid-sentence.
+ */
+export const PROVIDERS = [
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    key: "openrouterKey",
+    hint: "openrouter.ai/keys",
+    blurb: "One key, every model — and the only one that can reach them all.",
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    key: "anthropicKey",
+    hint: "console.anthropic.com",
+    blurb: "Claude models, billed to your Anthropic account.",
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    key: "openaiKey",
+    hint: "platform.openai.com",
+    blurb: "GPT models, billed to your OpenAI account.",
+  },
+  {
+    id: "google",
+    label: "Google Gemini",
+    key: "googleKey",
+    hint: "aistudio.google.com",
+    blurb: "Gemini models, billed to your Google account.",
+  },
 ] as const satisfies readonly {
   id: string;
   label: string;
   key: keyof Settings;
   hint: string;
+  blurb: string;
 }[];
 
-export type DirectProvider = (typeof DIRECT_PROVIDERS)[number];
+export type ProviderId = (typeof PROVIDERS)[number]["id"];
+export type ProviderChoice = (typeof PROVIDERS)[number];
+
+/** The providers that are not OpenRouter, whose model ids carry a prefix. */
+export const DIRECT_PROVIDERS = PROVIDERS.filter((p) => p.id !== "openrouter");
+
+export function providerById(id: string): ProviderChoice {
+  return PROVIDERS.find((p) => p.id === id) ?? PROVIDERS[0];
+}
 
 /** The provider a model id belongs to, or null for OpenRouter's own. */
-export function directProviderOf(model: string): DirectProvider | null {
+export function directProviderOf(model: string): ProviderChoice | null {
   const prefix = model.split(":")[0];
   return DIRECT_PROVIDERS.find((p) => p.id === prefix) ?? null;
+}
+
+/** The active provider, and the key it uses. */
+export function activeProvider(s: Settings): { provider: ProviderChoice; apiKey: string } {
+  const provider = providerById(s.activeProvider);
+  return { provider, apiKey: String(s[provider.key] ?? "").trim() };
 }
 
 /**

@@ -233,7 +233,7 @@ export default function WriteView(props: Props) {
                 settings={settings}
                 ollamaModels={props.ollamaModels}
                 orModels={props.orModels}
-                directModels={directModels}
+                directModels={directModels.models}
                 onChange={onChangeSettings}
                 onRefresh={props.onRefreshModels}
                 onManageModels={props.onManageModels}

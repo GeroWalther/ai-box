@@ -17,8 +17,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  DIRECT_PROVIDERS,
   LOCAL_PREFIX,
+  activeProvider,
   loadSecrets,
   loadSettings,
   mergeBroadcast,
@@ -181,25 +181,25 @@ export default function ScreenAssist() {
   // Fetched when the settings panel is first opened rather than on mount: the
   // list costs a request, and most questions never touch it.
   useEffect(() => {
-    if (!showSettings || models.length || !settings.openrouterKey) return;
-    listAssistModels(settings.openrouterKey)
-      .then(setModels)
-      .catch(() => setModels([]));
+    if (!showSettings) return;
+    if (models.length) return;
+    if (settings.activeProvider === "openrouter" && settings.openrouterKey) {
+      listAssistModels(settings.openrouterKey)
+        .then(setModels)
+        .catch(() => setModels([]));
+    }
     listLocalAssistModels(settings.ollamaUrl)
       .then(setLocalModels)
       .catch(() => setLocalModels([]));
-    // And whichever providers have a key of their own — same rule as the hosted
-    // list: see, hear and act, or it is not offered.
-    for (const p of DIRECT_PROVIDERS) {
-      const key = String(settings[p.key] ?? "").trim();
-      if (!key) continue;
-      listProviderModels(p.id, key)
+    // ...or, when the active provider is not OpenRouter, that provider's —
+    // same bar either way: see, hear and act.
+    const { provider, apiKey } = activeProvider(settings);
+    if (provider.id !== "openrouter" && apiKey) {
+      listProviderModels(provider.id, apiKey)
         .then((list) =>
-          setModels((prev) => [
-            ...prev,
-            ...list
+          setModels(
+            list
               .filter((m) => m.sees && m.hears && m.tools)
-              .filter((m) => !prev.some((p) => p.id === m.id))
               .map((m) => ({
                 id: m.id,
                 name: m.name,
@@ -207,12 +207,29 @@ export default function ScreenAssist() {
                 sees: m.sees,
                 hears: m.hears,
                 promptPrice: 0,
-              })),
-          ])
+              }))
+          )
         )
-        .catch(() => {});
+        .catch(() => setModels([]));
     }
-  }, [showSettings, models.length, settings.openrouterKey, settings.ollamaUrl]);
+    // Switching provider must re-fetch: the list is that provider's and nobody
+    // else's, so a stale one would offer models the active key cannot buy.
+  }, [
+    showSettings,
+    models.length,
+    settings.activeProvider,
+    settings.openrouterKey,
+    settings.anthropicKey,
+    settings.openaiKey,
+    settings.googleKey,
+    settings.ollamaUrl,
+  ]);
+
+  // The model list belongs to one provider; switching throws it away so the
+  // fetch below runs again rather than showing the old provider's models.
+  useEffect(() => {
+    setModels([]);
+  }, [settings.activeProvider, settings.anthropicKey, settings.openaiKey, settings.googleKey]);
 
   useEffect(() => {
     listVoices()

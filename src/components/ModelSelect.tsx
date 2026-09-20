@@ -1,15 +1,15 @@
 // Model picker: local Ollama models + a small Featured pin list + the full
 // catalog derived LIVE from OpenRouter (so new models appear on their own).
 import type { OpenrouterModel, ProviderModel } from "../lib/api";
-import { DIRECT_PROVIDERS, type Settings } from "../lib/settings";
+import { activeProvider, type Settings } from "../lib/settings";
 import { FEATURED_MODELS } from "../lib/presets";
 
 interface Props {
   settings: Settings;
   ollamaModels: string[];
   orModels: OpenrouterModel[];
-  /** Models from providers the user gave a key to, keyed by provider id. */
-  directModels?: Record<string, ProviderModel[]>;
+  /** The active provider's models, when that provider is not OpenRouter. */
+  directModels?: ProviderModel[];
   onChange: (patch: Partial<Settings>) => void;
   onRefresh: () => void;
   /** Opens the local (Ollama) model installer. Shown as a "Local models" button. */
@@ -40,6 +40,7 @@ export default function ModelSelect({
     else onChange({ provider: "openrouter", openrouterModel: id });
   }
 
+  const { provider: direct } = activeProvider(settings);
   const featuredIds = new Set(FEATURED_MODELS.map((m) => m.id));
   // Text models only (drop pure image generators). All non-featured models live
   // in one plain list — no special spotlighting of any category.
@@ -56,22 +57,23 @@ export default function ModelSelect({
         onChange={(e) => select(e.target.value)}
         onMouseDown={() => onRefresh()}
       >
-        {DIRECT_PROVIDERS.map((p) => {
-          const models = directModels?.[p.id] ?? [];
-          if (!models.length) return null;
-          return (
-            // Prefixed ids ride the openrouter branch of `select`, which is how
-            // they reach `openrouterModel` — and `resolveTextProvider` reads the
-            // prefix back to send the request to the provider instead.
-            <optgroup key={p.id} label={`${p.label} · your own key`}>
-              {models.map((m) => (
-                <option key={m.id} value={`openrouter|${m.id}`}>
-                  {p.label} · {m.name}
-                </option>
-              ))}
-            </optgroup>
-          );
-        })}
+        {/* The active provider's models. Prefixed ids ride the openrouter
+            branch of `select` to reach `openrouterModel`; resolveTextProvider
+            reads the prefix back and sends the request to the provider. */}
+        {direct.id !== "openrouter" && (
+          <optgroup label={direct.label}>
+            {(directModels ?? []).length === 0 && (
+              <option value={`openrouter|${settings.openrouterModel}`}>
+                — no models; check the key in Settings —
+              </option>
+            )}
+            {(directModels ?? []).map((m) => (
+              <option key={m.id} value={`openrouter|${m.id}`}>
+                {m.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
         <optgroup label="Local (Ollama)">
           {ollamaModels.length === 0 && <option value="ollama|">— none installed —</option>}
           {ollamaModels.map((m) => (
@@ -80,14 +82,19 @@ export default function ModelSelect({
             </option>
           ))}
         </optgroup>
-        <optgroup label="OpenRouter · Featured">
-          {FEATURED_MODELS.map((m) => (
-            <option key={m.id} value={`openrouter|${m.id}`} title={m.note}>
-              {m.label} — {m.note}
-            </option>
-          ))}
-        </optgroup>
-        {rest.length > 0 && (
+        {/* OpenRouter's catalogue, only while OpenRouter is the active
+            provider. Showing it alongside another provider's would offer the
+            same model twice at two different prices. */}
+        {direct.id === "openrouter" && (
+          <optgroup label="OpenRouter · Featured">
+            {FEATURED_MODELS.map((m) => (
+              <option key={m.id} value={`openrouter|${m.id}`} title={m.note}>
+                {m.label} — {m.note}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {direct.id === "openrouter" && rest.length > 0 && (
           <optgroup label={`OpenRouter · All ${rest.length} (newest first)`}>
             {rest.map((m) => (
               <option key={m.id} value={`openrouter|${m.id}`}>

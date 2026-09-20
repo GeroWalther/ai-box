@@ -5,12 +5,7 @@
 // which keys it holds, what your phone can reach — and stacking them meant
 // scrolling past three unrelated panels to reach the one you came for.
 import { useState } from "react";
-import {
-  DIRECT_PROVIDERS,
-  LOCAL_PREFIX,
-  directProviderOf,
-  type Settings,
-} from "../lib/settings";
+import { PROVIDERS, activeProvider, type Settings } from "../lib/settings";
 import { useDirectModels } from "../hooks/useDirectModels";
 import AgentSettings from "./AgentSettings";
 import AssistSettings from "./AssistSettings";
@@ -33,18 +28,12 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "about", label: "Diagnostics" },
 ];
 
-/** Where a chosen model's request actually goes, in words. */
-function billedBy(model: string): string {
-  if (model.startsWith(LOCAL_PREFIX)) return "this Mac — nothing is billed";
-  const direct = directProviderOf(model);
-  return direct ? `${direct.label}, on your key` : "OpenRouter";
-}
-
 export default function SettingsModal({ settings, onChange, onClose }: Props) {
   const [tab, setTab] = useState<Tab>("general");
-  // Only to show each key's state: how many models it brought back, or that it
-  // was refused. A key that types cleanly and silently does nothing is the
-  // failure this is here to prevent.
+  const active = activeProvider(settings);
+  // Only to report the key's state: how many models it brought back, or that it
+  // was refused. A key that types cleanly and then silently does nothing is the
+  // failure this prevents.
   const directModels = useDirectModels(settings);
 
   return (
@@ -93,76 +82,64 @@ export default function SettingsModal({ settings, onChange, onClose }: Props) {
               </section>
 
               <section>
-                <h3>OpenRouter (bring your own key)</h3>
-                <label>API key</label>
+                <h3>Provider</h3>
+                <p className="hint">
+                  One at a time. Whichever you pick is what every model picker in
+                  the app offers — plus anything installed locally, which is always
+                  available. Keys for the others stay saved, so switching back is
+                  one click.
+                </p>
+                <div className="provider-picks">
+                  {PROVIDERS.map((p) => {
+                    const chosen = settings.activeProvider === p.id;
+                    const hasKey = String(settings[p.key] ?? "").trim() !== "";
+                    return (
+                      <button
+                        key={p.id}
+                        className={chosen ? "provider-pick active" : "provider-pick"}
+                        onClick={() => onChange({ activeProvider: p.id })}
+                      >
+                        <b>{p.label}</b>
+                        <span>{p.blurb}</span>
+                        {hasKey && !chosen && <i>key saved</i>}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <label>{active.provider.label} API key</label>
                 <input
                   type="password"
-                  placeholder="sk-or-v1-…"
-                  value={settings.openrouterKey}
-                  onChange={(e) => onChange({ openrouterKey: e.target.value.trim() })}
+                  placeholder={`Key from ${active.provider.hint}`}
+                  value={String(settings[active.provider.key] ?? "")}
+                  onChange={(e) =>
+                    onChange({ [active.provider.key]: e.target.value.trim() })
+                  }
                 />
-                <p className="hint">
-                  Stored locally on this machine only. Get a key at openrouter.ai/keys.
-                </p>
-                <p className="hint">
-                  Local models run through Ollama — install them with <b>Local models</b>{" "}
-                  next to any model picker. No URLs to configure.
-                </p>
-              </section>
+                {active.apiKey === "" ? (
+                  <p className="hint">
+                    Get a key at {active.provider.hint}. Kept in the macOS keychain —
+                    never in a file, and never sent anywhere but {active.provider.label}.
+                  </p>
+                ) : active.provider.id === "openrouter" ? (
+                  <p className="hint">
+                    Kept in the macOS keychain. Get a key at {active.provider.hint}.
+                  </p>
+                ) : directModels.loading ? (
+                  <p className="hint">Checking the key…</p>
+                ) : directModels.error ? (
+                  <p className="hint error">{directModels.error}</p>
+                ) : (
+                  <p className="hint">
+                    {directModels.models.length} models available on this key.
+                  </p>
+                )}
 
-              <section>
-                <h3>Straight to a provider (optional)</h3>
                 <p className="hint">
-                  Credit already sitting on an Anthropic, OpenAI or Google account is
-                  reachable directly. A key here adds that provider&apos;s models to
-                  every picker, billed by them rather than through OpenRouter. Leave
-                  one blank and nothing changes.
+                  Local models run through Ollama — install them with{" "}
+                  <b>Local models</b> next to any model picker. They are offered
+                  whichever provider is active, and nothing about them is billed.
                 </p>
-                {DIRECT_PROVIDERS.map((p) => {
-                  const key = String(settings[p.key] ?? "").trim();
-                  const found = directModels[p.id];
-                  return (
-                    <div className="field" key={p.id}>
-                      <label>{p.label}</label>
-                      <input
-                        type="password"
-                        placeholder={`Key from ${p.hint}`}
-                        value={key}
-                        onChange={(e) => onChange({ [p.key]: e.target.value.trim() })}
-                      />
-                      {key !== "" && (
-                        <p className={found && found.length === 0 ? "hint error" : "hint"}>
-                          {found === undefined
-                            ? "Checking the key…"
-                            : found.length
-                              ? `${found.length} models available.`
-                              : "That key was refused, or has no models on it."}
-                        </p>
-                      )}
-                    </div>
-                  );
-                })}
-                <p className="hint">
-                  Kept in the macOS keychain, like the OpenRouter key — never in a file
-                  and never sent anywhere but that provider.
-                </p>
-
-                <h3>Which key pays</h3>
-                <p className="hint">
-                  There is nothing to choose here: <b>the model decides</b>. Every model
-                  in every picker is labelled with where it comes from, and picking it
-                  picks the key. That way the two can never disagree.
-                </p>
-                <ul className="whichkey">
-                  <li>
-                    <span>Chat &amp; Write</span>
-                    <b>{billedBy(settings.openrouterModel)}</b>
-                  </li>
-                  <li>
-                    <span>Screen Assist</span>
-                    <b>{billedBy(settings.assistModel)}</b>
-                  </li>
-                </ul>
               </section>
 
               <p className="hint">
