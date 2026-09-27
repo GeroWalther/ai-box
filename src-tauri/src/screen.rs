@@ -1157,11 +1157,7 @@ pub fn assist_to_chat(
     .map_err(|e| e.to_string())?;
 
     if focus {
-        if let Some(main) = app.get_webview_window("main") {
-            let _ = main.show();
-            let _ = main.unminimize();
-            let _ = main.set_focus();
-        }
+        crate::show_main(&app);
         let _ = overlay_close(app);
     }
     Ok(())

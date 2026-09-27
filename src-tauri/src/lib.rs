@@ -2722,6 +2722,16 @@ fn resolve_remote_approval(
     registry.resolve(&id, approved);
 }
 
+/// Bring the main window forward, whether it was hidden, minimised or behind.
+pub(crate) fn show_main(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2730,12 +2740,7 @@ pub fn run() {
         // appears twice and has to be dismissed twice. Launching again raises
         // the window that is already running instead.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            use tauri::Manager;
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.unminimize();
-                let _ = win.set_focus();
-            }
+            show_main(app);
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -2859,9 +2864,25 @@ pub fn run() {
             }
             Ok(())
         })
+        // The red button hides the main window rather than destroying it. The
+        // overlay's hidden windows keep the app alive after the main one
+        // closes, so a destroyed main window left a running app with nothing
+        // to show: the Dock icon and a second launch did nothing until a quit.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| {
+            // Clicking the Dock icon brings back a hidden main window.
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_main(app);
+            }
             // Shutdown work: reap the managed ComfyUI child so we don't orphan a
             // Python process holding gigabytes of model in memory, and save each
             // terminal's screen + cwd before its shell dies.
