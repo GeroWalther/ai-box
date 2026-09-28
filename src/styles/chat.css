@@ -210,3 +210,85 @@
   color: #fff;
   animation: sa-pulse 1.2s ease-in-out infinite;
 }
+
+/* Attached images: in a sent message, in the composer, and the drop target. */
+.msg-images,
+.attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.msg-images {
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+.attach-strip {
+  padding: 0 4px 8px;
+}
+.attach-thumb {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.msg-images .attach-thumb {
+  width: 160px;
+  height: 120px;
+}
+.attach-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.attach-thumb.pending {
+  animation: sa-pulse 1.2s ease-in-out infinite;
+}
+.attach-thumb-x {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 14px;
+  line-height: 20px;
+  padding: 0;
+  cursor: pointer;
+}
+.chat-view {
+  position: relative;
+}
+.chat-view.drop-hover::after {
+  content: "Drop images to attach";
+  position: absolute;
+  inset: 10px;
+  border: 2px dashed var(--accent);
+  border-radius: 14px;
+  background: var(--accent-soft);
+  color: var(--accent-2);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 5;
+}
+@media (max-width: 640px) {
+  .msg-images .attach-thumb {
+    width: 120px;
+    height: 90px;
+  }
+}

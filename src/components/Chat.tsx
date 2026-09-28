@@ -31,6 +31,16 @@ import ModelSelect from "./ModelSelect";
 import { useDirectModels } from "../hooks/useDirectModels";
 import Markdown from "./Markdown";
 import SidebarList, { SidebarSlot } from "./SidebarList";
+import { useFileDrop } from "../hooks/useFileDrop";
+import {
+  attachFile,
+  attachPath,
+  attachmentUrl,
+  isImageFile,
+  isImagePath,
+  userContent,
+  type Attached,
+} from "../lib/attachments";
 
 interface Msg {
   role: "user" | "assistant" | "tool";
@@ -38,7 +48,10 @@ interface Msg {
   reasoning: string;
   detail?: string; // tool: expandable output/diff
   ok?: boolean; // tool: success/failure for the status icon
+  images?: Attached[]; // user: attached images, stored on the Mac by id
 }
+/** A turn as sent to the model: text, or text plus images as content parts. */
+type Turn = { role: "user" | "assistant"; content: string | unknown[] };
 interface Session {
   id: string;
   title: string;
@@ -90,6 +103,32 @@ function safeParse(s: string): any {
     return {};
   }
 }
+/** One attached image, loaded from the Mac on demand. */
+function AttachmentThumb({ a, onRemove }: { a: Attached; onRemove?: () => void }) {
+  const [url, setUrl] = useState("");
+  const [missing, setMissing] = useState(false);
+  useEffect(() => {
+    let live = true;
+    attachmentUrl(a.id).then(
+      (u) => live && setUrl(u),
+      () => live && setMissing(true)
+    );
+    return () => {
+      live = false;
+    };
+  }, [a.id]);
+  return (
+    <div className="attach-thumb" title={a.source || a.name}>
+      {url ? <img src={url} alt={a.name} /> : <span>{missing ? "missing" : "…"}</span>}
+      {onRemove && (
+        <button className="attach-thumb-x" onClick={onRemove} title="Remove image" aria-label="Remove image">
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
+
 function newSession(): Session {
   return { id: crypto.randomUUID(), title: "New chat", messages: [], updatedAt: Date.now() };
 }
@@ -108,6 +147,11 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     () => localStorage.getItem("ai-studio.chat.active") || ""
   );
   const [input, setInput] = useState("");
+  // Images waiting to go out with the next message, and how many are still
+  // being read and shrunk on the Mac — sending waits for those.
+  const [attachments, setAttachments] = useState<Attached[]>([]);
+  const [attaching, setAttaching] = useState(0);
+  const viewRef = useRef<HTMLDivElement>(null);
   const [generating, setGenerating] = useState(false);
   // Start in Agent mode by default (persisted in settings) so it can run tools.
   const [agentMode, setAgentMode] = useState(settings.agentMode !== false);
@@ -187,9 +231,57 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     deletedRef.current = deletedSessions;
   }, [deletedSessions]);
 
+  async function addImages(jobs: (() => Promise<Attached>)[]) {
+    setAttaching((n) => n + jobs.length);
+    await Promise.all(
+      jobs.map(async (job) => {
+        try {
+          const a = await job();
+          setAttachments((prev) => [...prev, a]);
+        } catch (e) {
+          logError("chat.attach", e);
+          toastError(String(e));
+        } finally {
+          setAttaching((n) => n - 1);
+        }
+      })
+    );
+  }
+
+  // Desktop drops arrive as real paths. Images are attached; any other file
+  // goes into the message as its path, which the agent can open with its tools.
+  function onDropPaths(paths: string[]) {
+    const images = paths.filter(isImagePath);
+    const others = paths.filter((p) => !isImagePath(p));
+    if (images.length) void addImages(images.map((p) => () => attachPath(p)));
+    if (others.length) setInput((prev) => (prev ? `${prev.trimEnd()} ${others.join(" ")}` : others.join(" ")));
+  }
+  // A phone has no paths to offer, only the files themselves.
+  function onDropFiles(files: File[]) {
+    const images = files.filter(isImageFile);
+    if (images.length < files.length) toastError("Only images can be attached here.");
+    if (images.length) void addImages(images.map((f) => () => attachFile(f)));
+  }
+  const dropHover = useFileDrop({ target: viewRef, enabled: true, onPaths: onDropPaths, onFiles: onDropFiles });
+
+  function onPaste(e: React.ClipboardEvent) {
+    const files = Array.from(e.clipboardData.items)
+      .filter((i) => i.kind === "file")
+      .map((i) => i.getAsFile())
+      .filter((f): f is File => !!f && isImageFile(f));
+    if (!files.length) return;
+    e.preventDefault();
+    void addImages(files.map((f) => () => attachFile(f)));
+  }
+
   function onAttach(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (isImageFile(file)) {
+      void addImages([() => attachFile(file)]);
+      e.target.value = "";
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       const text = String(reader.result).slice(0, 60000);
@@ -307,7 +399,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
         let title = s.title;
         if (title === "New chat") {
           const firstUser = msgs.find((m: Msg) => m.role === "user");
-          if (firstUser) title = firstUser.content.slice(0, 40);
+          if (firstUser) title = (firstUser.content || firstUser.images?.[0]?.name || "Image").slice(0, 40);
         }
         return { ...s, messages: msgs, title, updatedAt: Date.now() };
       })
@@ -397,26 +489,36 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     !!provider.model &&
     !(settings.provider === "openrouter" && !settings.openrouterKey);
 
-  function historyMessages(): { role: "user" | "assistant"; content: string }[] {
-    return messages
-      .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
-      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+  /** Earlier turns for the model, with each user message's images restored. */
+  function historyMessages(list: Msg[]): Promise<Turn[]> {
+    return Promise.all(
+      list
+        .filter((m) => (m.role === "user" || m.role === "assistant") && (m.content.trim() || m.images?.length))
+        .map(async (m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.role === "user" ? await userContent(m.content, m.images) : m.content,
+        }))
+    );
   }
 
   async function send() {
     const text = input.trim();
-    if (!text || generating) return;
+    const images = attachments;
+    if ((!text && !images.length) || generating || attaching) return;
     if (!canSend) {
       onOpenSettings();
       return;
     }
     setInput("");
+    setAttachments([]);
     setGenerating(true);
     const myGen = ++genIdRef.current;
-    const history = historyMessages();
-    pushMsg({ role: "user", content: text, reasoning: "" });
-    if (agentMode) await runAgent(text, history, myGen);
-    else await runStream(text, history, myGen);
+    const prior = messages;
+    pushMsg({ role: "user", content: text, reasoning: "", ...(images.length ? { images } : {}) });
+    const history = await historyMessages(prior);
+    const content = await userContent(text, images);
+    if (agentMode) await runAgent(content, history, myGen);
+    else await runStream(content, history, myGen);
     if (genIdRef.current === myGen) setGenerating(false);
   }
 
@@ -431,15 +533,11 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     }
   }
 
-  async function runStream(
-    text: string,
-    history: { role: "user" | "assistant"; content: string }[],
-    myGen: number
-  ) {
+  async function runStream(content: string | unknown[], history: Turn[], myGen: number) {
     const apiMessages = [
       { role: "system" as const, content: CHAT_SYSTEM },
       ...history,
-      { role: "user" as const, content: text },
+      { role: "user" as const, content },
     ];
     pushMsg({ role: "assistant", content: "", reasoning: "" });
     const live = () => genIdRef.current === myGen;
@@ -470,15 +568,11 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     );
   }
 
-  async function runAgent(
-    text: string,
-    history: { role: string; content: string }[],
-    myGen: number
-  ) {
+  async function runAgent(content: string | unknown[], history: Turn[], myGen: number) {
     const convo: any[] = [
       { role: "system", content: AGENT_SYSTEM },
       ...history,
-      { role: "user", content: text },
+      { role: "user", content },
     ];
     for (let step = 0; step < 16; step++) {
       if (genIdRef.current !== myGen) return;
@@ -683,22 +777,23 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   }
   async function resendEdit(i: number) {
     const text = editText.trim();
-    if (!text || generating) return;
+    // Editing changes the words; the images the message was sent with stay.
+    const images = messages[i].images;
+    if ((!text && !images?.length) || generating) return;
     if (!canSend) {
       onOpenSettings();
       return;
     }
     const prior = messages.slice(0, i);
-    const history = prior
-      .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
-      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
-    setMessages([...prior, { role: "user", content: text, reasoning: "" }]);
+    setMessages([...prior, { role: "user", content: text, reasoning: "", ...(images?.length ? { images } : {}) }]);
     setEditingIndex(null);
     setEditText("");
     setGenerating(true);
     const myGen = ++genIdRef.current;
-    if (agentMode) await runAgent(text, history, myGen);
-    else await runStream(text, history, myGen);
+    const history = await historyMessages(prior);
+    const content = await userContent(text, images);
+    if (agentMode) await runAgent(content, history, myGen);
+    else await runStream(content, history, myGen);
     if (genIdRef.current === myGen) setGenerating(false);
   }
 
@@ -756,7 +851,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
         />
       </SidebarSlot>
 
-      <div className="chat-view">
+      <div className={dropHover ? "chat-view drop-hover" : "chat-view"} ref={viewRef}>
         <div className="chat-scroll" ref={scrollRef}>
           {messages.length === 0 && (
             <div className="chat-empty">
@@ -813,6 +908,13 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
                     <div className="thinking-body">{thinking}</div>
                   </details>
                 )}
+                {m.images?.length ? (
+                  <div className="msg-images">
+                    {m.images.map((a) => (
+                      <AttachmentThumb key={a.id} a={a} />
+                    ))}
+                  </div>
+                ) : null}
                 {editing ? (
                   <div className="msg-edit">
                     <textarea
@@ -838,7 +940,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
                       </button>
                     </div>
                   </div>
-                ) : (
+                ) : answer || isAssistant ? (
                   <div className="msg-body">
                     {answer ? (
                       isAssistant ? <Markdown>{answer}</Markdown> : answer
@@ -846,7 +948,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
                       isAssistant && !thinking ? "…" : ""
                     )}
                   </div>
-                )}
+                ) : null}
               </div>
             );
           })}
@@ -903,17 +1005,33 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
               </div>
             )}
           </div>
+          {(attachments.length > 0 || attaching > 0) && (
+            <div className="attach-strip">
+              {attachments.map((a) => (
+                <AttachmentThumb
+                  key={a.id}
+                  a={a}
+                  onRemove={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                />
+              ))}
+              {Array.from({ length: attaching }, (_, k) => (
+                <div key={`pending-${k}`} className="attach-thumb pending">
+                  <span>…</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="promptbar">
             <input
               type="file"
               ref={fileRef}
               hidden
-              accept=".txt,.md,.json,.js,.ts,.tsx,.jsx,.py,.rs,.html,.css,.csv,.yml,.yaml,.toml"
+              accept="image/*,.heic,.txt,.md,.json,.js,.ts,.tsx,.jsx,.py,.rs,.html,.css,.csv,.yml,.yaml,.toml"
               onChange={onAttach}
             />
             <button
               className="btn ghost attach-btn"
-              title="Attach a text file as context"
+              title="Attach an image or a text file (you can also drop or paste images)"
               onClick={() => fileRef.current?.click()}
             >
               📎
@@ -959,6 +1077,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
               }
               value={input}
               onChange={(e) => setInput(e.target.value)}
+              onPaste={onPaste}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -969,6 +1088,8 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
             <button
               className={generating ? "btn stop promptbar-send" : "btn primary promptbar-send"}
               onClick={generating ? stopGen : send}
+              disabled={!generating && attaching > 0}
+              title={!generating && attaching > 0 ? "Preparing images…" : undefined}
             >
               {generating ? "■" : "→"}
             </button>

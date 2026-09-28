@@ -530,8 +530,18 @@ fn strip_secrets(mut v: Value) -> Value {
 
 /// The Mac's own API key appropriate for `base_url` (OpenRouter vs. a custom
 /// OpenAI-compatible endpoint), read from the desktop-pushed `settings` JSON.
-fn mac_key_for(settings: &Value, base_url: &str) -> String {
+fn mac_key_for(settings: &Value, base_url: &str, model: &str) -> String {
     let pick = |k: &str| settings.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    // A prefixed model goes straight to its provider, with no base URL to go
+    // by. Choosing on the URL alone handed "google:…" the OpenRouter key: the
+    // request failed, and the OpenRouter key was sent to Google.
+    if let (Some(direct), _) = crate::providers::split(model) {
+        return pick(match direct {
+            crate::providers::Direct::Anthropic => "anthropicKey",
+            crate::providers::Direct::OpenAi => "openaiKey",
+            crate::providers::Direct::Google => "googleKey",
+        });
+    }
     if base_url.contains("openrouter.ai") {
         pick("openrouterKey")
     } else {
@@ -563,12 +573,14 @@ fn inject_key_value(mut args: Value, key: &str) -> Value {
 /// Inject the Mac's key chosen by `params.baseUrl` (for chat/text calls that carry
 /// a base URL). The phone never needs — or receives — the key.
 fn inject_key(ctx: &ServerCtx, args: Value) -> Value {
-    let base = args
-        .get("params")
-        .and_then(|p| p.get("baseUrl"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let key = mac_key_for(&ctx.settings.value(), base);
+    let param = |k: &str| {
+        args.get("params")
+            .and_then(|p| p.get(k))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let key = mac_key_for(&ctx.settings.value(), &param("baseUrl"), &param("model"));
     inject_key_value(args, &key)
 }
 
@@ -608,7 +620,7 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
         "list_openrouter_models" => {
             let mut key = args.get("apiKey").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if is_placeholder_or_empty(&key) {
-                key = mac_key_for(&ctx.settings.value(), "https://openrouter.ai");
+                key = mac_key_for(&ctx.settings.value(), "https://openrouter.ai", "");
             }
             let key = if key.is_empty() { None } else { Some(key) };
             serde_json::to_value(crate::list_openrouter_models(key).await?).map_err(|e| e.to_string())
@@ -661,6 +673,11 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             s("base64"),
             s("name"),
         )?)),
+        // Images attached to a chat message. Bytes only: the path variant reads
+        // anywhere on the Mac, so it stays off the remote surface.
+        "attach_image_bytes" => serde_json::to_value(crate::attach::attach_image_bytes(s("base64"), s("name"))?)
+            .map_err(|e| e.to_string()),
+        "attachment_get" => Ok(Value::String(crate::attach::attachment_get(s("id"))?)),
         "export_library" => {
             let files = args
                 .get("files")
@@ -675,7 +692,7 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
         "list_video_models" | "video_create" | "video_status" | "video_download" => {
             let a = inject_key_value(
                 args.clone(),
-                &mac_key_for(&ctx.settings.value(), "https://openrouter.ai"),
+                &mac_key_for(&ctx.settings.value(), "https://openrouter.ai", ""),
             );
             match command {
                 "list_video_models" => {
@@ -726,17 +743,17 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
         "list_image_models" => {
             let a = inject_key_value(
                 args.clone(),
-                &mac_key_for(&ctx.settings.value(), "https://openrouter.ai"),
+                &mac_key_for(&ctx.settings.value(), "https://openrouter.ai", ""),
             );
             serde_json::to_value(crate::list_image_models(params(&a)?).await?)
                 .map_err(|e| e.to_string())
         }
         "generate_image_openrouter" => {
-            let a = inject_key_value(args.clone(), &mac_key_for(&ctx.settings.value(), "https://openrouter.ai"));
+            let a = inject_key_value(args.clone(), &mac_key_for(&ctx.settings.value(), "https://openrouter.ai", ""));
             Ok(Value::String(crate::generate_image_openrouter(params(&a)?).await?))
         }
         "edit_image_openrouter" => {
-            let a = inject_key_value(args.clone(), &mac_key_for(&ctx.settings.value(), "https://openrouter.ai"));
+            let a = inject_key_value(args.clone(), &mac_key_for(&ctx.settings.value(), "https://openrouter.ai", ""));
             Ok(Value::String(crate::edit_image_openrouter(params(&a)?).await?))
         }
         // --- filesystem / web (read-only, confined to the workspace root) ---
@@ -1103,11 +1120,19 @@ mod tests {
     #[test]
     fn mac_key_for_picks_by_base_url() {
         let s = json!({ "openrouterKey": "sk-or", "customKey": "sk-cust" });
-        assert_eq!(mac_key_for(&s, "https://openrouter.ai/api/v1"), "sk-or");
-        assert_eq!(mac_key_for(&s, "http://my-proxy.local/v1"), "sk-cust");
+        assert_eq!(mac_key_for(&s, "https://openrouter.ai/api/v1", "google/gemini-3.8-flash"), "sk-or");
+        assert_eq!(mac_key_for(&s, "http://my-proxy.local/v1", "m"), "sk-cust");
         // With no custom key, a custom endpoint falls back to the OpenRouter key.
         let s2 = json!({ "openrouterKey": "sk-or", "customKey": "" });
-        assert_eq!(mac_key_for(&s2, "http://my-proxy.local/v1"), "sk-or");
+        assert_eq!(mac_key_for(&s2, "http://my-proxy.local/v1", "m"), "sk-or");
+    }
+
+    #[test]
+    fn a_direct_model_gets_its_own_providers_key_and_never_openrouters() {
+        let s = json!({ "openrouterKey": "sk-or", "googleKey": "g-key", "anthropicKey": "" });
+        assert_eq!(mac_key_for(&s, "", "google:gemini-3.8-flash"), "g-key");
+        // No key for that provider: send none, rather than someone else's.
+        assert_eq!(mac_key_for(&s, "", "anthropic:claude-sonnet-5"), "");
     }
 
     #[test]

@@ -7,6 +7,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
+mod attach;
 mod comfy;
 mod control;
 mod providers;
@@ -53,7 +54,8 @@ impl EventSink for ChannelSink {
 #[serde(rename_all = "camelCase")]
 struct ChatMessage {
     role: String,
-    content: String,
+    /// A string, or the OpenAI content-part array when images are attached.
+    content: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -2849,6 +2851,9 @@ pub fn run() {
             doc_versions_clear,
             export_library,
             save_dropped_file,
+            attach::attach_image_path,
+            attach::attach_image_bytes,
+            attach::attachment_get,
             comfy_status,
             comfy_download_model,
             comfy_installed_models,

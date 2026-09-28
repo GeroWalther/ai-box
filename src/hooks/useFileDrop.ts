@@ -44,16 +44,21 @@ interface Options {
   enabled: boolean;
   /** Called with the resolved Mac paths, in drop order. */
   onPaths: (paths: string[]) => void;
+  /** Browser only: take the dropped files as they are, instead of uploading
+   *  each one to the Mac as a path. */
+  onFiles?: (files: File[]) => void;
 }
 
 /**
  * Returns whether a drag is currently hovering the target, so the caller can
  * show a drop affordance.
  */
-export function useFileDrop({ target, enabled, onPaths }: Options): boolean {
+export function useFileDrop({ target, enabled, onPaths, onFiles }: Options): boolean {
   const [hovering, setHovering] = useState(false);
   const onPathsRef = useRef(onPaths);
   onPathsRef.current = onPaths;
+  const onFilesRef = useRef(onFiles);
+  onFilesRef.current = onFiles;
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
 
@@ -133,6 +138,10 @@ export function useFileDrop({ target, enabled, onPaths }: Options): boolean {
       setHovering(false);
       const files = Array.from(e.dataTransfer?.files ?? []);
       if (!files.length) return;
+      if (onFilesRef.current) {
+        onFilesRef.current(files);
+        return;
+      }
       const paths: string[] = [];
       for (const file of files) {
         try {
