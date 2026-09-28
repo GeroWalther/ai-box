@@ -264,6 +264,9 @@ const SECRET_FIELDS = [
   "googleKey",
 ] as const;
 
+/** Whether a settings change touches an API key, and so must reach the keychain. */
+export const touchesSecrets = (patch: Partial<Settings>) => SECRET_FIELDS.some((k) => k in patch);
+
 export function loadSettings(): Settings {
   try {
     const raw = readWithLegacy(STORAGE_KEY, LEGACY_STORAGE_KEY);
@@ -273,6 +276,10 @@ export function loadSettings(): Settings {
     // Safety net: never leave the app on the custom provider without a model,
     // which would make every send fail the "pick a model" guard.
     if (s.provider === "custom" && !s.customModel) s.provider = "openrouter";
+    // Rewrite, not just read around: the pickers show the stored id, and they
+    // should show the model the request will really go to.
+    s.openrouterModel = alignModel(s.openrouterModel, s.activeProvider);
+    s.assistModel = alignModel(s.assistModel, s.activeProvider);
     return s;
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -351,9 +358,10 @@ export function resolveTextProvider(s: Settings): {
   // choosing Anthropic, and asking the user to set a second switch to agree
   // with their own choice would only create a way to get it wrong.
   if (s.provider === "openrouter") {
-    const direct = directProviderOf(s.openrouterModel);
+    const model = alignModel(s.openrouterModel, s.activeProvider);
+    const direct = directProviderOf(model);
     if (direct) {
-      return { baseUrl: "", apiKey: String(s[direct.key] ?? ""), model: s.openrouterModel };
+      return { baseUrl: "", apiKey: String(s[direct.key] ?? ""), model };
     }
   }
   switch (s.provider) {
@@ -435,6 +443,28 @@ export function directProviderOf(model: string): ProviderChoice | null {
   return DIRECT_PROVIDERS.find((p) => p.id === prefix) ?? null;
 }
 
+/**
+ * The same model, named for the provider the user has chosen.
+ *
+ * Choosing a provider changes which models the pickers offer, but a model
+ * picked before the switch stays stored under its old name. OpenRouter names
+ * Gemini "google/gemini-…" and Google names it "gemini-…", so a Screen Assist
+ * choice made on OpenRouter kept billing OpenRouter after the user moved to
+ * their own Google key — and failed with "out of credit" on an account they had
+ * stopped using, while the credit they had sat untouched.
+ *
+ * Only a model from the chosen provider's own family is renamed. Anything else
+ * is left alone: guessing another vendor's equivalent would be worse than a
+ * clear refusal from the provider.
+ */
+export function alignModel(model: string, active: string): string {
+  if (!model || model.startsWith(LOCAL_PREFIX) || active === "openrouter") return model;
+  if (directProviderOf(model)) return model;
+  const slash = model.indexOf("/");
+  if (slash > 0 && model.slice(0, slash) === active) return `${active}:${model.slice(slash + 1)}`;
+  return model;
+}
+
 /** The active provider, and the key it uses. */
 export function activeProvider(s: Settings): { provider: ProviderChoice; apiKey: string } {
   const provider = providerById(s.activeProvider);
@@ -455,6 +485,7 @@ export function assistProvider(s: Settings): {
   model: string;
   local: boolean;
 } {
+  s = { ...s, assistModel: alignModel(s.assistModel, s.activeProvider) };
   if (s.assistModel.startsWith(LOCAL_PREFIX)) {
     return {
       baseUrl: s.ollamaUrl,

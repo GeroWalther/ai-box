@@ -4,7 +4,7 @@
 // in this file: the installed macOS voices, and the models that can actually see
 // a screenshot. Both change without this app being rebuilt.
 import { useEffect, useState } from "react";
-import { LOCAL_PREFIX, activeProvider, type Settings } from "../lib/settings";
+import { LOCAL_PREFIX, activeProvider, assistProvider, type Settings } from "../lib/settings";
 import { useDirectModels } from "../hooks/useDirectModels";
 import { checkModel } from "../lib/screenAssist";
 import {
@@ -121,7 +121,7 @@ export default function AssistSettings({ settings, onChange }: Props) {
     const previous = settings.assistModel;
     onChange({ assistModel: id });
     setRefusal("");
-    if (!id.startsWith(LOCAL_PREFIX) && !settings.openrouterKey.trim()) return;
+    if (!id.startsWith(LOCAL_PREFIX) && !assistProvider({ ...settings, assistModel: id }).apiKey.trim()) return;
 
     setChecking(true);
     try {

@@ -19,6 +19,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   LOCAL_PREFIX,
   activeProvider,
+  directProviderOf,
   loadSecrets,
   loadSettings,
   mergeBroadcast,
@@ -556,7 +557,10 @@ export default function ScreenAssist() {
                       is worse than one showing a bad choice. */}
                   {!usableModels.some((m) => m.id === settings.assistModel) &&
                     !settings.assistModel.startsWith(LOCAL_PREFIX) && (
-                      <option value={settings.assistModel}>{settings.assistModel}</option>
+                      <option value={settings.assistModel}>
+                        {settings.assistModel}
+                        {directProviderOf(settings.assistModel) ? "" : " (via OpenRouter)"}
+                      </option>
                     )}
                   {localModels.length > 0 && (
                     <optgroup label="On this Mac">

@@ -19,7 +19,7 @@ import {
 } from "./api";
 import { CONTROL_TOOLS, describe, runTool, targetPoint, type Step } from "./control";
 import { buildScreenAssistMessages, parseScreenAnswer, type ScreenAnswer } from "./presets";
-import { assistProvider, type Settings } from "./settings";
+import { assistProvider, directProviderOf, type Settings } from "./settings";
 
 /** Audio captured from the microphone, ready to send. */
 export interface Clip {
@@ -86,13 +86,12 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
         "Type the question instead, or pick a hosted model under ⚙."
     );
   }
-  // Say which key is missing rather than letting OpenRouter answer with a bare
-  // 401, which reads as "your key is wrong" when the real cause is that this
-  // window never loaded it. A model running on this Mac needs no key at all.
+  // Say which key is missing rather than letting the provider answer with a
+  // bare 401, which reads as "your key is wrong" when the real cause is that
+  // this window never loaded it. A model running on this Mac needs no key.
   if (!provider.local && !provider.apiKey.trim()) {
-    throw new Error(
-      "No OpenRouter key available. Open AI Box → Settings and check the key is saved."
-    );
+    const label = directProviderOf(provider.model)?.label ?? "OpenRouter";
+    throw new Error(`No ${label} key available. Open AI Box → Settings and check the key is saved.`);
   }
 
   // Acting needs eyes: the model has to see what it just did before it does the
@@ -288,10 +287,11 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
         ? "I stopped you there. In one or two sentences, say what you did and what is left."
         : "That is as many steps as you get. In one or two sentences, say what you did and what is left.",
     });
+    // Same provider as every other step of the run, not OpenRouter regardless.
     const wrap = await chatCompletion({
-      baseUrl: "https://openrouter.ai/api/v1",
-      apiKey: settings.openrouterKey,
-      model: settings.assistModel,
+      baseUrl: provider.baseUrl,
+      apiKey: provider.apiKey,
+      model: provider.model,
       messages,
       tools: [],
       temperature: 0.2,

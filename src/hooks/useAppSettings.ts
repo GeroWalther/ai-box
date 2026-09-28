@@ -14,6 +14,7 @@ import {
   loadSettings,
   mergeBroadcast,
   saveSecrets,
+  touchesSecrets,
   saveSettings,
   SETTINGS_EVENT,
   type Settings,
@@ -104,8 +105,11 @@ export function useAppSettings() {
       const next = { ...prev, ...patch };
       saveSettings(next);
       publish(next);
-      // Only touch the keychain when a key actually changed.
-      if ("openrouterKey" in patch || "customKey" in patch) void saveSecrets(next);
+      // Only touch the keychain when a key actually changed — any of them. This
+      // used to name only the OpenRouter and custom keys, so a Google, Anthropic
+      // or OpenAI key lived in this window's memory and nowhere else: gone on
+      // restart, and never visible to the Screen Assist window at all.
+      if (touchesSecrets(patch)) void saveSecrets(next);
       return next;
     });
   }, []);
