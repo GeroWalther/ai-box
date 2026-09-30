@@ -369,6 +369,14 @@ const BAR_W: f64 = 760.0;
 /// the pointer, and the watcher reacting to that could make the bar solid again
 /// just as the click arrives.
 static ACTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The overlay is open — from the shortcut until it is dismissed. Not the same
+/// as the bar being visible: the bar hides for a moment before every
+/// screenshot, and the pointer watcher used to take that for "closed" and stop
+/// for good. Everything after the first screenshot of a question then stayed
+/// click-through — Stop and ✕ included — until Escape.
+static OVERLAY_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// One watcher at a time, however often the shortcut is pressed.
+static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Forget what the watcher last applied, so its next tick applies the right
 /// state afresh.
@@ -546,16 +554,29 @@ pub fn overlay_hot_rect(x: f64, y: f64, width: f64, height: f64) -> Result<(), S
 /// crossing is nothing, and asking `NSEvent` where the pointer is costs one
 /// message send. It stops by itself when the bar is hidden.
 fn watch_pointer(app: tauri::AppHandle) {
+    use std::sync::atomic::Ordering::Relaxed;
+    OVERLAY_OPEN.store(true, Relaxed);
+    if WATCHING.swap(true, Relaxed) {
+        return; // already watching
+    }
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-            let Some(bar) = app.get_webview_window(BAR) else { return };
-            if !bar.is_visible().unwrap_or(false) {
+            let Some(bar) = app.get_webview_window(BAR) else {
+                WATCHING.store(false, Relaxed);
+                return;
+            };
+            if !OVERLAY_OPEN.load(Relaxed) {
                 let _ = bar.set_ignore_cursor_events(false);
                 if let Ok(mut inside) = POINTER_INSIDE.lock() {
                     *inside = None;
                 }
+                WATCHING.store(false, Relaxed);
                 return;
+            }
+            // Hidden for a screenshot: it comes straight back. Keep watching.
+            if !bar.is_visible().unwrap_or(false) {
+                continue;
             }
             if ACTING.load(std::sync::atomic::Ordering::Relaxed) {
                 continue;
@@ -688,10 +709,10 @@ pub fn overlay_pass_clicks(
 ) -> Result<(), String> {
     let bar = app.get_webview_window(BAR).ok_or("no bar")?;
     if !on {
-        // Hand the window back to the watcher rather than making it solid: it
-        // is solid only where the bar is drawn, which keeps Stop pressable
-        // without blocking the rest of the screen.
+        // Clickable again at once — Stop must always work — and the watcher
+        // narrows it back to the drawn part on its next tick.
         ACTING.store(false, std::sync::atomic::Ordering::Relaxed);
+        let _ = bar.set_ignore_cursor_events(false);
         recheck_pointer();
         return Ok(());
     }
@@ -765,6 +786,7 @@ pub fn overlay_escape(app: tauri::AppHandle, active: bool) -> Result<(), String>
 /// Dismiss everything.
 #[tauri::command]
 pub fn overlay_close(app: tauri::AppHandle) -> Result<(), String> {
+    OVERLAY_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
     // Whatever route got us here, Escape goes back to the rest of the Mac.
     let _ = overlay_escape(app.clone(), false);
     if let Some(bar) = app.get_webview_window(BAR) {

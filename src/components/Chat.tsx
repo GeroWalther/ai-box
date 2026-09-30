@@ -586,17 +586,22 @@ export default function Chat({ settings, onChange, onOpenSettings, sidebarSlot, 
     if (!session) return;
     try {
       if (session.taskId && !history) {
-        await sendToTask(session.taskId, text, images, provider.baseUrl, provider.model);
-        void pokeTask(session.taskId);
-        return;
+        try {
+          await sendToTask(session.taskId, text, images, provider.baseUrl, provider.model);
+          void pokeTask(session.taskId);
+          return;
+        } catch (e) {
+          // The chat points at a task the Mac no longer has. Rather than a
+          // chat that answers every message with "no such task", start it
+          // afresh below, carrying the conversation on as context.
+          if (!/no such task/i.test(String(e))) throw e;
+          logError("chat.task.missing", e);
+        }
       }
-      const t = await startTask(
-        text,
-        images,
-        provider.baseUrl,
-        provider.model,
-        history ?? plainHistory(session.messages),
-      );
+      // The recent part only: a long chat (Screen Assist collects hundreds of
+      // exchanges) would otherwise go to the model in full with every step.
+      const context = (history ?? plainHistory(session.messages)).slice(-40);
+      const t = await startTask(text, images, provider.baseUrl, provider.model, context);
       // Speak this one's replies even though it is new: it was just asked.
       spokenRef.current[t.id] = { steps: t.steps.length, pending: "" };
       setTask(t);
@@ -693,6 +698,11 @@ export default function Chat({ settings, onChange, onOpenSettings, sidebarSlot, 
         timer = setTimeout(tick, t && isLive(t.status) ? 1000 : 6000);
       } catch (e) {
         logError("chat.task", e);
+        // Gone for good: stop asking. The next message starts a new task.
+        if (/no such task/i.test(String(e))) {
+          setTask(null);
+          return;
+        }
         if (!stop) timer = setTimeout(tick, 4000);
       }
     };
