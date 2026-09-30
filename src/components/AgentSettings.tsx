@@ -16,7 +16,21 @@ interface Props {
 export default function AgentSettings({ settings, onChange }: Props) {
   return (
     <section>
-      <h3>Agent permissions</h3>
+      <h3>Agent &amp; Assistant</h3>
+
+      <label htmlFor="assistant-profile">Your details for the Assistant</label>
+      <textarea
+        id="assistant-profile"
+        rows={4}
+        placeholder={"Name: …\nPhone: …\nEmail: …\nAddress: …"}
+        value={settings.assistantProfile}
+        onChange={(e) => onChange({ assistantProfile: e.target.value })}
+      />
+      <p className="hint">
+        What the Assistant may use to fill in forms — a reservation, a delivery address. It never
+        invents details; anything missing here, it asks you for. Never put passwords or card
+        numbers here: logging in and paying are always handed back to you.
+      </p>
 
       <label htmlFor="agent-workspace">Workspace folder</label>
       <input

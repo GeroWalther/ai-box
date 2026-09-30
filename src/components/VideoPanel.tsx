@@ -19,7 +19,7 @@
 //     shots into one MP4.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Settings } from "../lib/settings";
-import { resolveTextProvider } from "../lib/settings";
+import { activeProvider, directProviderOf, resolveTextProvider } from "../lib/settings";
 import { chatCompletion } from "../lib/agent";
 import {
   AD_TONES,
@@ -33,6 +33,7 @@ import {
   createVideo,
   downloadVideo,
   listVideoModels,
+  listProviderVideoModels,
   saveVideo,
   stitchAvailable,
   stitchVideos,
@@ -135,7 +136,18 @@ export default function VideoPanel({
     };
   }, []);
 
-  const apiKey = settings.openrouterKey;
+  // "Cloud" is the provider chosen in Settings: with Gemini, clips are made by
+  // Veo on the Gemini key and billed there.
+  const { provider: cloud, apiKey: cloudKey } = activeProvider(settings);
+  const direct = cloud.id !== "openrouter";
+  const apiKey = direct ? cloudKey : settings.openrouterKey;
+  /** The key for a model or a job: whoever it belongs to, not whoever is
+   *  chosen now — a clip started on OpenRouter is still fetched from it after
+   *  a switch. A phone has no keys; the Mac supplies the right one. */
+  const keyFor = (id: string) => {
+    const p = directProviderOf(id);
+    return p ? String(settings[p.key] ?? "") : settings.openrouterKey;
+  };
 
   /**
    * The picker, grouped by family. The grouping is DERIVED from the catalog
@@ -146,7 +158,9 @@ export default function VideoPanel({
   const families = useMemo(() => {
     const groups = new Map<string, VideoModel[]>();
     for (const m of models) {
-      const label = m.name.includes(":")
+      const label = direct
+        ? cloud.label
+        : m.name.includes(":")
         ? m.name.split(":")[0].trim()
         : m.id.split("/")[0];
       const bucket = groups.get(label);
@@ -167,7 +181,7 @@ export default function VideoPanel({
   const loadCatalog = useCallback(async () => {
     setLoadingCatalog(true);
     try {
-      const list = await listVideoModels(apiKey);
+      const list = direct ? await listProviderVideoModels(cloud.id, cloudKey) : await listVideoModels(apiKey);
       if (!alive.current) return;
       setModels(list);
       setCatalogError("");
@@ -183,7 +197,7 @@ export default function VideoPanel({
       if (alive.current) setLoadingCatalog(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKey]);
+  }, [apiKey, direct, cloud.id]);
 
   useEffect(() => {
     void loadCatalog();
@@ -336,7 +350,7 @@ export default function VideoPanel({
           await saveRecord({
             ...rec,
             status: "failed",
-            error: "Gave up waiting after 30 minutes. The job may still finish on OpenRouter.",
+            error: "Gave up waiting after 30 minutes. The job may still finish at the provider.",
           });
           return;
         }
@@ -345,7 +359,7 @@ export default function VideoPanel({
 
         let job;
         try {
-          job = await videoStatus(apiKey, rec.jobId);
+          job = await videoStatus(keyFor(rec.jobId), rec.jobId);
         } catch (e) {
           // A transient network blip must not kill a paid render — keep polling
           // and let the timeout above be the only thing that gives up.
@@ -371,7 +385,7 @@ export default function VideoPanel({
           return;
         }
 
-        const { bytes } = await downloadVideo(apiKey, rec.id, job.url);
+        const { bytes } = await downloadVideo(keyFor(rec.jobId), rec.id, job.url);
         const done: VideoRecord = {
           ...rec,
           status: "completed",
@@ -417,7 +431,7 @@ export default function VideoPanel({
   async function submit(text: string, shot?: { index: number; boardId: string }) {
     if (!model) throw new Error("Pick a video model first.");
     const { id: jobId } = await createVideo({
-      apiKey,
+      apiKey: keyFor(model.id),
       model: model.id,
       prompt: text,
       duration: chosen?.duration || undefined,
@@ -611,7 +625,8 @@ export default function VideoPanel({
   }
 
   const pendingCount = library.filter(isPending).length;
-  const needsKey = !apiKey;
+  // Only the Mac holds keys; on a phone the Mac supplies them.
+  const needsKey = isTauri() && !apiKey;
 
   // ---- render -------------------------------------------------------------
 
@@ -694,8 +709,8 @@ export default function VideoPanel({
 
         {needsKey && (
           <p className="hint error">
-            Video generation runs through OpenRouter — add your API key in
-            Settings. Your key stays on this Mac; a paired phone never receives it.
+            Video is made on your {cloud.label} key — add it in Settings. Your key stays on
+            this Mac; a paired phone never receives it.
           </p>
         )}
 
@@ -703,9 +718,12 @@ export default function VideoPanel({
           <label>
             Model{" "}
             <span className="muted">
-              {loadingCatalog ? "· loading…" : `· ${models.length} live`}
+              · {cloud.label} {loadingCatalog ? "· loading…" : `· ${models.length} available`}
             </span>
           </label>
+          {cloud.id === "anthropic" && (
+            <p className="hint">Anthropic has no video models. Choose another provider in Settings.</p>
+          )}
           <div className="row-inline">
             <select
               value={model?.id ?? ""}

@@ -108,6 +108,11 @@ fn store(bytes: &[u8], name: &str, source: Option<String>) -> Result<Attachment,
     Ok(Attachment { id, name, source })
 }
 
+/// Store an image the app made itself (a browser screenshot) and return its id.
+pub fn store_bytes(bytes: &[u8], name: &str) -> Result<String, String> {
+    store(bytes, name, None).map(|a| a.id)
+}
+
 /// An image the user dropped from Finder onto the desktop app. Desktop only:
 /// it reads an arbitrary path, so it is deliberately absent from the remote
 /// server's command table.

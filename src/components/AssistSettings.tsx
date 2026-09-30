@@ -277,6 +277,11 @@ export default function AssistSettings({ settings, onChange }: Props) {
                 see and it can act, but no local model can <i>hear</i> — so this one
                 is typed questions only.
               </>
+            ) : active.id !== "openrouter" ? (
+              // The chosen provider's own models, on its key — no OpenRouter
+              // price or catalogue applies to them.
+              `${providerUsable.length} ${active.label} models qualify, on your ${active.label} key` +
+              `${local.length ? `, plus ${local.length} on this Mac` : ""}.`
             ) : selected ? (
               <>
                 ${(selected.promptPrice * 1e6).toFixed(2)} / M input tokens. Sees the

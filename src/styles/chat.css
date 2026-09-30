@@ -292,3 +292,94 @@
     height: 90px;
   }
 }
+
+/* The chat composer: the text on top, full width, and one row of controls
+   under it — the model and mode as a chip rather than a separate panel. */
+.composer {
+  max-width: 820px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 10px 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+.composer:focus-within {
+  border-color: var(--accent);
+}
+.composer-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 4px 2px;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  resize: none;
+  overflow-y: auto;
+}
+.composer-input:focus {
+  outline: none;
+}
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.composer-spacer {
+  flex: 1;
+}
+.composer .attach-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+.composer .promptbar-send {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+}
+.composer .attach-strip {
+  padding: 0 0 4px;
+}
+.composer-chip {
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.composer-chip:hover,
+.composer-chip.open {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.promptbar-wrap .prompt-tools {
+  max-width: 820px;
+  box-sizing: border-box;
+  margin: 0 0 8px;
+}
+@media (max-width: 768px) {
+  .composer-input {
+    font-size: 16px; /* below 16px iOS zooms the page on focus */
+  }
+  .promptbar-wrap {
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  }
+  .composer-chip {
+    flex: 0 1 auto;
+  }
+}

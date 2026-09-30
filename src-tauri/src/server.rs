@@ -221,6 +221,19 @@ pub fn urls(state: &RemoteState) -> Value {
     })
 }
 
+/// The `tailscale` CLI, set up so it can reach the Tailscale app.
+///
+/// The macOS CLI is a shim that talks to the Tailscale app, and it only does so
+/// when TERM is set — from a terminal it always is; in an app started from
+/// Finder it is not, and the shim prints "The Tailscale GUI failed to start"
+/// and gives up. That is why the HTTPS link never appeared in the installed
+/// app while every command worked when tried by hand.
+fn ts_command(bin: &str) -> std::process::Command {
+    let mut c = std::process::Command::new(bin);
+    c.env("TERM", std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()));
+    c
+}
+
 /// Locate a runnable `tailscale` CLI (GUI apps rarely have it on PATH).
 fn tailscale_bin() -> Option<&'static str> {
     const CANDIDATES: [&str; 4] = [
@@ -230,7 +243,7 @@ fn tailscale_bin() -> Option<&'static str> {
         "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
     ];
     CANDIDATES.into_iter().find(|bin| {
-        std::process::Command::new(bin)
+        ts_command(bin)
             .arg("version")
             .output()
             .map(|o| o.status.success())
@@ -251,7 +264,7 @@ fn tailscale_ip() -> Option<String> {
     // Fall back to the CLI, which does work when the app inherits a terminal's
     // environment (`npm run tauri dev`), and on any platform without the shim.
     let bin = tailscale_bin()?;
-    let out = std::process::Command::new(bin).args(["ip", "-4"]).output().ok()?;
+    let out = ts_command(bin).args(["ip", "-4"]).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -299,7 +312,7 @@ fn first_ipv4(stdout: &str) -> Option<String> {
 /// This node's MagicDNS name (e.g. `machine.tailnet.ts.net`), used for the HTTPS URL.
 fn tailscale_dns_name() -> Option<String> {
     let bin = tailscale_bin()?;
-    let out = std::process::Command::new(bin).args(["status", "--json"]).output().ok()?;
+    let out = ts_command(bin).args(["status", "--json"]).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -311,7 +324,7 @@ fn tailscale_dns_name() -> Option<String> {
 /// If `tailscale serve` is exposing OUR port over HTTPS, return that https URL.
 fn tailscale_https_url(port: u16) -> Option<String> {
     let bin = tailscale_bin()?;
-    let out = std::process::Command::new(bin)
+    let out = ts_command(bin)
         .args(["serve", "status", "--json"])
         .output()
         .ok()?;
@@ -356,7 +369,7 @@ pub async fn serve_enable(state: &RemoteState) -> Result<String, String> {
         return Ok(u);
     }
     let bin = tailscale_bin().ok_or("Tailscale isn't installed on this Mac.")?;
-    let run = tokio::process::Command::new(bin)
+    let run = tokio::process::Command::from(ts_command(bin))
         .args(["serve", "--bg", &format!("localhost:{port}")])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -476,7 +489,7 @@ async fn require_approval_diff(
 
 /// A capped, naive line-level diff for the approval preview: old lines as `-`,
 /// new lines as `+`. Good enough to see what an edit/overwrite does.
-fn preview_diff(old: &str, new: &str) -> String {
+pub(crate) fn preview_diff(old: &str, new: &str) -> String {
     const MAX: usize = 200;
     let mut out = String::new();
     for l in old.lines().take(MAX) {
@@ -516,7 +529,9 @@ fn is_placeholder_or_empty(k: &str) -> bool {
 /// lives in the phone's storage.
 fn strip_secrets(mut v: Value) -> Value {
     if let Some(o) = v.as_object_mut() {
-        for k in ["openrouterKey", "customKey"] {
+        // Every provider key. This listed only the first two, so a Google,
+        // Anthropic or OpenAI key went to the phone as itself.
+        for k in ["openrouterKey", "customKey", "anthropicKey", "openaiKey", "googleKey"] {
             let configured = o.get(k).and_then(|x| x.as_str()).map_or(false, |s| !s.is_empty());
             o.insert(
                 k.into(),
@@ -530,7 +545,7 @@ fn strip_secrets(mut v: Value) -> Value {
 
 /// The Mac's own API key appropriate for `base_url` (OpenRouter vs. a custom
 /// OpenAI-compatible endpoint), read from the desktop-pushed `settings` JSON.
-fn mac_key_for(settings: &Value, base_url: &str, model: &str) -> String {
+pub(crate) fn mac_key_for(settings: &Value, base_url: &str, model: &str) -> String {
     let pick = |k: &str| settings.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     // A prefixed model goes straight to its provider, with no base URL to go
     // by. Choosing on the URL alone handed "google:…" the OpenRouter key: the
@@ -626,6 +641,25 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             serde_json::to_value(crate::list_openrouter_models(key).await?).map_err(|e| e.to_string())
         }
         "list_ollama_models" => Ok(json!(crate::list_ollama_models(s("baseUrl")).await?)),
+        // A direct provider's models. The phone holds a placeholder, never the
+        // key; the Mac lists them on its own key for that provider. Missing
+        // from here, the phone's pickers said "no models; check the key" while
+        // the very same key was doing the work.
+        "list_provider_video_models" => {
+            let provider = s("provider");
+            let key = mac_key_for(&ctx.settings.value(), "", &format!("{provider}:"));
+            Ok(json!(crate::video::list_provider_video_models(provider, key).await?))
+        }
+        "list_provider_image_models" => {
+            let provider = s("provider");
+            let key = mac_key_for(&ctx.settings.value(), "", &format!("{provider}:"));
+            Ok(json!(crate::list_provider_image_models(provider, key).await?))
+        }
+        "list_provider_models" => {
+            let provider = s("provider");
+            let key = mac_key_for(&ctx.settings.value(), "", &format!("{provider}:"));
+            Ok(json!(crate::list_provider_models(provider, key).await?))
+        }
         "list_comfy_checkpoints" => Ok(json!(crate::list_comfy_checkpoints(s("baseUrl")).await?)),
         "system_info" => Ok(crate::system_info()),
         // The desktop's settings, so a paired phone adopts the same model/options —
@@ -678,6 +712,36 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
         "attach_image_bytes" => serde_json::to_value(crate::attach::attach_image_bytes(s("base64"), s("name"))?)
             .map_err(|e| e.to_string()),
         "attachment_get" => Ok(Value::String(crate::attach::attachment_get(s("id"))?)),
+        // The assistant. A task runs on the Mac whoever started it; the phone
+        // starts, watches and answers. The key is resolved on the Mac from the
+        // model, never taken from the phone.
+        "task_start" => {
+            let list = |k: &str| args.get(k).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            serde_json::to_value(crate::tasks::start(&ctx.app, s("goal"), list("images"), s("baseUrl"), s("model"), list("history"))?)
+                .map_err(|e| e.to_string())
+        }
+        "task_send" => {
+            let images = args.get("images").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            crate::tasks::send(&ctx.app, &s("id"), s("text"), images, s("baseUrl"), s("model"))?;
+            Ok(Value::Null)
+        }
+        "task_list" => Ok(Value::Array(crate::tasks::list(&ctx.app))),
+        "task_get" => serde_json::to_value(crate::tasks::get(&ctx.app, &s("id"), args.get("since").and_then(|v| v.as_u64()))?)
+            .map_err(|e| e.to_string()),
+        "task_answer" => {
+            let approved = args.get("approved").and_then(|v| v.as_bool());
+            let text = args.get("text").and_then(|v| v.as_str()).map(str::to_string);
+            crate::tasks::answer(&ctx.app, &s("pendingId"), approved, text)?;
+            Ok(Value::Null)
+        }
+        "task_stop" => {
+            crate::tasks::stop(&ctx.app, &s("id"));
+            Ok(Value::Null)
+        }
+        "task_delete" => {
+            crate::tasks::delete(&ctx.app, &s("id"))?;
+            Ok(Value::Null)
+        }
         "export_library" => {
             let files = args
                 .get("files")
@@ -690,9 +754,20 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
         // Generation is async, so the phone drives create → status → download
         // exactly as the desktop does; only the key handling differs.
         "list_video_models" | "video_create" | "video_status" | "video_download" => {
+            // Whose key: the model says it when creating, the job id when
+            // polling ("google:…"), and the file's address when downloading.
+            let p = &args["params"];
+            let url = p["url"].as_str().unwrap_or("");
+            let owner = if url.starts_with("https://generativelanguage.googleapis.com") {
+                "google:".to_string()
+            } else if url.starts_with("https://api.openai.com") {
+                "openai:".to_string()
+            } else {
+                p["model"].as_str().or(p["jobId"].as_str()).unwrap_or("").to_string()
+            };
             let a = inject_key_value(
                 args.clone(),
-                &mac_key_for(&ctx.settings.value(), "https://openrouter.ai", ""),
+                &mac_key_for(&ctx.settings.value(), "https://openrouter.ai", &owner),
             );
             match command {
                 "list_video_models" => {
@@ -748,12 +823,16 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             serde_json::to_value(crate::list_image_models(params(&a)?).await?)
                 .map_err(|e| e.to_string())
         }
+        // The key follows the model: "google:…" draws on the Gemini key, a bare
+        // id on OpenRouter's.
         "generate_image_openrouter" => {
-            let a = inject_key_value(args.clone(), &mac_key_for(&ctx.settings.value(), "https://openrouter.ai", ""));
+            let model = args["params"]["model"].as_str().unwrap_or("").to_string();
+            let a = inject_key_value(args.clone(), &mac_key_for(&ctx.settings.value(), "https://openrouter.ai", &model));
             Ok(Value::String(crate::generate_image_openrouter(params(&a)?).await?))
         }
         "edit_image_openrouter" => {
-            let a = inject_key_value(args.clone(), &mac_key_for(&ctx.settings.value(), "https://openrouter.ai", ""));
+            let model = args["params"]["model"].as_str().unwrap_or("").to_string();
+            let a = inject_key_value(args.clone(), &mac_key_for(&ctx.settings.value(), "https://openrouter.ai", &model));
             Ok(Value::String(crate::edit_image_openrouter(params(&a)?).await?))
         }
         // --- filesystem / web (read-only, confined to the workspace root) ---
@@ -1115,6 +1194,17 @@ mod tests {
         assert!(out.get("remoteToken").is_none());
         // Non-secret settings survive.
         assert_eq!(out["model"], "anthropic/claude-fable-5");
+    }
+
+    #[test]
+    fn no_provider_key_reaches_the_phone() {
+        let out = strip_secrets(json!({
+            "googleKey": "AIza-real", "anthropicKey": "sk-ant-real", "openaiKey": "sk-proj-real",
+        }));
+        for k in ["googleKey", "anthropicKey", "openaiKey"] {
+            assert_eq!(out[k], REMOTE_KEY_SENTINEL, "{k}");
+        }
+        assert!(!out.to_string().contains("real"));
     }
 
     #[test]

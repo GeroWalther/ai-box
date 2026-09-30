@@ -56,11 +56,17 @@ export function useAppSettings() {
         for (const k of ["openrouterKey", "customKey"] as const) {
           if (!secrets[k] && loaded[k]) migrated[k] = loaded[k]; // legacy → keychain
         }
-        const next = { ...loaded, ...secrets, ...migrated };
-        if (Object.keys(migrated).length) await saveSecrets(next);
-        saveSettings(next); // rewrites localStorage without the keys
-        setSettings(next);
-        publish(next);
+        if (Object.keys(migrated).length) await saveSecrets({ ...loaded, ...secrets, ...migrated });
+        // Merged onto the CURRENT settings, not the copy loaded before the
+        // keychain was read. Anything set in between — the phone pairing token,
+        // minted on startup when there is none — used to be overwritten here, so
+        // every launch minted a new one and locked every paired phone out.
+        setSettings((prev) => {
+          const next = { ...prev, ...secrets, ...migrated };
+          saveSettings(next); // rewrites localStorage without the keys
+          publish(next);
+          return next;
+        });
       })();
       return;
     }

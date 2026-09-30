@@ -11,7 +11,7 @@
 <plist version="1.0">
 <dict>
   <key>NSAppleEventsUsageDescription</key>
-  <string>AI Box uses this to carry out what you ask Screen Assist to do — change a setting, open or quit an app, adjust the volume.</string>
+  <string>AI Box uses this to carry out what you ask it to do — change a setting, open or quit an app, adjust the volume, or work in a browser tab you have open.</string>
   <key>NSBluetoothAlwaysUsageDescription</key>
   <string>AI Box uses this to switch Bluetooth on and off when you ask Screen Assist to.</string>
   <key>NSBluetoothPeripheralUsageDescription</key>

@@ -111,6 +111,18 @@ unsafe fn key_panel_class() -> Result<*const AnyClass, String> {
         extern "C-unwind" fn no(_: &objc2::runtime::NSObject, _: Sel) -> Bool {
             Bool::NO
         }
+        // Wherever it is put. AppKit otherwise keeps a window's top edge below
+        // the menu bar — and the bar sits at the BOTTOM of this tall, mostly
+        // transparent window, so it could never be dragged higher than the
+        // window's height from the top of the screen.
+        extern "C-unwind" fn unconstrained(
+            _: &objc2::runtime::NSObject,
+            _: Sel,
+            frame: NsRect,
+            _screen: *mut AnyObject,
+        ) -> NsRect {
+            frame
+        }
         let name = c"AiBoxKeyPanel";
         // Already registered — a second window, or a reload during development.
         if let Some(existing) = AnyClass::get(name) {
@@ -130,6 +142,10 @@ unsafe fn key_panel_class() -> Result<*const AnyClass, String> {
             builder.add_method(
                 objc2::sel!(canBecomeMainWindow),
                 no as extern "C-unwind" fn(_, _) -> _,
+            );
+            builder.add_method(
+                objc2::sel!(constrainFrameRect:toScreen:),
+                unconstrained as extern "C-unwind" fn(_, _, _, _) -> _,
             );
         }
         builder.register() as *const AnyClass as usize
@@ -157,6 +173,57 @@ pub fn make_key(window: &tauri::WebviewWindow) -> Result<(), String> {
         let _: () = objc2::msg_send![obj, makeKeyAndOrderFront: nil];
     }
     focus_webview(window)
+}
+
+/// AppKit window calls off the main thread do not fail — they stop the whole
+/// app. Refusing here turns that into an error the caller can ignore.
+fn main_thread_only() -> Result<(), String> {
+    let cls = AnyClass::get(c"NSThread").ok_or("NSThread missing")?;
+    let main: Bool = unsafe { objc2::msg_send![cls, isMainThread] };
+    if main.as_bool() {
+        Ok(())
+    } else {
+        Err("window changes must happen on the main thread".into())
+    }
+}
+
+/// Bring the panel back on screen WITHOUT giving it the keyboard.
+///
+/// Tauri's `show()` is `makeKeyAndOrderFront:`, which takes the keyboard. That
+/// is right when the user opens the bar and wrong everywhere else: re-showing
+/// it after a screenshot took the keyboard from the field Screen Assist had
+/// just clicked, so the text it typed next went into its own bar instead.
+pub fn order_front_passive(window: &tauri::WebviewWindow) -> Result<(), String> {
+    main_thread_only()?;
+    let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut AnyObject;
+    if ptr.is_null() {
+        return Err("no NSWindow behind this window".into());
+    }
+    unsafe {
+        let _: () = objc2::msg_send![&*ptr, orderFrontRegardless];
+    }
+    Ok(())
+}
+
+/// Hand the keyboard back to whatever the user is working in, if the panel has
+/// it. Ordering a window out is what makes it resign key; it comes straight
+/// back, passively, in the same place.
+pub fn release_key(window: &tauri::WebviewWindow) -> Result<(), String> {
+    main_thread_only()?;
+    let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut AnyObject;
+    if ptr.is_null() {
+        return Err("no NSWindow behind this window".into());
+    }
+    unsafe {
+        let obj = &*ptr;
+        let key: Bool = objc2::msg_send![obj, isKeyWindow];
+        if key.as_bool() {
+            let nil: *mut AnyObject = std::ptr::null_mut();
+            let _: () = objc2::msg_send![obj, orderOut: nil];
+            let _: () = objc2::msg_send![obj, orderFrontRegardless];
+        }
+    }
+    Ok(())
 }
 
 /// Put the keyboard into the panel's web view.

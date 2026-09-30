@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Settings } from "../lib/settings";
+import { activeProvider, alignModel, type Settings } from "../lib/settings";
 import {
   COMFY_SAMPLERS,
   COMFY_SCHEDULERS,
@@ -16,6 +16,7 @@ import {
   editImageOpenrouter,
   listComfyCheckpoints,
   listImageModels,
+  listProviderImageModels,
   type ImageModelInfo,
   comfyStatus,
   comfyStart,
@@ -77,11 +78,25 @@ export default function ImagePanel({
   // Live capabilities for cloud models: which tiers and ratios each one takes.
   // Read at runtime because they differ per model and many models take neither.
   const [cloudModels, setCloudModels] = useState<ImageModelInfo[]>([]);
+  // "Cloud" is the provider chosen in Settings, not always OpenRouter: with
+  // Gemini chosen, pictures are made on the Gemini key and billed to it.
+  const { provider: cloud, apiKey: cloudKey } = activeProvider(settings);
+  const direct = cloud.id !== "openrouter";
   useEffect(() => {
-    listImageModels(settings.openrouterKey)
-      .then(setCloudModels)
-      .catch(() => setCloudModels([]));
-  }, [settings.openrouterKey]);
+    // On a phone the key is a placeholder; the Mac lists on its own.
+    const list = direct
+      ? listProviderImageModels(cloud.id, cloudKey)
+      : listImageModels(settings.openrouterKey);
+    list.then(setCloudModels).catch(() => setCloudModels([]));
+  }, [direct, cloud.id, cloudKey, settings.openrouterKey]);
+  /** The model a cloud request uses. With a direct provider it is that
+   *  provider's own: an OpenRouter-named pick of the same model is renamed
+   *  ("google/…" → "google:…"), anything else falls back to its first. */
+  const imageModel = (() => {
+    if (!direct) return settings.openrouterImageModel;
+    const aligned = alignModel(settings.openrouterImageModel, cloud.id);
+    return cloudModels.some((m) => m.id === aligned) ? aligned : (cloudModels[0]?.id ?? aligned);
+  })();
 
   // A scene handed over from Write prefills the prompt and focuses this tab.
   useEffect(() => {
@@ -180,8 +195,14 @@ export default function ImagePanel({
   async function run() {
     if (!prompt.trim() || busy) return;
     const isCloud = settings.imageBackend === "openrouter";
-    if (isCloud && !settings.openrouterKey) {
-      setError("Add your OpenRouter API key in Settings.");
+    if (isCloud && cloud.id === "anthropic") {
+      setError("Anthropic has no image models. Use Local, or choose another provider in Settings.");
+      return;
+    }
+    // Only the Mac holds keys; a phone's requests get them there.
+    const key = direct ? cloudKey : settings.openrouterKey;
+    if (isCloud && isTauri() && !key) {
+      setError(`Add your ${cloud.label} API key in Settings.`);
       return;
     }
     if (!isCloud && !settings.comfyCheckpoint) {
@@ -196,14 +217,16 @@ export default function ImagePanel({
       const b64 = isCloud
         ? sourceImage
           ? await editImageOpenrouter({
-              apiKey: settings.openrouterKey,
-              model: settings.openrouterImageModel,
+              apiKey: key,
+              model: imageModel,
               prompt,
               imageBase64: sourceImage.split(",")[1],
+              resolution: sizing.resolution ?? undefined,
+              aspectRatio: sizing.aspect ?? undefined,
             })
           : await generateImageOpenrouter({
-              apiKey: settings.openrouterKey,
-              model: settings.openrouterImageModel,
+              apiKey: key,
+              model: imageModel,
               prompt,
               // Send only what this model declares, and let an exact-size
               // request choose the tier rather than the stored tier winning.
@@ -244,8 +267,8 @@ export default function ImagePanel({
       const rec: ImageRecord = {
         id: crypto.randomUUID(),
         prompt,
-        backend: isCloud ? "openrouter" : "comfyui",
-        model: isCloud ? settings.openrouterImageModel : settings.comfyCheckpoint,
+        backend: isCloud ? (direct ? cloud.id : "openrouter") : "comfyui",
+        model: isCloud ? imageModel : settings.comfyCheckpoint,
         dataUrl,
         at: Date.now(),
         seed: isCloud ? undefined : usedSeed,
@@ -356,7 +379,7 @@ export default function ImagePanel({
   const isCloud = settings.imageBackend === "openrouter";
 
   /** The selected cloud model's live capability entry, when we have one. */
-  const cloudModel = cloudModels.find((m) => m.id === settings.openrouterImageModel) ?? null;
+  const cloudModel = cloudModels.find((m) => m.id === imageModel) ?? null;
   /** Tiers this model actually offers, smallest first (the catalog is unsorted). */
   const tiers = sortTiers(cloudModel?.resolutions ?? []);
   const ratios = cloudModel?.aspectRatios ?? [];
@@ -392,7 +415,9 @@ export default function ImagePanel({
   const liveImageModels = orModels.filter((m) => m.outputImage && !curatedIds.has(m.id));
   const liveEditable = new Set(orModels.filter((m) => m.inputImage).map((m) => m.id));
   const canEditModel = (id: string) =>
-    OPENROUTER_IMAGE_EDIT_MODELS.includes(id) || liveEditable.has(id);
+    direct
+      ? (cloudModels.find((m) => m.id === id)?.inputImage ?? true)
+      : OPENROUTER_IMAGE_EDIT_MODELS.includes(id) || liveEditable.has(id);
 
   return (
     <div className="image-tab">
@@ -439,7 +464,7 @@ export default function ImagePanel({
               className={isCloud ? "seg active" : "seg"}
               onClick={() => onChange({ imageBackend: "openrouter" })}
             >
-              Cloud (OpenRouter)
+              Cloud ({cloud.label})
             </button>
           </div>
         </div>
@@ -448,6 +473,24 @@ export default function ImagePanel({
           <>
             <div className="field">
               <label>Model</label>
+              {direct ? (
+                cloud.id === "anthropic" ? (
+                  <p className="hint">
+                    Anthropic has no image models. Use Local, or choose another provider in Settings.
+                  </p>
+                ) : (
+                  <select value={imageModel} onChange={(e) => onChange({ openrouterImageModel: e.target.value })}>
+                    <optgroup label={`${cloud.label} · on your key`}>
+                      {cloudModels.length === 0 && <option value={imageModel}>Loading models…</option>}
+                      {cloudModels.map((m) => (
+                        <option key={m.id} value={m.id} title={m.description}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </select>
+                )
+              ) : (
               <select
                 value={settings.openrouterImageModel}
                 onChange={(e) => onChange({ openrouterImageModel: e.target.value })}
@@ -481,6 +524,7 @@ export default function ImagePanel({
                     </option>
                   )}
               </select>
+              )}
             </div>
             <label className="video-check">
               <input
@@ -570,7 +614,7 @@ export default function ImagePanel({
             </div>
             )}
             <p className="hint">
-              Uses your OpenRouter key. Cloud models are high quality but may
+              Uses your {cloud.label} key and credit. Cloud models are high quality but may
               filter some content; local models have no restrictions.
             </p>
           </>
@@ -674,7 +718,7 @@ export default function ImagePanel({
               + Upload or drop an image
             </label>
           )}
-          {isCloud && sourceImage && !canEditModel(settings.openrouterImageModel) && (
+          {isCloud && sourceImage && !canEditModel(imageModel) && (
             <p className="hint error">
               This model can't edit images — pick one from the “Editing (input image)” group
               (or a live model marked “· edits”).
@@ -682,8 +726,9 @@ export default function ImagePanel({
           )}
           {isCloud && (
             <p className="hint">
-              Cloud editing works with image-input models (Gemini Flash Image, FLUX
-              Kontext, GPT-Image-1). Describe the change in the prompt.
+              {direct
+                ? "Describe the change in the prompt; the picture above is the starting point."
+                : "Cloud editing works with image-input models (Gemini Flash Image, FLUX Kontext, GPT-Image-1). Describe the change in the prompt."}
             </p>
           )}
         </div>

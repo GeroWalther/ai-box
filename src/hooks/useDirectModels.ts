@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { listProviderModels, type ProviderModel } from "../lib/api";
 import { activeProvider, type Settings } from "../lib/settings";
 import { logError } from "../lib/log";
+import { isTauri } from "../lib/transport";
 
 export interface ActiveModels {
   /** The active provider's models, or empty while loading, keyless or failed. */
@@ -30,13 +31,15 @@ export function useDirectModels(settings: Settings): ActiveModels {
   useEffect(() => {
     // OpenRouter has its own long-standing listing path with its own cache;
     // this hook covers the direct providers only.
-    if (provider.id === "openrouter" || !apiKey) {
+    // On the phone the key is never here — the Mac holds it and answers the
+    // listing on it — so only the Mac can know there is no key.
+    if (provider.id === "openrouter" || (isTauri() && !apiKey)) {
       setState({ models: [], loading: false, error: "" });
       return;
     }
     let cancelled = false;
     setState((prev) => ({ ...prev, loading: true, error: "" }));
-    listProviderModels(provider.id, apiKey)
+    listProviderModels(provider.id, apiKey || "")
       .then((models) => {
         if (!cancelled) setState({ models, loading: false, error: "" });
       })

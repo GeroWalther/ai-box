@@ -103,6 +103,20 @@ export default function RemoteAccess({ settings, onChange }: Props) {
     }
   }
 
+  /** Put the phone link on https through Tailscale — what gives the phone
+   *  its microphone, and encrypts everything it sends. */
+  async function enableHttps() {
+    setBusy(true);
+    try {
+      await invoke<string>("tailscale_serve_enable");
+      await refresh();
+    } catch (e) {
+      toastError(String(e).replace(/^Error:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function regenerate() {
     const token = newToken();
     onChange({ remoteToken: token });
@@ -173,15 +187,36 @@ export default function RemoteAccess({ settings, onChange }: Props) {
       {running && urls && (
         <>
           <div className="remote-links">
-            {urls.lan && <LinkQR label="On your Wi‑Fi (LAN)" url={urls.lan} token={urls.token} />}
-            {urls.tailscaleHttps ? (
+            {urls.tailscaleHttps && (
               <LinkQR
-                label="Anywhere via Tailscale (HTTPS)"
+                label="Recommended — anywhere, secure, with microphone (Tailscale HTTPS)"
                 url={urls.tailscaleHttps}
                 token={urls.token}
               />
-            ) : urls.tailscale ? (
-              <LinkQR label="Anywhere via Tailscale" url={urls.tailscale} token={urls.token} />
+            )}
+            {urls.lan && (
+              <LinkQR label="On your Wi‑Fi only — no microphone (plain http)" url={urls.lan} token={urls.token} />
+            )}
+            {urls.tailscaleHttps ? null : urls.tailscale ? (
+              <>
+                <LinkQR
+                  label="Anywhere via Tailscale — no microphone (plain http)"
+                  url={urls.tailscale}
+                  token={urls.token}
+                />
+                <div className="remote-qr">
+                  <div className="remote-qr-meta">
+                    <div className="remote-qr-label">Secure link with microphone</div>
+                    <p className="hint">
+                      Serves AI Box to your devices over https through Tailscale — encrypted, and the only way a
+                      phone browser allows the microphone.
+                    </p>
+                    <button className="btn" onClick={() => void enableHttps()} disabled={busy}>
+                      Turn on HTTPS
+                    </button>
+                  </div>
+                </div>
+              </>
             ) : (
               <div className="remote-qr">
                 <div className="remote-qr-meta">
@@ -206,8 +241,9 @@ export default function RemoteAccess({ settings, onChange }: Props) {
 
       <p className="hint remote-security">
         🔒 Links carry a secret token and are only reachable on your Wi‑Fi or your
-        Tailscale network — never the public internet. Agent commands and file changes
-        still ask for approval <b>here on the Mac</b>.
+        Tailscale network — never the public internet. The assistant asks for your
+        approval — on whichever device you are using — before anything is paid, sent or
+        deleted.
       </p>
     </section>
   );

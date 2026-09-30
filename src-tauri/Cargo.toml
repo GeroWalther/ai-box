@@ -24,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 futures-util = "0.3"
+tokio-tungstenite = "0.24"
 base64 = "0.22"
 tokio = { version = "1", features = ["time", "process", "macros", "io-util", "net", "sync", "rt-multi-thread"] }
 # Companion HTTP+WebSocket server for phone/remote access (serves the built UI + mirrors commands).
@@ -57,3 +58,6 @@ core-graphics = "0.24"
 core-foundation = "0.10"
 foreign-types = "0.5"
 
+
+[dev-dependencies]
+tauri = { version = "2", features = ["macos-private-api", "test"] }

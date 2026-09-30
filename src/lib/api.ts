@@ -291,6 +291,9 @@ export interface OpenrouterEditArgs {
   model: string;
   prompt: string;
   imageBase64: string; // source image, no data-URI prefix
+  /** Used by provider models (Gemini) that take a size and shape when editing. */
+  resolution?: string;
+  aspectRatio?: string;
 }
 
 /** Edit/transform an uploaded image via OpenRouter. Returns base64 (no prefix). */
@@ -322,6 +325,11 @@ export interface VideoModel {
 export async function listVideoModels(apiKey: string): Promise<VideoModel[]> {
   return invokeCmd<VideoModel[]>("list_video_models", { params: { apiKey } });
 }
+
+/** Video models on a direct provider's own key (Gemini's Veo, OpenAI's Sora).
+ *  Empty for Anthropic, which has none. */
+export const listProviderVideoModels = (provider: string, apiKey: string) =>
+  invokeCmd<VideoModel[]>("list_provider_video_models", { provider, apiKey });
 
 export interface VideoFrame {
   url: string; // https URL or data: URI
@@ -406,6 +414,11 @@ export interface ImageModelInfo {
 export async function listImageModels(apiKey: string): Promise<ImageModelInfo[]> {
   return invokeCmd<ImageModelInfo[]>("list_image_models", { params: { apiKey } });
 }
+
+/** Image models on a direct provider's own key ("google:…", "openai:…").
+ *  Empty for Anthropic, which has none. */
+export const listProviderImageModels = (provider: string, apiKey: string) =>
+  invokeCmd<ImageModelInfo[]>("list_provider_image_models", { provider, apiKey });
 
 // ---- Screen Assist ---------------------------------------------------------
 
@@ -527,6 +540,10 @@ export const overlayHotRect = (x: number, y: number, width: number, height: numb
   invokeCmd<void>("overlay_hot_rect", { x, y, width, height });
 /** Take the keyboard into the bar's web view, from wherever it is. */
 export const overlayTakeKeyboard = () => invokeCmd<void>("overlay_take_keyboard");
+export const overlayReleaseKeyboard = () => invokeCmd<void>("overlay_release_keyboard");
+export const overlayPosition = () => invokeCmd<[number, number]>("overlay_position");
+export const overlayMoveTo = (x: number, y: number) => invokeCmd<void>("overlay_move_to", { x, y });
+export const overlayDrag = (on: boolean) => invokeCmd<void>("overlay_drag", { on });
 /** Remember that the user dragged the bar, so it stops being re-centred. */
 export const overlayBarMoved = () => invokeCmd<void>("overlay_bar_moved");
 /** Let clicks pass through the ask bar, so it cannot press its own UI — but only

@@ -13,6 +13,7 @@ import {
   controlTrusted,
   listVoices,
   overlayPassClicks,
+  overlayReleaseKeyboard,
   speak,
   stopSpeaking,
   type MacVoice,
@@ -234,6 +235,11 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
           // of the time — which is what makes Stop pressable DURING a run
           // rather than only in the gaps between steps.
           const at = await targetPoint(call.function.name, args).catch(() => null);
+          // Keys go to whatever holds the keyboard, and the bar may: the user
+          // typed the question into it. Hand it back before typing.
+          if (call.function.name === "type_text" || call.function.name === "press_keys") {
+            await overlayReleaseKeyboard().catch(() => {});
+          }
           await overlayPassClicks(true, at?.x, at?.y).catch(() => {});
           let done: Step;
           try {
@@ -329,6 +335,23 @@ async function voices(): Promise<MacVoice[]> {
 }
 
 /**
+ * The words of a Markdown answer, as a voice should read them. Without this
+ * a stray **bold** is read out as "asterisk asterisk".
+ */
+export function spokenText(md: string): string {
+  return md
+    .replace(/```[\s\S]*?```/g, " ") // code is for reading, not hearing
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // [text](url) → text
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+[.)])\s+/gm, "") // headings, quotes, list markers
+    .replace(/(\*\*|\*|~~|`)(?=\S)([\s\S]*?\S)\1/g, "$2") // emphasis and inline code
+    // Underscores only at word edges, so snake_case and addresses survive.
+    .replace(/(?<!\w)(__|_)(?=\S)([\s\S]*?\S)\1(?!\w)/g, "$2")
+    .replace(/[*`]/g, "") // any marker left unpaired
+    .replace(/[ \t]+/g, " ")
+    .trim();
+}
+
+/**
  * Speak an answer in a voice that actually speaks its language.
  *
  * Never throws: speech is a nicety, and the text is already on screen.
@@ -337,7 +360,7 @@ export async function say(settings: Settings, text: string, lang?: string): Prom
   if (!settings.assistSpeak || !text.trim()) return;
   try {
     const voice = voiceForLanguage(await voices(), lang, settings.assistVoice);
-    await speak(text, voice, settings.assistRate);
+    await speak(spokenText(text), voice, settings.assistRate);
   } catch {
     /* speech is a nicety; the text is already on screen */
   }

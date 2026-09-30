@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
 mod attach;
+mod browser;
+mod tasks;
+mod userbrowser;
 mod comfy;
 mod control;
 mod providers;
@@ -109,10 +112,42 @@ pub(crate) async fn generate_text_core(
     sink: &dyn EventSink,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<(), String> {
-    let url = format!("{}/chat/completions", params.base_url.trim_end_matches('/'));
+    // A provider-prefixed model ("google:…") goes to that provider, as in
+    // chat_completion. This path used to glue the base URL — empty for a
+    // direct model — onto "/chat/completions", so Write sent every request
+    // with a Gemini model nowhere.
+    let (direct, bare_model) = providers::split(&params.model);
+    if direct == Some(providers::Direct::Anthropic) {
+        // Anthropic streams in its own event format; until that is spoken
+        // here, its answer arrives whole rather than word by word.
+        let messages = serde_json::Value::Array(
+            params
+                .messages
+                .iter()
+                .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+                .collect(),
+        );
+        return match providers::anthropic_chat(&params.api_key, &bare_model, &messages, &serde_json::json!([]), params.temperature).await {
+            Ok(reply) => {
+                if let Some(text) = reply["content"].as_str() {
+                    emit_ev(sink, StreamEvent::Token { content: text.to_string() });
+                }
+                emit_ev(sink, StreamEvent::Done);
+                Ok(())
+            }
+            Err(message) => {
+                emit_ev(sink, StreamEvent::Error { message });
+                Ok(())
+            }
+        };
+    }
+    let url = match direct {
+        Some(provider) => provider.chat_url().to_string(),
+        None => format!("{}/chat/completions", params.base_url.trim_end_matches('/')),
+    };
 
     let body = serde_json::json!({
-        "model": params.model,
+        "model": bare_model,
         "messages": params.messages.iter().map(|m| serde_json::json!({
             "role": m.role,
             "content": m.content,
@@ -121,6 +156,15 @@ pub(crate) async fn generate_text_core(
         "max_tokens": params.max_tokens,
         "stream": true,
     });
+    // Gemini thinks before it writes, and the thinking counts against
+    // max_tokens: at Write's default of 700 a passage stopped after a word or
+    // two. Writing prose does not need it, so it is switched off; models that
+    // refuse that (the Pro line) are retried below with room for both.
+    let mut body = body;
+    let mut thinking_off = direct == Some(providers::Direct::Google);
+    if thinking_off {
+        body["reasoning_effort"] = serde_json::json!("none");
+    }
 
     // No total timeout (generations are long), but bound connection setup so a
     // dead endpoint can't hang the stream forever.
@@ -153,6 +197,14 @@ pub(crate) async fn generate_text_core(
                         continue;
                     }
                     let text = r.text().await.unwrap_or_default();
+                    if thinking_off && s == reqwest::StatusCode::BAD_REQUEST {
+                        // This model must think. Let it, with the thinking's
+                        // room added on top of the length the user asked for.
+                        thinking_off = false;
+                        body.as_object_mut().map(|o| o.remove("reasoning_effort"));
+                        body["max_tokens"] = serde_json::json!(params.max_tokens + 8192);
+                        continue;
+                    }
                     emit_ev(sink, StreamEvent::Error { message: friendly_http_error(s, &text) });
                     return Ok(());
                 }
@@ -731,6 +783,21 @@ Hotels\". ({detail})"
 /// outright that an image is required rather than leaving it implied.
 #[tauri::command]
 async fn generate_image_openrouter(params: OpenrouterImageParams) -> Result<String, String> {
+    // A provider-prefixed model ("google:…", "openai:…") draws on that
+    // provider's own key, billed to that account — not through OpenRouter.
+    if let (Some(direct), model) = providers::split(&params.model) {
+        let b64 = providers::generate_image(
+            direct,
+            &params.api_key,
+            &model,
+            &params.prompt,
+            None,
+            params.aspect_ratio.as_deref(),
+            params.resolution.as_deref(),
+        )
+        .await?;
+        return resize_b64(&b64, params.out_width.zip(params.out_height));
+    }
     let client = reqwest::Client::new();
     let mut body = serde_json::json!({
         "model": params.model,
@@ -916,6 +983,11 @@ async fn image_via_chat(
     let body = serde_json::json!({
         "model": params.model,
         "modalities": ["image", "text"],
+        // A picture is a couple of thousand tokens at most. Left unset, the
+        // model's own maximum (32k+) is reserved up front, and OpenRouter
+        // refuses the request outright whenever the balance is below that —
+        // even when the image itself would have cost a fraction of it.
+        "max_tokens": IMAGE_MAX_TOKENS,
         "messages": [{
             "role": "user",
             "content": format!(
@@ -950,6 +1022,21 @@ struct OpenrouterEditParams {
     prompt: String,
     /// Source image as base64 (no data-URI prefix).
     image_base64: String,
+    #[serde(default)]
+    resolution: Option<String>,
+    #[serde(default)]
+    aspect_ratio: Option<String>,
+}
+
+/// Output room for one image request: enough for a 4K picture and a sentence.
+const IMAGE_MAX_TOKENS: u32 = 8192;
+
+/// Image models on a direct provider's own key (Gemini's Nano Banana family,
+/// OpenAI's GPT Image). Anthropic has none, which the list says by being empty.
+#[tauri::command]
+async fn list_provider_image_models(provider: String, api_key: String) -> Result<Vec<providers::ImageModel>, String> {
+    let direct = providers::Direct::from_prefix(&provider).ok_or_else(|| format!("no provider called {provider:?}"))?;
+    providers::list_image_models(direct, &api_key).await
 }
 
 /// Edit / transform an uploaded image via OpenRouter. Image editing goes through
@@ -958,11 +1045,24 @@ struct OpenrouterEditParams {
 /// FLUX Kontext, GPT-Image-1). Returns base64 (no prefix).
 #[tauri::command]
 async fn edit_image_openrouter(params: OpenrouterEditParams) -> Result<String, String> {
+    if let (Some(direct), model) = providers::split(&params.model) {
+        return providers::generate_image(
+            direct,
+            &params.api_key,
+            &model,
+            &params.prompt,
+            Some(&params.image_base64),
+            params.aspect_ratio.as_deref(),
+            params.resolution.as_deref(),
+        )
+        .await;
+    }
     let client = reqwest::Client::new();
     let data_url = format!("data:image/png;base64,{}", params.image_base64.trim());
     let body = serde_json::json!({
         "model": params.model,
         "modalities": ["image", "text"],
+        "max_tokens": IMAGE_MAX_TOKENS,
         "messages": [{
             "role": "user",
             "content": [
@@ -2755,6 +2855,8 @@ pub fn run() {
         .manage(server::CancelRegistry::default())
         .manage(comfy::ManagedComfy::default())
         .manage(pty::PtyRegistry::default())
+        .manage(tasks::Tasks::default())
+        .manage(browser::BrowserHost::default())
         .invoke_handler(tauri::generate_handler![
             generate_text,
             list_openrouter_models,
@@ -2765,6 +2867,7 @@ pub fn run() {
             generate_img2img_comfy,
             generate_image_openrouter,
             list_image_models,
+            list_provider_image_models,
             edit_image_openrouter,
             list_comfy_checkpoints,
             chat_completion,
@@ -2802,6 +2905,7 @@ pub fn run() {
             image_get,
             image_delete,
             video::list_video_models,
+            video::list_provider_video_models,
             video::video_create,
             video::video_status,
             video::video_download,
@@ -2830,6 +2934,10 @@ pub fn run() {
             screen::overlay_pass_clicks,
             screen::overlay_bar_moved,
             screen::overlay_take_keyboard,
+            screen::overlay_release_keyboard,
+            screen::overlay_position,
+            screen::overlay_move_to,
+            screen::overlay_drag,
             screen::overlay_hot_rect,
             screen::overlay_escape,
             control::control_trusted,
@@ -2854,6 +2962,13 @@ pub fn run() {
             attach::attach_image_path,
             attach::attach_image_bytes,
             attach::attachment_get,
+            tasks::task_start,
+            tasks::task_send,
+            tasks::task_list,
+            tasks::task_get,
+            tasks::task_answer,
+            tasks::task_stop,
+            tasks::task_delete,
             comfy_status,
             comfy_download_model,
             comfy_installed_models,
@@ -2911,6 +3026,40 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// Write's streaming path, on a direct Gemini model and the Keychain key.
+    /// Ignored: it calls Google.
+    #[tokio::test]
+    #[ignore]
+    async fn write_streams_from_gemini_directly() {
+        struct Collect(std::sync::Mutex<Vec<serde_json::Value>>);
+        impl super::EventSink for Collect {
+            fn emit(&self, v: serde_json::Value) {
+                self.0.lock().unwrap().push(v);
+            }
+        }
+        let key = std::process::Command::new("/usr/bin/security")
+            .args(["find-generic-password", "-s", "com.gwintech.aibox", "-a", "googleKey", "-w"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        let sink = Collect(Default::default());
+        let params = super::GenerateParams {
+            base_url: String::new(),
+            api_key: key,
+            model: "google:gemini-3.8-flash".into(),
+            messages: vec![super::ChatMessage { role: "user".into(), content: "Write one short sentence about the sea.".into() }],
+            temperature: 0.7,
+            max_tokens: 200,
+        };
+        super::generate_text_core(params, &sink, None).await.unwrap();
+        let events = sink.0.into_inner().unwrap();
+        let text: String = events.iter().filter_map(|e| e["content"].as_str()).collect();
+        println!("{} events: {text}", events.len());
+        assert!(events.iter().all(|e| e["type"] != "error"), "{events:?}");
+        assert!(text.len() > 10);
+        assert!(events.iter().filter(|e| e["type"] == "token").count() >= 1);
+    }
+
     #[test]
     fn a_refusal_keeps_the_reason_the_provider_gave() {
         let body = r#"{"error":{"message":"model X is only available on agentic harnesses","code":403}}"#;

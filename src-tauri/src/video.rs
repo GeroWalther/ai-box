@@ -202,11 +202,18 @@ fn image_item(img: &FrameImage) -> Value {
 /// when this returns; poll `video_status` with the id.
 #[tauri::command]
 pub async fn video_create(params: CreateParams) -> Result<Value, String> {
-    if params.api_key.trim().is_empty() {
-        return Err("Add your OpenRouter API key in Settings to generate video.".into());
-    }
     if params.prompt.trim().is_empty() {
         return Err("Write a prompt first.".into());
+    }
+    // "google:veo-…" makes the clip on the Gemini key, billed there.
+    if let (Some(provider), model) = crate::providers::split(&params.model) {
+        if params.api_key.trim().is_empty() {
+            return Err(format!("Add your {} key in Settings to generate video.", provider.id()));
+        }
+        return provider_create(provider, &model, &params).await;
+    }
+    if params.api_key.trim().is_empty() {
+        return Err("Add your OpenRouter API key in Settings to generate video.".into());
     }
     let mut body = json!({ "model": params.model, "prompt": params.prompt });
     // Only send what the caller actually chose. Omitted fields let OpenRouter
@@ -268,6 +275,9 @@ pub struct JobParams {
 /// `completed`, `failed`, `cancelled` and `expired`.
 #[tauri::command]
 pub async fn video_status(params: JobParams) -> Result<Value, String> {
+    if direct_of(&params.job_id).is_some() {
+        return provider_status(&params.job_id, &params.api_key).await;
+    }
     let resp = auth(
         client().get(format!("{BASE}/{}", params.job_id)),
         &params.api_key,
@@ -415,10 +425,14 @@ pub async fn video_download(params: DownloadParams) -> Result<Value, String> {
     if sid.is_empty() {
         return Err("bad video id".into());
     }
-    let resp = auth(client().get(&params.url), &params.api_key)
-        .send()
-        .await
-        .map_err(|e| format!("Video download failed: {e}"))?;
+    // Google's finished clips are fetched with its own key header, not a
+    // bearer token; everyone else takes the bearer.
+    let req = if params.url.starts_with(GEMINI) {
+        client().get(&params.url).header("x-goog-api-key", params.api_key.trim())
+    } else {
+        auth(client().get(&params.url), &params.api_key)
+    };
+    let resp = req.send().await.map_err(|e| format!("Video download failed: {e}"))?;
     if !resp.status().is_success() {
         return Err(http_error("Video download failed", resp).await);
     }
@@ -768,5 +782,322 @@ propped against a toolbox, warm rim light, shallow depth of field, dust in the a
         video_delete(id.clone()).expect("delete");
         assert!(!std::path::Path::new(&path).exists(), "mp4 left behind");
         println!("PASS — create -> poll -> download -> store -> delete");
+    }
+}
+
+// ---- video on the provider's own key ---------------------------------------
+//
+// Same three steps as OpenRouter — create, poll, download — so the panel and
+// its jobs do not change. A job id carries its provider ("google:…",
+// "openai:…"), which is how the poll and the download know where to go.
+
+const GEMINI: &str = "https://generativelanguage.googleapis.com/v1beta";
+const OPENAI_VIDEOS: &str = "https://api.openai.com/v1/videos";
+
+/// Video models a direct provider offers on this key. Anthropic has none.
+pub async fn provider_models(provider: crate::providers::Direct, key: &str) -> Result<Vec<VideoModel>, String> {
+    use crate::providers::Direct;
+    let key = key.trim();
+    if key.is_empty() {
+        return Ok(vec![]);
+    }
+    match provider {
+        Direct::Anthropic => Ok(vec![]),
+        Direct::Google => {
+            let resp = client()
+                .get(format!("{GEMINI}/models?pageSize=200"))
+                .header("x-goog-api-key", key)
+                .send()
+                .await
+                .map_err(|e| format!("Video model list failed: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(http_error("Video model list failed", resp).await);
+            }
+            let json: Value = resp.json().await.map_err(|e| e.to_string())?;
+            let mut models: Vec<VideoModel> = json["models"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|m| {
+                    let id = m["name"].as_str()?.strip_prefix("models/")?;
+                    let long_running = m["supportedGenerationMethods"]
+                        .as_array()
+                        .map_or(false, |a| a.iter().any(|x| x == "predictLongRunning"));
+                    if !id.starts_with("veo") || !long_running {
+                        return None;
+                    }
+                    // Veo 3.x: 4–8 s, 720p or 1080p (1080p only at 8 s — the
+                    // API says so if asked otherwise), landscape or portrait,
+                    // sound always on, a first and a last frame.
+                    Some(VideoModel {
+                        id: format!("google:{id}"),
+                        name: m["displayName"].as_str().unwrap_or(id).to_string(),
+                        description: "Google Veo, on your Gemini key".into(),
+                        created: 0,
+                        durations: vec![4, 6, 8],
+                        resolutions: vec!["720p".into(), "1080p".into()],
+                        aspect_ratios: vec!["16:9".into(), "9:16".into()],
+                        frame_images: vec!["first_frame".into(), "last_frame".into()],
+                        generate_audio: false,
+                        seed: true,
+                        pricing: Value::Null,
+                    })
+                })
+                .collect();
+            // The full model first, then fast, then lite.
+            models.sort_by_key(|m| (m.id.contains("lite"), m.id.contains("fast"), m.id.clone()));
+            Ok(models)
+        }
+        Direct::OpenAi => {
+            let resp = client()
+                .get("https://api.openai.com/v1/models")
+                .bearer_auth(key)
+                .send()
+                .await
+                .map_err(|e| format!("Video model list failed: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(http_error("Video model list failed", resp).await);
+            }
+            let json: Value = resp.json().await.map_err(|e| e.to_string())?;
+            Ok(json["data"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|m| {
+                    let id = m["id"].as_str()?;
+                    id.starts_with("sora").then(|| VideoModel {
+                        id: format!("openai:{id}"),
+                        name: id.to_string(),
+                        description: "OpenAI Sora, on your OpenAI key".into(),
+                        created: m["created"].as_u64().unwrap_or(0),
+                        durations: vec![4, 8, 12],
+                        resolutions: vec!["720p".into()],
+                        aspect_ratios: vec!["16:9".into(), "9:16".into()],
+                        frame_images: vec!["first_frame".into()],
+                        generate_audio: false,
+                        seed: false,
+                        pricing: Value::Null,
+                    })
+                })
+                .collect())
+        }
+    }
+}
+
+/// A data: URI as the (mime, base64) pair the provider APIs want.
+fn inline_image(url: &str) -> Option<(String, String)> {
+    let rest = url.strip_prefix("data:")?;
+    let (mime, data) = rest.split_once(";base64,")?;
+    Some((mime.to_string(), data.to_string()))
+}
+
+async fn provider_create(provider: crate::providers::Direct, model: &str, p: &CreateParams) -> Result<Value, String> {
+    use crate::providers::Direct;
+    let key = p.api_key.trim();
+    match provider {
+        Direct::Anthropic => Err("Anthropic has no video models. Choose another provider in Settings.".into()),
+        Direct::Google => {
+            let mut instance = json!({ "prompt": p.prompt });
+            for f in &p.frame_images {
+                let Some((mime, data)) = inline_image(&f.url) else { continue };
+                let img = json!({ "bytesBase64Encoded": data, "mimeType": mime });
+                match f.frame_type.as_deref() {
+                    Some("last_frame") => instance["lastFrame"] = img,
+                    _ => instance["image"] = img,
+                }
+            }
+            if !p.input_references.is_empty() {
+                instance["referenceImages"] = Value::Array(
+                    p.input_references
+                        .iter()
+                        .filter_map(|r| inline_image(&r.url))
+                        .map(|(mime, data)| json!({ "image": { "bytesBase64Encoded": data, "mimeType": mime }, "referenceType": "asset" }))
+                        .collect(),
+                );
+            }
+            let mut parameters = json!({});
+            if let Some(a) = &p.aspect_ratio {
+                parameters["aspectRatio"] = json!(a);
+            }
+            if let Some(r) = &p.resolution {
+                parameters["resolution"] = json!(r);
+            }
+            if let Some(d) = p.duration {
+                parameters["durationSeconds"] = json!(d);
+            }
+            if let Some(s) = p.seed {
+                parameters["seed"] = json!(s);
+            }
+            let resp = client()
+                .post(format!("{GEMINI}/models/{model}:predictLongRunning"))
+                .header("x-goog-api-key", key)
+                .json(&json!({ "instances": [instance], "parameters": parameters }))
+                .send()
+                .await
+                .map_err(|e| format!("Video request failed: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(http_error("Video request failed", resp).await);
+            }
+            let json: Value = resp.json().await.map_err(|e| e.to_string())?;
+            let name = json["name"].as_str().ok_or("Google accepted the job but returned no id.")?;
+            Ok(json!({ "id": format!("google:{name}"), "status": "pending" }))
+        }
+        Direct::OpenAi => {
+            let size = match p.aspect_ratio.as_deref() {
+                Some("9:16") => "720x1280",
+                _ => "1280x720",
+            };
+            let mut body = json!({ "model": model, "prompt": p.prompt, "size": size });
+            if let Some(d) = p.duration {
+                body["seconds"] = json!(d.to_string());
+            }
+            let resp = client()
+                .post(OPENAI_VIDEOS)
+                .bearer_auth(key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("Video request failed: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(http_error("Video request failed", resp).await);
+            }
+            let json: Value = resp.json().await.map_err(|e| e.to_string())?;
+            let id = json["id"].as_str().ok_or("OpenAI accepted the job but returned no id.")?;
+            Ok(json!({ "id": format!("openai:{id}"), "status": "pending" }))
+        }
+    }
+}
+
+async fn provider_status(job_id: &str, key: &str) -> Result<Value, String> {
+    let key = key.trim();
+    if let Some(name) = job_id.strip_prefix("google:") {
+        let resp = client()
+            .get(format!("{GEMINI}/{name}"))
+            .header("x-goog-api-key", key)
+            .send()
+            .await
+            .map_err(|e| format!("Video status failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(http_error("Video status failed", resp).await);
+        }
+        let json: Value = resp.json().await.map_err(|e| e.to_string())?;
+        if json["done"].as_bool() != Some(true) {
+            return Ok(json!({ "status": "in_progress", "url": null, "error": null, "cost": null }));
+        }
+        let res = &json["response"]["generateVideoResponse"];
+        let url = res["generatedSamples"][0]["video"]["uri"].as_str().map(String::from);
+        let error = json["error"]["message"]
+            .as_str()
+            .map(String::from)
+            .or_else(|| {
+                // Google's own filter: done, but nothing to show.
+                res["raiMediaFilteredReasons"][0]
+                    .as_str()
+                    .map(|r| format!("Google's safety filter blocked this video: {r}"))
+            })
+            .or_else(|| url.is_none().then(|| "Google finished the job but returned no video.".to_string()));
+        return Ok(json!({
+            "status": if url.is_some() { "completed" } else { "failed" },
+            "url": url,
+            "error": error,
+            "cost": null,
+        }));
+    }
+    if let Some(id) = job_id.strip_prefix("openai:") {
+        let resp = client()
+            .get(format!("{OPENAI_VIDEOS}/{id}"))
+            .bearer_auth(key)
+            .send()
+            .await
+            .map_err(|e| format!("Video status failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(http_error("Video status failed", resp).await);
+        }
+        let json: Value = resp.json().await.map_err(|e| e.to_string())?;
+        let status = match json["status"].as_str().unwrap_or("queued") {
+            "completed" => "completed",
+            "failed" => "failed",
+            _ => "in_progress",
+        };
+        return Ok(json!({
+            "status": status,
+            "url": (status == "completed").then(|| format!("{OPENAI_VIDEOS}/{id}/content")),
+            "error": json["error"]["message"],
+            "cost": null,
+        }));
+    }
+    Err("unknown video job".into())
+}
+
+/// The provider a job or model id belongs to, if not OpenRouter's.
+fn direct_of(id: &str) -> Option<crate::providers::Direct> {
+    crate::providers::split(id).0
+}
+
+#[tauri::command]
+pub async fn list_provider_video_models(provider: String, api_key: String) -> Result<Vec<VideoModel>, String> {
+    let direct = crate::providers::Direct::from_prefix(&provider).ok_or_else(|| format!("no provider called {provider:?}"))?;
+    provider_models(direct, &api_key).await
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+
+    #[test]
+    fn frames_and_job_ids_carry_what_they_need() {
+        assert_eq!(inline_image("data:image/png;base64,AAA"), Some(("image/png".into(), "AAA".into())));
+        assert!(inline_image("https://example.com/x.png").is_none());
+        assert_eq!(direct_of("google:models/veo-3.1/operations/abc"), Some(crate::providers::Direct::Google));
+        assert_eq!(direct_of("gen-12345"), None);
+    }
+
+    /// A real, short, low-resolution Veo clip on the Gemini key in the
+    /// Keychain, through create → poll → download. Ignored: it costs money
+    /// and takes a minute or two.
+    #[tokio::test]
+    #[ignore]
+    async fn veo_makes_a_clip_on_the_gemini_key() {
+        let key = std::process::Command::new("/usr/bin/security")
+            .args(["find-generic-password", "-s", "com.gwintech.aibox", "-a", "googleKey", "-w"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        let models = provider_models(crate::providers::Direct::Google, &key).await.unwrap();
+        println!("models: {:?}", models.iter().map(|m| &m.id).collect::<Vec<_>>());
+        let model = models.iter().find(|m| m.id.contains("lite")).or(models.first()).unwrap().id.clone();
+        let job = video_create(CreateParams {
+            api_key: key.clone(),
+            model,
+            prompt: "Slow pan across a calm turquoise sea at sunrise, gentle waves, cinematic".into(),
+            duration: Some(4),
+            resolution: Some("720p".into()),
+            aspect_ratio: Some("16:9".into()),
+            generate_audio: None,
+            seed: None,
+            frame_images: vec![],
+            input_references: vec![],
+        })
+        .await
+        .unwrap();
+        let id = job["id"].as_str().unwrap().to_string();
+        let url = loop {
+            tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+            let s = video_status(JobParams { api_key: key.clone(), job_id: id.clone() }).await.unwrap();
+            println!("status {s}");
+            match s["status"].as_str() {
+                Some("completed") => break s["url"].as_str().unwrap().to_string(),
+                Some("failed") => panic!("{s}"),
+                _ => {}
+            }
+        };
+        let test_id = format!("veo-test-{}", uuid::Uuid::new_v4());
+        let got = video_download(DownloadParams { api_key: key, id: test_id.clone(), url }).await.unwrap();
+        println!("downloaded {got}");
+        let bytes = std::fs::read(mp4_path(&test_id)).unwrap();
+        let _ = std::fs::remove_file(mp4_path(&test_id));
+        assert!(bytes.len() > 10_000 && &bytes[4..8] == b"ftyp", "not an mp4");
     }
 }

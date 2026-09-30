@@ -66,7 +66,6 @@ interface Props {
   ollamaModels: string[];
   orModels: OpenrouterModel[];
   onRefreshModels: () => void;
-  onManageModels: () => void;
 
   sidebarSlot: HTMLElement | null;
   onCloseDrawer: () => void;
@@ -234,9 +233,10 @@ export default function WriteView(props: Props) {
                 ollamaModels={props.ollamaModels}
                 orModels={props.orModels}
                 directModels={directModels.models}
+                directLoading={directModels.loading}
+                directError={directModels.error}
                 onChange={onChangeSettings}
                 onRefresh={props.onRefreshModels}
-                onManageModels={props.onManageModels}
               />
               {mode === "fiction" && (
                 <WritingPresets settings={settings} onChange={onChangeSettings} />

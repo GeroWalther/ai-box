@@ -391,6 +391,12 @@ fn keycode(name: &str) -> Option<u16> {
     })
 }
 
+/// The main display's size in points — the space `control_click` works in.
+pub fn main_display_points() -> (f64, f64) {
+    let b = core_graphics::display::CGDisplay::main().bounds();
+    (b.size.width, b.size.height)
+}
+
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()

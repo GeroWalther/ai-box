@@ -15,7 +15,6 @@
 //     belongs to whatever is underneath.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   LOCAL_PREFIX,
   activeProvider,
@@ -27,6 +26,7 @@ import {
   SETTINGS_EVENT,
   type Settings,
 } from "../lib/settings";
+import Markdown from "./Markdown";
 import {
   assistToChat,
   listAssistModels,
@@ -36,7 +36,9 @@ import {
   controlRequestAccess,
   controlTrusted,
   openSettingsPane,
-  overlayBarMoved,
+  overlayDrag,
+  overlayMoveTo,
+  overlayPosition,
   overlayClose,
   overlayEscape,
   overlayMarks,
@@ -161,6 +163,46 @@ export default function ScreenAssist() {
     requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
 
+  /**
+   * Move the overlay with the pointer until the button is released.
+   *
+   * Done here rather than with the system window drag, which stops a window's
+   * top edge at the menu bar: the window is tall with the bar at its bottom,
+   * so a system drag could only take the bar over the lower third or so of
+   * the screen. The listeners go on first and the window's start position
+   * arrives a moment later — a quick click must still end the drag.
+   */
+  const beginDrag = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    const start = { x: e.screenX, y: e.screenY };
+    let origin: [number, number] | null = null;
+    let last = start;
+    let frame = 0;
+    const place = () => {
+      frame = 0;
+      if (origin) void overlayMoveTo(origin[0] + last.x - start.x, origin[1] + last.y - start.y).catch(() => {});
+    };
+    const move = (ev: MouseEvent) => {
+      last = { x: ev.screenX, y: ev.screenY };
+      if (!frame) frame = requestAnimationFrame(place);
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      if (frame) cancelAnimationFrame(frame);
+      place();
+      void overlayDrag(false).catch(() => {});
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    void overlayDrag(true).catch(() => {});
+    void overlayPosition()
+      .then((p) => {
+        origin = p;
+      })
+      .catch(() => {});
+  }, []);
+
   /** Drag the whole overlay by its background, from anywhere on it. */
   const dragFrom = useCallback((e: React.MouseEvent) => {
     // Whatever was clicked, this window wants the keyboard now.
@@ -169,9 +211,24 @@ export default function ScreenAssist() {
     // meant to press it.
     const el = e.target as HTMLElement;
     if (el.closest("input, button, label, textarea, select, a")) return;
-    void overlayBarMoved().catch(() => {});
-    void getCurrentWindow().startDragging();
-  }, []);
+    // The answer's words are for selecting and copying; the card is dragged
+    // by its edges and the bar. A drag starting on text swallowed every
+    // attempt to select it.
+    if (el.closest(".sa-say, .sa-detail, .sa-trail")) return;
+    e.preventDefault(); // no text selection while moving
+    beginDrag(e);
+  }, [beginDrag]);
+
+  /** The grip: always a drag, whatever is under it, and it leaves the
+   *  keyboard where it is — moving the overlay is not a reason to take it. */
+  const moveFromGrip = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      beginDrag(e);
+    },
+    [beginDrag],
+  );
 
   // API keys are deliberately NOT in localStorage — saveSettings strips them and
   // the real value lives in the OS keychain. loadSettings() therefore returns a
@@ -640,6 +697,16 @@ export default function ScreenAssist() {
         )}
 
         <div className="sa-bar" key="bar" onMouseDown={dragFrom}>
+          <div className="sa-grip" title="Drag to move" aria-label="Move Screen Assist" role="button" onMouseDown={moveFromGrip}>
+            <svg viewBox="0 0 10 16" width="10" height="16" fill="currentColor" aria-hidden="true">
+              <circle cx="2.5" cy="3" r="1.4" />
+              <circle cx="7.5" cy="3" r="1.4" />
+              <circle cx="2.5" cy="8" r="1.4" />
+              <circle cx="7.5" cy="8" r="1.4" />
+              <circle cx="2.5" cy="13" r="1.4" />
+              <circle cx="7.5" cy="13" r="1.4" />
+            </svg>
+          </div>
           <button
             className={recording ? "sa-mic recording" : "sa-mic"}
             title={
@@ -725,7 +792,12 @@ export default function ScreenAssist() {
             ) : (
               <>
                 {steps.length > 0 && <Trail steps={steps} />}
-                <p className="sa-say">{answer?.say}</p>
+                {/* Rendered, not printed: models write **bold** and lists
+                    here despite being asked not to, and the Chat tab already
+                    shows the same answer formatted. */}
+                <div className="sa-say">
+                  <Markdown>{answer?.say ?? ""}</Markdown>
+                </div>
                 {/* A failed capture used to vanish: the model answers "I can't
                     see your screen", which reads as the assistant being limited
                     rather than as one switch the user can go and flip. */}
@@ -745,7 +817,11 @@ export default function ScreenAssist() {
                     </button>
                   </p>
                 )}
-                {answer?.detail && <pre className="sa-detail">{answer.detail}</pre>}
+                {answer?.detail && (
+                  <div className="sa-detail">
+                    <Markdown>{answer.detail}</Markdown>
+                  </div>
+                )}
                 <div className="sa-foot">
                   <span className="sa-badge">{answer?.sawScreen ? "saw your screen" : "answered from knowledge"}</span>
                 </div>

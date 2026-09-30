@@ -59,12 +59,27 @@ Privacy & Security → Screen & System Audio Recording and switch AI Box on."
     };
 
     for w in restore {
+        // Back on screen, but without the keyboard: the action before this
+        // screenshot may just have clicked a field the next one types into.
+        //
+        // On the main thread. This command is async, so it runs on a worker
+        // thread, and AppKit stops the app outright when a window is ordered
+        // from anywhere else ("Must only be used from the main thread") —
+        // Tauri's own show() hops to the main thread by itself; this does not.
+        #[cfg(target_os = "macos")]
+        {
+            let win = w.clone();
+            let _ = w.run_on_main_thread(move || {
+                let _ = crate::panel::order_front_passive(&win);
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
         let _ = w.show();
     }
     result
 }
 
-async fn capture_to_base64() -> Result<String, String> {
+pub(crate) async fn capture_to_base64() -> Result<String, String> {
     let path = std::env::temp_dir().join(format!("ai-box-screen-{}.png", uuid::Uuid::new_v4()));
     // -x: no shutter sound. -o: no window shadow. -C: skip the cursor, which the
     // model would otherwise sometimes describe as part of the interface.
@@ -349,6 +364,25 @@ static HOT_RECT: std::sync::Mutex<Option<(f64, f64, f64, f64)>> = std::sync::Mut
 /// told when the answer changes rather than on every tick.
 static POINTER_INSIDE: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
 const BAR_W: f64 = 760.0;
+/// Set while an action has made the bar click-through for its own click. The
+/// pointer watcher leaves the window alone meanwhile: the action's click moves
+/// the pointer, and the watcher reacting to that could make the bar solid again
+/// just as the click arrives.
+static ACTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Forget what the watcher last applied, so its next tick applies the right
+/// state afresh.
+///
+/// Anything else that changes the bar's mouse handling must call this. The
+/// watcher only acts when its answer changes, so when something else switched
+/// click-through off behind its back, it went on believing it was on — and the
+/// whole 760-point transparent window swallowed every click and kept the
+/// keyboard until the overlay was dismissed.
+fn recheck_pointer() {
+    if let Ok(mut inside) = POINTER_INSIDE.lock() {
+        *inside = None;
+    }
+}
 
 /// Set once the user drags the bar somewhere they want it.
 ///
@@ -523,6 +557,9 @@ fn watch_pointer(app: tauri::AppHandle) {
                 }
                 return;
             }
+            if ACTING.load(std::sync::atomic::Ordering::Relaxed) {
+                continue;
+            }
             let Some(hot) = HOT_RECT.lock().ok().and_then(|r| *r) else { continue };
             let scale = bar.scale_factor().unwrap_or(1.0);
             let Ok(pos) = bar.outer_position() else { continue };
@@ -558,6 +595,20 @@ fn watch_pointer(app: tauri::AppHandle) {
     });
 }
 
+/// Give the keyboard back to the app the user is working in, before Screen
+/// Assist types into it. Without this the keystrokes go wherever the bar left
+/// the keyboard — often into the bar itself.
+#[tauri::command]
+pub fn overlay_release_keyboard(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if let Some(bar) = app.get_webview_window(BAR) {
+        crate::panel::release_key(&bar)?;
+        // Let the window server move focus before the first key arrives.
+        std::thread::sleep(std::time::Duration::from_millis(60));
+    }
+    Ok(())
+}
+
 /// Take the keyboard, from wherever it currently is.
 ///
 /// Called when the user clicks the bar. The panel does not activate the app, so
@@ -577,6 +628,44 @@ pub fn overlay_take_keyboard(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn overlay_bar_moved() {
     BAR_MOVED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Where the overlay window is, in points.
+#[tauri::command]
+pub fn overlay_position(app: tauri::AppHandle) -> Result<(f64, f64), String> {
+    let bar = app.get_webview_window(BAR).ok_or("no bar")?;
+    let scale = bar.scale_factor().unwrap_or(1.0);
+    let p = bar.outer_position().map_err(|e| e.to_string())?;
+    Ok((p.x as f64 / scale, p.y as f64 / scale))
+}
+
+/// Put the overlay window at a position, in points.
+///
+/// The overlay is dragged with this rather than with the system window drag.
+/// The window is tall and transparent with the bar along its bottom edge, and
+/// macOS stops a dragged window's top edge at the menu bar — so the bar could
+/// only ever reach the lower part of the screen. Setting the position directly
+/// is not held back that way, and the bar goes wherever it is dragged.
+#[tauri::command]
+pub fn overlay_move_to(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
+    let bar = app.get_webview_window(BAR).ok_or("no bar")?;
+    bar.set_position(tauri::LogicalPosition::new(x, y)).map_err(|e| e.to_string())
+}
+
+/// A drag of the overlay starts or ends. While it lasts the window keeps the
+/// mouse, whatever the pointer watcher would say: a quick flick can outrun the
+/// bar for a frame, and the window going click-through then would drop it.
+#[tauri::command]
+pub fn overlay_drag(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    let bar = app.get_webview_window(BAR).ok_or("no bar")?;
+    ACTING.store(on, std::sync::atomic::Ordering::Relaxed);
+    if on {
+        BAR_MOVED.store(true, std::sync::atomic::Ordering::Relaxed);
+        bar.set_ignore_cursor_events(false).map_err(|e| e.to_string())?;
+    } else {
+        recheck_pointer();
+    }
+    Ok(())
 }
 
 /// Let a synthetic click pass straight through the ask bar.
@@ -599,7 +688,12 @@ pub fn overlay_pass_clicks(
 ) -> Result<(), String> {
     let bar = app.get_webview_window(BAR).ok_or("no bar")?;
     if !on {
-        return bar.set_ignore_cursor_events(false).map_err(|e| e.to_string());
+        // Hand the window back to the watcher rather than making it solid: it
+        // is solid only where the bar is drawn, which keeps Stop pressable
+        // without blocking the rest of the screen.
+        ACTING.store(false, std::sync::atomic::Ordering::Relaxed);
+        recheck_pointer();
+        return Ok(());
     }
 
     // Only when the click would actually land on the bar. Making the window
@@ -611,6 +705,7 @@ pub fn overlay_pass_clicks(
             return Ok(());
         }
     }
+    ACTING.store(true, std::sync::atomic::Ordering::Relaxed);
     bar.set_ignore_cursor_events(true).map_err(|e| e.to_string())?;
     // The window server applies this on its own clock; without the pause the
     // first click can still land on a bar that is already click-through.
@@ -653,6 +748,8 @@ pub fn overlay_escape(app: tauri::AppHandle, active: bool) -> Result<(), String>
         if let Some(bar) = app.get_webview_window(BAR) {
             let _ = bar.set_ignore_cursor_events(false);
         }
+        ACTING.store(false, std::sync::atomic::Ordering::Relaxed);
+        recheck_pointer();
         return Ok(());
     }
     // Re-registering the same shortcut is an error, not a no-op.

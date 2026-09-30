@@ -1,0 +1,110 @@
+/* The Assistant Agent's parts of a chat: its notes, the live browser view, and
+   the card for whatever it is waiting on. Everything else reuses chat.css. */
+
+.task-note {
+  margin: 4px 0 8px;
+  color: var(--muted);
+  font-size: 14px;
+  font-style: italic;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tool-line.running {
+  color: var(--accent-2);
+}
+.tool-line.running .tool-icon {
+  animation: sa-pulse 1.2s ease-in-out infinite;
+}
+
+.task-live {
+  margin: 10px 0 14px;
+  max-width: 420px;
+}
+.task-live .hint {
+  margin: 0 0 6px;
+}
+.task-shot {
+  display: block;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.task-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.task-shot.loading {
+  aspect-ratio: 1280 / 900;
+}
+
+.task-pending {
+  margin: 12px 0 16px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 2px solid #e0892b;
+  background: var(--panel);
+}
+.task-pending-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.task-pending-body {
+  margin-top: 6px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 14px;
+}
+.task-pending .task-shot.wide {
+  margin-top: 12px;
+  max-width: 560px;
+}
+.task-pending-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+.task-pending-actions .hint {
+  flex: 1;
+  margin: 0;
+  min-width: 160px;
+}
+.task-reply {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.task-reply input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+/* A step is one line: icon, then its title cut to fit. */
+.tool-line.task-step:not(.has-detail),
+.tool-line.task-step > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.task-step-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-line.task-step {
+  margin-bottom: 6px;
+}

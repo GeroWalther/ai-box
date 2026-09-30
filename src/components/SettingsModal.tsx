@@ -16,6 +16,10 @@ interface Props {
   settings: Settings;
   onChange: (patch: Partial<Settings>) => void;
   onClose: () => void;
+  /** Models installed on this Mac through Ollama. */
+  localModels: string[];
+  /** Opens the installer for them. */
+  onManageModels: () => void;
 }
 
 type Tab = "general" | "assist" | "agent" | "remote" | "about";
@@ -28,7 +32,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "about", label: "Diagnostics" },
 ];
 
-export default function SettingsModal({ settings, onChange, onClose }: Props) {
+export default function SettingsModal({ settings, onChange, onClose, localModels, onManageModels }: Props) {
   const [tab, setTab] = useState<Tab>("general");
   const active = activeProvider(settings);
   // Only to report the key's state: how many models it brought back, or that it
@@ -135,11 +139,21 @@ export default function SettingsModal({ settings, onChange, onClose }: Props) {
                   </p>
                 )}
 
+              </section>
+
+              <section>
+                <h3>Local models</h3>
                 <p className="hint">
-                  Local models run through Ollama — install them with{" "}
-                  <b>Local models</b> next to any model picker. They are offered
-                  whichever provider is active, and nothing about them is billed.
+                  Models that run on this Mac through Ollama. They appear in every model
+                  picker under “On this Mac”, whichever provider is chosen above, and
+                  nothing about them is billed.{" "}
+                  {localModels.length === 0
+                    ? "None installed yet."
+                    : `Installed: ${localModels.join(", ")}.`}
                 </p>
+                <button className="btn" onClick={onManageModels}>
+                  {localModels.length === 0 ? "Get local models…" : "Manage local models…"}
+                </button>
               </section>
 
               <p className="hint">

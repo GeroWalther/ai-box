@@ -409,3 +409,64 @@ html[data-overlay="marks"] {
   transition: opacity 0.7s ease-out;
 }
 .sa-marks.fading { opacity: 0; }
+
+/* Markdown inside the answer card. The card is always dark, whatever the app
+   theme, so the theme's own panel and border colours would be wrong here. */
+.sa-say .markdown,
+.sa-detail .markdown {
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+}
+.sa-detail {
+  white-space: normal;
+}
+.sa-answer .markdown a {
+  color: #a9a2ff;
+}
+.sa-answer .markdown :not(pre) > code {
+  background: rgba(255, 255, 255, 0.12);
+}
+.sa-answer .markdown blockquote {
+  border-left-color: rgba(255, 255, 255, 0.25);
+  color: rgba(238, 240, 245, 0.75);
+}
+.sa-answer .markdown th,
+.sa-answer .markdown td {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+/* The answer can be selected and copied; the card is dragged by its edges. */
+.sa-say,
+.sa-detail,
+.sa-trail {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+.sa-answer {
+  cursor: grab;
+}
+.sa-answer:active {
+  cursor: grabbing;
+}
+
+/* The grip at the start of the bar: press and drag to move the whole overlay. */
+.sa-grip {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 32px;
+  margin: 0 -4px 0 -4px;
+  border-radius: 7px;
+  color: rgba(255, 255, 255, 0.38);
+  cursor: grab;
+}
+.sa-grip:hover {
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.08);
+}
+.sa-grip:active {
+  cursor: grabbing;
+}

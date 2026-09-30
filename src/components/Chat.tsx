@@ -1,32 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { generateText, listOllamaModels } from "../lib/api";
-import {
-  AGENT_TOOLS,
-  chatCompletion,
-  fsDelete,
-  fsEdit,
-  fsList,
-  fsMove,
-  fsRead,
-  fsSearch,
-  fsWrite,
-  parseTextToolCall,
-  runCommandStream,
-  webFetch,
-} from "../lib/agent";
-import { resolveTextProvider, type Settings } from "../lib/settings";
-import { isTauri, cancelStream } from "../lib/transport";
+import { listOllamaModels } from "../lib/api";
+import { assistProvider, resolveTextProvider, type Settings } from "../lib/settings";
+import { isTauri } from "../lib/transport";
 import { remoteStoreMerge } from "../lib/remoteStore";
 import { registerSyncSource } from "../lib/syncBus";
 import { logError } from "../lib/log";
 import { parseSyncList } from "../lib/syncList";
 import { useOpenrouterModels } from "../lib/openrouterModels";
 import { useToast } from "../lib/toast";
-import { Recorder, transcribe } from "../lib/screenAssist";
+import { Recorder, say, spokenText, transcribe } from "../lib/screenAssist";
+import {
+  approveTask,
+  deleteTask,
+  getTask,
+  isLive,
+  replyTask,
+  sendToTask,
+  startTask,
+  stopTask,
+  type Task,
+} from "../lib/tasks";
+import TaskThread from "./TaskThread";
 import { listen } from "@tauri-apps/api/event";
-import { lineDiffText } from "../lib/diff";
-import DiffPreview from "./DiffPreview";
-import ModelManager from "./ModelManager";
 import ModelSelect from "./ModelSelect";
 import { useDirectModels } from "../hooks/useDirectModels";
 import Markdown from "./Markdown";
@@ -38,7 +33,6 @@ import {
   attachmentUrl,
   isImageFile,
   isImagePath,
-  userContent,
   type Attached,
 } from "../lib/attachments";
 
@@ -50,21 +44,21 @@ interface Msg {
   ok?: boolean; // tool: success/failure for the status icon
   images?: Attached[]; // user: attached images, stored on the Mac by id
 }
-/** A turn as sent to the model: text, or text plus images as content parts. */
-type Turn = { role: "user" | "assistant"; content: string | unknown[] };
 interface Session {
   id: string;
   title: string;
   messages: Msg[];
   /** Last-edit timestamp (ms) used to merge concurrent desktop/phone edits. */
   updatedAt?: number;
+  /** In Agent mode the conversation runs as a task on the Mac; this is it.
+   *  `messages` then only holds what was said before it became one. */
+  taskId?: string;
 }
 
 interface Props {
   settings: Settings;
   onChange: (patch: Partial<Settings>) => void;
   onOpenSettings: () => void;
-  onInsertManuscript?: (text: string) => void;
   /** DOM node in App's unified sidebar where this tab's chat list is portaled. */
   sidebarSlot: HTMLElement | null;
   onCloseDrawer?: () => void;
@@ -73,35 +67,12 @@ interface Props {
 const SESSIONS_KEY = "ai-studio.sessions";
 const SESSIONS_DEL_KEY = "ai-studio.sessions.deleted";
 
-const AGENT_SYSTEM =
-  "You are AI Box, an agentic coworker running on the user's Mac (macOS, Apple Silicon). " +
-  "You CAN and SHOULD use your tools to actually do the work, not just describe it. " +
-  "Tools: read_file, write_file, edit_file (targeted unique-match replace — prefer for small changes), " +
-  "list_dir, search_files (grep/find), move_file, delete_file, run_command (shell), and web_fetch. " +
-  "Explore with search_files/list_dir/read_file before editing. Prefer edit_file over rewriting whole files. " +
-  "Prefer absolute paths (the Desktop is ~/Desktop). Take actions with the tools first, then briefly summarize what you did. " +
-  // ReAct fallback for local models without native tool-calling: they can act by
-  // emitting a JSON action, which the app parses and executes.
-  'If you cannot call tools natively, emit EXACTLY one action as JSON on its own line and nothing else: ' +
-  '{"tool":"<tool_name>","args":{ … }} — then STOP and wait for the "Observation:" before your next step. ' +
-  "When the task is complete, reply normally with a short summary and no JSON.";
-
-const CHAT_SYSTEM =
-  "You are AI Box, a capable, friendly assistant. Help with coding, writing, analysis, and general questions. Write correct, well-explained code. Be clear and concise.";
-
 function splitThink(raw: string): { think: string; answer: string } {
   if (!raw.includes("<think>")) return { think: "", answer: raw };
   const m = raw.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
   const think = m ? m[1] : "";
   const answer = raw.replace(/<think>[\s\S]*?(?:<\/think>|$)/, "").trim();
   return { think, answer };
-}
-function safeParse(s: string): any {
-  try {
-    return JSON.parse(s || "{}");
-  } catch {
-    return {};
-  }
 }
 /** One attached image, loaded from the Mac on demand. */
 function AttachmentThumb({ a, onRemove }: { a: Attached; onRemove?: () => void }) {
@@ -111,7 +82,7 @@ function AttachmentThumb({ a, onRemove }: { a: Attached; onRemove?: () => void }
     let live = true;
     attachmentUrl(a.id).then(
       (u) => live && setUrl(u),
-      () => live && setMissing(true)
+      () => live && setMissing(true),
     );
     return () => {
       live = false;
@@ -129,11 +100,22 @@ function AttachmentThumb({ a, onRemove }: { a: Attached; onRemove?: () => void }
   );
 }
 
-function newSession(): Session {
-  return { id: crypto.randomUUID(), title: "New chat", messages: [], updatedAt: Date.now() };
+/** A model id as a person would say it: "google:gemini-3.8-flash" → "gemini-3.8-flash". */
+function shortModel(id: string): string {
+  if (!id) return "no model";
+  return id.split(/[:/]/).pop() || id;
 }
 
-export default function Chat({ settings, onChange, onOpenSettings, onInsertManuscript, sidebarSlot, onCloseDrawer }: Props) {
+function newSession(): Session {
+  return {
+    id: crypto.randomUUID(),
+    title: "New chat",
+    messages: [],
+    updatedAt: Date.now(),
+  };
+}
+
+export default function Chat({ settings, onChange, onOpenSettings, sidebarSlot, onCloseDrawer }: Props) {
   const { error: toastError } = useToast();
   const [sessions, setSessions] = useState<Session[]>(() => {
     try {
@@ -143,42 +125,49 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
       return [newSession()];
     }
   });
-  const [activeId, setActiveId] = useState<string>(
-    () => localStorage.getItem("ai-studio.chat.active") || ""
-  );
+  const [activeId, setActiveId] = useState<string>(() => localStorage.getItem("ai-studio.chat.active") || "");
   const [input, setInput] = useState("");
   // Images waiting to go out with the next message, and how many are still
   // being read and shrunk on the Mac — sending waits for those.
   const [attachments, setAttachments] = useState<Attached[]>([]);
   const [attaching, setAttaching] = useState(0);
   const viewRef = useRef<HTMLDivElement>(null);
-  const [generating, setGenerating] = useState(false);
-  // Start in Agent mode by default (persisted in settings) so it can run tools.
-  const [agentMode, setAgentMode] = useState(settings.agentMode !== false);
   const [toolsOpen, setToolsOpen] = useState(false); // collapse the model/agent bar for a clean canvas
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
-  const [showModels, setShowModels] = useState(false);
-  const [pending, setPending] = useState<{
-    title: string;
-    body: string;
-    /** Optional unified-diff preview so the user approves a change they can see. */
-    diff?: string;
-    /** Which tool asked, so "always allow" can be scoped to just that one. */
-    tool: string;
-    resolve: (ok: boolean) => void;
-  } | null>(null);
-  // "Always allow" used to be a single boolean that, once clicked for a harmless
-  // read, waved through every delete and shell command for the rest of the
-  // session. It is now per-tool and per-session: allowing `edit_file` says
-  // nothing about `run_command`, and nothing survives a reload.
-  const allowedToolsRef = useRef<Set<string>>(new Set());
-  const genIdRef = useRef(0);
-  const reqIdRef = useRef(""); // id of the in-flight generation, for server-side cancel
+  /** The active chat's task, when it has one, as last fetched from the Mac. */
+  const [task, setTask] = useState<Task | null>(null);
+  const taskRef = useRef<Task | null>(null);
+  taskRef.current = task;
+  /** Per task: how much of it has been read aloud, so voice mode speaks only
+   *  what is new — never a whole history on opening a chat. */
+  const spokenRef = useRef<Record<string, { steps: number; pending: string }>>({});
+  /** Whether the last message was spoken. Replies to a spoken message are
+   *  read aloud; replies to a typed one are not — no switch to set. */
+  const spokeRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeIdRef = useRef("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  /**
+   * Whether speech can become text here. Transcription borrows the Screen
+   * Assist model — one picked because it can hear — and no local model can.
+   * A browser also only hands the microphone to a secure page, which a phone
+   * reaching the Mac over plain http is not. Where either fails, the mic and
+   * Voice are not offered at all; the phone keyboard's own dictation works.
+   */
+  const canTranscribe = !assistProvider(settings).local && (isTauri() || window.isSecureContext);
+  /** A phone or tablet keyboard: Return makes a new line there. */
+  const touchKeyboard = useMemo(() => window.matchMedia?.("(pointer: coarse)").matches ?? false, []);
+
+  // Grow the box with what is typed, up to a limit, then scroll inside it.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * 0.4)}px`;
+  }, [input]);
   // Dictation. The transcript lands in the composer rather than being sent, so
   // a misheard instruction is caught before an agent with shell access acts on
   // it — and so it works with chat models that cannot hear, local ones included.
@@ -195,7 +184,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
       setTranscribing(true);
       try {
         const text = await transcribe(settings, clip);
-        if (text) setInput((prev) => (prev ? `${prev.trimEnd()} ${text}` : text));
+        if (text) void handleSpoken(text);
       } catch (e) {
         logError("chat.dictate", e);
         toastError(String(e));
@@ -204,13 +193,72 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
       }
       return;
     }
+    unlockSpeech();
     try {
       await recorder.current.start();
       setListening(true);
     } catch (e) {
       logError("chat.mic", e);
-      toastError("No microphone access. Grant it in System Settings → Privacy & Security → Microphone.");
+      // A phone reaching the Mac over plain http is not a "secure context", and
+      // browsers only hand the microphone to secure pages. Say so, rather than
+      // blaming a permission the user cannot find.
+      toastError(
+        !isTauri() && !window.isSecureContext
+          ? "The browser only allows the microphone on a secure (https) connection. Use your keyboard's dictation key instead — with Voice on, replies are still read aloud."
+          : "No microphone access. Grant it in System Settings → Privacy & Security → Microphone.",
+      );
     }
+  }
+
+  /** Mobile browsers only speak after a tap has allowed it once; a silent
+   *  utterance during one (the mic, the Voice switch) unlocks the rest. */
+  function unlockSpeech() {
+    if (isTauri() || !("speechSynthesis" in window)) return;
+    const u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0;
+    window.speechSynthesis.speak(u);
+  }
+
+  /** Read something aloud: the Mac's voice on the Mac, the phone's on the phone.
+   *  Long answers are cut at a sentence — nobody wants a table read to them. */
+  function speakOut(text: string) {
+    let clean = spokenText(text);
+    if (clean.length > 600) {
+      const cut = clean.slice(0, 600);
+      const end = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
+      clean = (end > 200 ? cut.slice(0, end + 1) : cut) + " …";
+    }
+    if (!clean) return;
+    if (isTauri()) {
+      void say({ ...settings, assistSpeak: true }, clean);
+    } else if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(clean);
+      u.lang = navigator.language;
+      window.speechSynthesis.speak(u);
+    }
+  }
+
+  /** What was said, in voice mode: a yes or no when it is waiting for one,
+   *  otherwise a message like any other. */
+  async function handleSpoken(text: string) {
+    const said = text.trim().replace(/[.!?,…]+$/, "");
+    spokeRef.current = true;
+    const p = task?.status === "waiting" ? task.pending : undefined;
+    if (p?.kind === "approve") {
+      if (
+        /^(yes|yeah|yep|ok(ay)?|sure|approve[d]?|do it|go ahead|ja|jawohl|klar|genau|mach (es|das)|passt)\b/i.test(said)
+      ) {
+        return answerTask(() => approveTask(p.id, true));
+      }
+      if (/^(no|nope|don'?t|stop|cancel|nein|nicht|lass (es|das)|abbrechen)\b/i.test(said)) {
+        return answerTask(() => approveTask(p.id, false));
+      }
+    }
+    if (p?.kind === "handover" && /^(done|finished|continue|ok|fertig|erledigt|weiter)\b/i.test(said)) {
+      return answerTask(() => replyTask(p.id, "done"));
+    }
+    await send(text);
   }
   const [deletedSessions, setDeletedSessions] = useState<Record<string, number>>(() => {
     try {
@@ -244,7 +292,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
         } finally {
           setAttaching((n) => n - 1);
         }
-      })
+      }),
     );
   }
 
@@ -262,7 +310,12 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     if (images.length < files.length) toastError("Only images can be attached here.");
     if (images.length) void addImages(images.map((f) => () => attachFile(f)));
   }
-  const dropHover = useFileDrop({ target: viewRef, enabled: true, onPaths: onDropPaths, onFiles: onDropFiles });
+  const dropHover = useFileDrop({
+    target: viewRef,
+    enabled: true,
+    onPaths: onDropPaths,
+    onFiles: onDropFiles,
+  });
 
   function onPaste(e: React.ClipboardEvent) {
     const files = Array.from(e.clipboardData.items)
@@ -312,10 +365,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   }, []);
 
   const provider = useMemo(() => resolveTextProvider(settings), [settings]);
-  const {
-    models: orModels,
-    refresh: refreshOR,
-  } = useOpenrouterModels(settings.openrouterKey);
+  const { models: orModels, refresh: refreshOR } = useOpenrouterModels(settings.openrouterKey);
   const directModels = useDirectModels(settings);
   const active = sessions.find((s) => s.id === activeId) || sessions[0];
   const messages = active?.messages ?? [];
@@ -348,7 +398,10 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     try {
       const merged = await remoteStoreMerge(
         SESSIONS_KEY,
-        JSON.stringify({ items: sessionsRef.current, deleted: deletedRef.current })
+        JSON.stringify({
+          items: sessionsRef.current,
+          deleted: deletedRef.current,
+        }),
       );
       adoptSessions(merged);
     } catch (e) {
@@ -384,7 +437,10 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     const t = setTimeout(() => {
       remoteStoreMerge(
         SESSIONS_KEY,
-        JSON.stringify({ items: sessionsRef.current, deleted: deletedRef.current })
+        JSON.stringify({
+          items: sessionsRef.current,
+          deleted: deletedRef.current,
+        }),
       ).catch(() => {});
     }, 600);
     return () => clearTimeout(t);
@@ -402,30 +458,21 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
           if (firstUser) title = (firstUser.content || firstUser.images?.[0]?.name || "Image").slice(0, 40);
         }
         return { ...s, messages: msgs, title, updatedAt: Date.now() };
-      })
+      }),
     );
   }
-  const pushMsg = (m: Msg) => setMessages((prev) => [...prev, m]);
-  const patchLast = (fn: (m: Msg) => Msg) =>
-    setMessages((prev) => {
-      const c = [...prev];
-      c[c.length - 1] = fn(c[c.length - 1]);
-      return c;
-    });
 
   function newChat() {
-    genIdRef.current++;
-    setGenerating(false);
     const s = newSession();
     setSessions((prev) => [s, ...prev]);
     setActiveId(s.id);
   }
   function switchChat(id: string) {
-    genIdRef.current++;
-    setGenerating(false);
     setActiveId(id);
   }
   function deleteChat(id: string) {
+    const taskId = sessionsRef.current.find((s) => s.id === id)?.taskId;
+    if (taskId) void deleteTask(taskId).catch(() => {});
     setDeletedSessions((prev) => ({ ...prev, [id]: Date.now() }));
     setSessions((prev) => {
       const next = prev.filter((s) => s.id !== id);
@@ -433,9 +480,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     });
   }
   function renameChat(id: string, title: string) {
-    setSessions((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, title, updatedAt: Date.now() } : s))
-    );
+    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, title, updatedAt: Date.now() } : s)));
   }
 
   /** Session the overlay's questions are filed under. */
@@ -446,323 +491,150 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
   // The main window is the single writer of sessions — both windows share a
   // localStorage, so letting the overlay write directly would race this one.
   useEffect(() => {
-    const un = listen<{ question: string; answer: string; sawScreen: boolean; focus: boolean }>(
-      "screen-assist://exchange",
-      (e) => {
-        const { question, answer, sawScreen, focus } = e.payload ?? ({} as never);
-        if (!question && !answer) return;
-        const user: Msg = {
-          role: "user",
-          content: sawScreen ? `${question}\n\n_(asked about my screen)_` : question,
-          reasoning: "",
-        };
-        const reply: Msg = { role: "assistant", content: answer, reasoning: "" };
+    const un = listen<{
+      question: string;
+      answer: string;
+      sawScreen: boolean;
+      focus: boolean;
+    }>("screen-assist://exchange", (e) => {
+      const { question, answer, sawScreen, focus } = e.payload ?? ({} as never);
+      if (!question && !answer) return;
+      const user: Msg = {
+        role: "user",
+        content: sawScreen ? `${question}\n\n_(asked about my screen)_` : question,
+        reasoning: "",
+      };
+      const reply: Msg = { role: "assistant", content: answer, reasoning: "" };
 
-        setSessions((prev) => {
-          const existing = prev.find((x) => x.title === ASSIST_TITLE);
-          if (existing) {
-            const updated = {
-              ...existing,
-              messages: [...existing.messages, user, reply],
-              updatedAt: Date.now(),
-            };
-            if (focus) setActiveId(updated.id);
-            return [updated, ...prev.filter((x) => x.id !== existing.id)];
-          }
-          const fresh: Session = {
-            id: crypto.randomUUID(),
-            title: ASSIST_TITLE,
-            messages: [user, reply],
+      setSessions((prev) => {
+        const existing = prev.find((x) => x.title === ASSIST_TITLE);
+        if (existing) {
+          const updated = {
+            ...existing,
+            messages: [...existing.messages, user, reply],
             updatedAt: Date.now(),
           };
-          if (focus) setActiveId(fresh.id);
-          return [fresh, ...prev];
-        });
-      }
-    );
+          if (focus) setActiveId(updated.id);
+          return [updated, ...prev.filter((x) => x.id !== existing.id)];
+        }
+        const fresh: Session = {
+          id: crypto.randomUUID(),
+          title: ASSIST_TITLE,
+          messages: [user, reply],
+          updatedAt: Date.now(),
+        };
+        if (focus) setActiveId(fresh.id);
+        return [fresh, ...prev];
+      });
+    });
     return () => {
       void un.then((f) => f());
     };
   }, []);
 
-  const canSend =
-    !!provider.model &&
-    !(settings.provider === "openrouter" && !settings.openrouterKey);
+  // The key of the provider the model actually uses, checked only on the Mac:
+  // a phone never holds keys, and the Mac supplies them per request.
+  const canSend = !!provider.model && !(isTauri() && settings.provider === "openrouter" && !provider.apiKey);
 
-  /** Earlier turns for the model, with each user message's images restored. */
-  function historyMessages(list: Msg[]): Promise<Turn[]> {
-    return Promise.all(
-      list
-        .filter((m) => (m.role === "user" || m.role === "assistant") && (m.content.trim() || m.images?.length))
-        .map(async (m) => ({
-          role: m.role as "user" | "assistant",
-          content: m.role === "user" ? await userContent(m.content, m.images) : m.content,
-        }))
-    );
+  /** The conversation so far as plain text: what was said before it became a
+   *  task, then the task's own messages and replies. */
+  function plainHistory(list: Msg[]): { role: "user" | "assistant"; content: string }[] {
+    const early = list
+      .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+      }));
+    const later = (task?.steps ?? [])
+      .filter((s) => (s.kind === "user" || s.kind === "reply") && s.title.trim())
+      .map((s) => ({
+        role: (s.kind === "user" ? "user" : "assistant") as "user" | "assistant",
+        content: s.title,
+      }));
+    return [...early, ...later];
   }
 
-  async function send() {
-    const text = input.trim();
+  const taskLive = !!task && isLive(task.status);
+
+  /** Fetch the active task now, rather than at the next poll. */
+  async function pokeTask(id = active?.taskId) {
+    if (!id) return;
+    try {
+      const t = await getTask(id);
+      if (t && activeIdRef.current === active?.id) setTask(t);
+    } catch (e) {
+      logError("chat.task", e);
+    }
+  }
+
+  async function answerTask(fn: () => Promise<void>) {
+    try {
+      await fn();
+      void pokeTask();
+    } catch (e) {
+      toastError(String(e));
+    }
+  }
+
+  /** Agent mode: the message goes to the Mac, which does the work. */
+  async function sendToAgent(
+    text: string,
+    images: Attached[],
+    history?: { role: "user" | "assistant"; content: string }[],
+  ) {
+    const session = active;
+    if (!session) return;
+    try {
+      if (session.taskId && !history) {
+        await sendToTask(session.taskId, text, images, provider.baseUrl, provider.model);
+        void pokeTask(session.taskId);
+        return;
+      }
+      const t = await startTask(
+        text,
+        images,
+        provider.baseUrl,
+        provider.model,
+        history ?? plainHistory(session.messages),
+      );
+      // Speak this one's replies even though it is new: it was just asked.
+      spokenRef.current[t.id] = { steps: t.steps.length, pending: "" };
+      setTask(t);
+      setSessions((prev) =>
+        prev.map((x) =>
+          x.id === session.id
+            ? {
+                ...x,
+                taskId: t.id,
+                title: x.title === "New chat" ? (text || images[0]?.name || "Image").slice(0, 40) : x.title,
+                updatedAt: Date.now(),
+              }
+            : x,
+        ),
+      );
+    } catch (e) {
+      toastError(String(e));
+    }
+  }
+
+  async function send(override?: string) {
+    const text = (override ?? input).trim();
     const images = attachments;
-    if ((!text && !images.length) || generating || attaching) return;
+    if ((!text && !images.length) || attaching) return;
     if (!canSend) {
       onOpenSettings();
       return;
     }
-    setInput("");
+    if (override === undefined) {
+      setInput("");
+      spokeRef.current = false; // typed: answer in text only
+    }
     setAttachments([]);
-    setGenerating(true);
-    const myGen = ++genIdRef.current;
-    const prior = messages;
-    pushMsg({ role: "user", content: text, reasoning: "", ...(images.length ? { images } : {}) });
-    const history = await historyMessages(prior);
-    const content = await userContent(text, images);
-    if (agentMode) await runAgent(content, history, myGen);
-    else await runStream(content, history, myGen);
-    if (genIdRef.current === myGen) setGenerating(false);
+    await sendToAgent(text, images);
   }
 
   function stopGen() {
-    genIdRef.current++;
-    // Abort the upstream generation server-side, not just the UI.
-    if (reqIdRef.current) cancelStream(reqIdRef.current);
-    setGenerating(false);
-    if (pending) {
-      pending.resolve(false);
-      setPending(null);
-    }
-  }
-
-  async function runStream(content: string | unknown[], history: Turn[], myGen: number) {
-    const apiMessages = [
-      { role: "system" as const, content: CHAT_SYSTEM },
-      ...history,
-      { role: "user" as const, content },
-    ];
-    pushMsg({ role: "assistant", content: "", reasoning: "" });
-    const live = () => genIdRef.current === myGen;
-    const requestId = crypto.randomUUID();
-    reqIdRef.current = requestId;
-    await generateText(
-      {
-        baseUrl: provider.baseUrl,
-        apiKey: provider.apiKey,
-        model: provider.model,
-        messages: apiMessages,
-        temperature: 0.7,
-        maxTokens: 1500,
-      },
-      {
-        onToken: (t) => {
-          if (live()) patchLast((m) => ({ ...m, content: m.content + t }));
-        },
-        onReasoning: (t) => {
-          if (live()) patchLast((m) => ({ ...m, reasoning: m.reasoning + t }));
-        },
-        onDone: () => {},
-        onError: (msg) => {
-          if (live()) patchLast((m) => ({ ...m, content: m.content + `\n\n[error] ${msg}` }));
-        },
-      },
-      requestId
-    );
-  }
-
-  async function runAgent(content: string | unknown[], history: Turn[], myGen: number) {
-    const convo: any[] = [
-      { role: "system", content: AGENT_SYSTEM },
-      ...history,
-      { role: "user", content },
-    ];
-    for (let step = 0; step < 16; step++) {
-      if (genIdRef.current !== myGen) return;
-      let msg: any;
-      try {
-        msg = await chatCompletion({
-          baseUrl: provider.baseUrl,
-          apiKey: provider.apiKey,
-          model: provider.model,
-          messages: convo,
-          tools: AGENT_TOOLS,
-          temperature: 0.3,
-        });
-      } catch (e) {
-        toastError(String(e));
-        pushMsg({ role: "assistant", content: `[error] ${String(e)}`, reasoning: "" });
-        return;
-      }
-      if (genIdRef.current !== myGen) return;
-      convo.push(msg);
-
-      // Native tool_calls when the model supports them; otherwise fall back to
-      // parsing an action out of the text (ReAct) so local models can act too.
-      const nativeCalls = msg.tool_calls || [];
-      const isText = nativeCalls.length === 0;
-      let calls = nativeCalls;
-      if (isText) {
-        const tcall = parseTextToolCall(msg.content || "");
-        if (!tcall) {
-          // No tool referenced → this is the model's final answer.
-          if (msg.content) pushMsg({ role: "assistant", content: msg.content, reasoning: "" });
-          return;
-        }
-        calls = [
-          { id: `react-${step}`, function: { name: tcall.name, arguments: JSON.stringify(tcall.args) } },
-        ];
-      } else if (msg.content) {
-        pushMsg({ role: "assistant", content: msg.content, reasoning: "" });
-      }
-
-      // Feed a tool result back to the model — as a structured tool message
-      // (native) or a plain-text Observation (ReAct fallback).
-      const observe = (tc: any, content: string) => {
-        if (isText) {
-          convo.push({ role: "user", content: `Observation (${tc.function?.name}): ${content}` });
-        } else {
-          convo.push({ role: "tool", tool_call_id: tc.id, content });
-        }
-      };
-
-      for (const tc of calls) {
-        if (genIdRef.current !== myGen) return;
-        const name = tc.function?.name;
-        const args = safeParse(tc.function?.arguments);
-        let label = name as string;
-        let detail = "";
-        let ok = true;
-        let result: any;
-
-        // run_command streams into its own live tool line.
-        if (name === "run_command") {
-          const approved = await requestApproval("run_command", "Run this command?", args.command);
-          if (!approved) {
-            pushMsg({ role: "tool", content: `Denied: ${args.command}`, reasoning: "", ok: false });
-            observe(tc, JSON.stringify({ denied: true }));
-            continue;
-          }
-          pushMsg({ role: "tool", content: `$ ${args.command}`, reasoning: "", detail: "", ok: true });
-          try {
-            const out = await runCommandStream(args.command, (line) =>
-              patchLast((m) => ({ ...m, detail: (m.detail || "") + line + "\n" }))
-            );
-            patchLast((m) => ({
-              ...m,
-              content: `$ ${args.command}  (exit ${out.code})`,
-              ok: out.code === 0,
-            }));
-            observe(tc, JSON.stringify(out).slice(0, 12000));
-          } catch (e) {
-            patchLast((m) => ({ ...m, content: `$ ${args.command}  (failed)`, ok: false, detail: (m.detail || "") + String(e) }));
-            observe(tc, JSON.stringify({ error: String(e) }));
-          }
-          continue;
-        }
-
-        try {
-          if (name === "read_file") {
-            const content = await fsRead(args.path);
-            label = `Read ${args.path}`;
-            detail = content;
-            result = { content };
-          } else if (name === "write_file") {
-            // Creating or overwriting a file is destructive and the path comes
-            // from model output, so it is approved with a visible diff — the
-            // same treatment a remote request already got.
-            const content = args.content ?? "";
-            const approved = await requestApproval(
-              "write_file",
-              "Write this file?",
-              args.path,
-              await writeDiff(args.path, content)
-            );
-            if (!approved) {
-              ok = false;
-              label = `Denied write: ${args.path}`;
-              result = { denied: true };
-            } else {
-              const msg = await fsWrite(args.path, content);
-              label = `Wrote ${args.path}`;
-              detail = content;
-              result = { message: msg };
-            }
-          } else if (name === "edit_file") {
-            const approved = await requestApproval(
-              "edit_file",
-              "Apply this edit?",
-              args.path,
-              lineDiffText(args.old ?? "", args.new ?? "")
-            );
-            if (!approved) {
-              ok = false;
-              label = `Denied edit: ${args.path}`;
-              result = { denied: true };
-            } else {
-              const r = await fsEdit(args.path, args.old ?? "", args.new ?? "");
-              label = `Edited ${args.path}`;
-              detail = r.diff;
-              result = r;
-            }
-          } else if (name === "list_dir") {
-            const entries = await fsList(args.path);
-            label = `Listed ${args.path} (${entries.length})`;
-            detail = entries.join("\n");
-            result = { entries };
-          } else if (name === "search_files") {
-            const hits = await fsSearch(args.root, args.query, args.kind);
-            label = `Searched "${args.query}" — ${hits.length} hit(s)`;
-            detail = hits.join("\n");
-            result = { matches: hits };
-          } else if (name === "web_fetch") {
-            const text = await webFetch(args.url);
-            label = `Fetched ${args.url}`;
-            detail = text.slice(0, 2000);
-            result = { text };
-          } else if (name === "write_story") {
-            const text = args.text ?? "";
-            onInsertManuscript?.(text);
-            label = `Wrote ${text.split(/\s+/).filter(Boolean).length} words to the manuscript`;
-            detail = text.slice(0, 2000);
-            result = { message: "Appended to the Write tab manuscript." };
-          } else if (name === "move_file") {
-            const approved = await requestApproval(
-              "move_file",
-              "Move a file?",
-              `${args.from}\n→ ${args.to}`
-            );
-            if (!approved) {
-              ok = false;
-              label = `Denied move: ${args.from}`;
-              result = { denied: true };
-            } else {
-              const m = await fsMove(args.from, args.to);
-              label = m;
-              result = { message: m };
-            }
-          } else if (name === "delete_file") {
-            const approved = await requestApproval("delete_file", "Delete this path?", args.path);
-            if (!approved) {
-              ok = false;
-              label = `Denied delete: ${args.path}`;
-              result = { denied: true };
-            } else {
-              const m = await fsDelete(args.path);
-              label = m;
-              result = { message: m };
-            }
-          } else {
-            ok = false;
-            result = { error: `unknown tool ${name}` };
-          }
-        } catch (e) {
-          ok = false;
-          result = { error: String(e) };
-          label = `Error — ${name}: ${String(e)}`;
-        }
-        pushMsg({ role: "tool", content: label, reasoning: "", detail, ok });
-        observe(tc, JSON.stringify(result).slice(0, 12000));
-      }
-    }
-    pushMsg({ role: "assistant", content: "(stopped after 16 steps)", reasoning: "" });
+    if (taskLive && task) void answerTask(() => stopTask(task.id));
   }
 
   // Edit a prior user message and resend: truncate everything from that message
@@ -779,62 +651,102 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
     const text = editText.trim();
     // Editing changes the words; the images the message was sent with stay.
     const images = messages[i].images;
-    if ((!text && !images?.length) || generating) return;
+    if (!text && !images?.length) return;
     if (!canSend) {
       onOpenSettings();
       return;
     }
     const prior = messages.slice(0, i);
-    setMessages([...prior, { role: "user", content: text, reasoning: "", ...(images?.length ? { images } : {}) }]);
+    setMessages([
+      ...prior,
+      {
+        role: "user",
+        content: text,
+        reasoning: "",
+        ...(images?.length ? { images } : {}),
+      },
+    ]);
     setEditingIndex(null);
     setEditText("");
-    setGenerating(true);
-    const myGen = ++genIdRef.current;
-    const history = await historyMessages(prior);
-    const content = await userContent(text, images);
-    if (agentMode) await runAgent(content, history, myGen);
-    else await runStream(content, history, myGen);
-    if (genIdRef.current === myGen) setGenerating(false);
+    // Starts the conversation over from the edited message, as a new task.
+    await sendToAgent(text, images ?? [], plainHistory(prior).filter((_, k) => k < prior.length));
   }
 
-  /**
-   * Ask the human before a tool does something consequential.
-   *
-   * Three ways this resolves without a prompt, in order:
-   *  1. Not on the desktop — we're the phone, and the Mac's server already
-   *     enforces its own approval for this call. Prompting here would ask twice.
-   *  2. `autoApproveTools` is on — the deliberate "I'm away from my desk" switch.
-   *     Note this only skips PROMPTS: the Rust guard still refuses protected
-   *     paths, so unattended never means unprotected.
-   *  3. The user already chose "always allow" for this specific tool this session.
-   */
-  function requestApproval(
-    tool: string,
-    title: string,
-    body: string,
-    diff?: string
-  ): Promise<boolean> {
-    if (!isTauri()) return Promise.resolve(true);
-    if (settings.autoApproveTools) return Promise.resolve(true);
-    if (allowedToolsRef.current.has(tool)) return Promise.resolve(true);
-    return new Promise((resolve) => setPending({ tool, title, body, diff, resolve }));
-  }
-  function answerApproval(ok: boolean, always = false) {
-    if (always && ok && pending) allowedToolsRef.current.add(pending.tool);
-    pending?.resolve(ok);
-    setPending(null);
-  }
-
-  /** Preview of what a whole-file write would change, for the approval dialog. */
-  async function writeDiff(path: string, next: string): Promise<string> {
-    let current = "";
-    try {
-      current = await fsRead(path);
-    } catch {
-      current = ""; // new file — the diff is simply "all of it is added"
+  // Follow the active chat's task: often while it works, rarely after. On the
+  // Mac a change event makes it immediate; the phone relies on the poll.
+  const activeTaskId = active?.taskId ?? "";
+  useEffect(() => {
+    if (!activeTaskId) {
+      setTask(null);
+      return;
     }
-    return lineDiffText(current, next);
-  }
+    if (taskRef.current?.id !== activeTaskId) setTask(null);
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      try {
+        const current = taskRef.current?.id === activeTaskId ? taskRef.current : null;
+        const next = await getTask(activeTaskId, current?.rev);
+        if (stop) return;
+        if (next) setTask(next);
+        const t = next ?? current;
+        timer = setTimeout(tick, t && isLive(t.status) ? 1000 : 6000);
+      } catch (e) {
+        logError("chat.task", e);
+        if (!stop) timer = setTimeout(tick, 4000);
+      }
+    };
+    void tick();
+    let unlisten: (() => void) | undefined;
+    if (isTauri()) {
+      void listen<{ id: string }>("task://changed", (e) => {
+        if (e.payload?.id === activeTaskId) {
+          clearTimeout(timer);
+          void tick();
+        }
+      }).then((f) => (stop ? f() : (unlisten = f)));
+    }
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+      unlisten?.();
+    };
+  }, [activeTaskId]);
+
+  // Keep the newest step in view as a task works.
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [task?.steps.length, task?.pending?.id]);
+
+  // Voice mode: read out replies and whatever it is waiting on, once each.
+  useEffect(() => {
+    if (!task) return;
+    const seen = spokenRef.current[task.id];
+    if (!seen) {
+      // Opening a chat is not the moment to hear its whole history.
+      spokenRef.current[task.id] = {
+        steps: task.steps.length,
+        pending: task.pending?.id ?? "",
+      };
+      return;
+    }
+    if (spokeRef.current) {
+      for (const s of task.steps.slice(seen.steps)) if (s.kind === "reply") speakOut(s.title);
+      const p = task.status === "waiting" ? task.pending : undefined;
+      if (p && p.id !== seen.pending) {
+        speakOut(
+          p.kind === "approve"
+            ? `${p.title} Say yes or no.`
+            : p.kind === "handover"
+              ? `Your turn in the browser. ${p.body}`
+              : p.title,
+        );
+      }
+    }
+    seen.steps = task.steps.length;
+    seen.pending = task.pending?.id ?? "";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task]);
 
   return (
     <div className="chat-layout">
@@ -853,11 +765,12 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
 
       <div className={dropHover ? "chat-view drop-hover" : "chat-view"} ref={viewRef}>
         <div className="chat-scroll" ref={scrollRef}>
-          {messages.length === 0 && (
+          {messages.length === 0 && !task && (
             <div className="chat-empty">
-              Ask anything — code, writing, reasoning, questions.
+              Ask anything, or tell me what to do.
               <br />
-              Turn on <b>Agent</b> to let it read/write files and run commands on your Mac.
+              I work on this Mac — in a browser, the terminal and your files — and keep going if you close
+              this window. I ask before paying, booking, sending or deleting anything.
             </div>
           )}
           {messages.map((m, i) => {
@@ -887,7 +800,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
               <div key={i} className={`msg ${m.role}`}>
                 <div className="msg-head">
                   <div className="msg-role">{m.role === "user" ? "You" : "AI Box"}</div>
-                  {!editing && m.role === "user" && !generating && (
+                  {!editing && m.role === "user" && !active?.taskId && (
                     <button className="msg-copy" title="Edit & resend" onClick={() => startEdit(i)}>
                       Edit
                     </button>
@@ -903,7 +816,7 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
                   )}
                 </div>
                 {thinking && (
-                  <details className="thinking" open={generating && i === messages.length - 1}>
+                  <details className="thinking">
                     <summary>Thinking</summary>
                     <div className="thinking-body">{thinking}</div>
                   </details>
@@ -943,85 +856,72 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
                 ) : answer || isAssistant ? (
                   <div className="msg-body">
                     {answer ? (
-                      isAssistant ? <Markdown>{answer}</Markdown> : answer
+                      isAssistant ? (
+                        <Markdown>{answer}</Markdown>
+                      ) : (
+                        answer
+                      )
+                    ) : isAssistant && !thinking ? (
+                      "…"
                     ) : (
-                      isAssistant && !thinking ? "…" : ""
+                      ""
                     )}
                   </div>
                 ) : null}
               </div>
             );
           })}
-          {generating &&
-            (messages.length === 0 ||
-              messages[messages.length - 1].role !== "assistant" ||
-              messages[messages.length - 1].content === "") && (
-              <div className="msg assistant">
-                <div className="msg-role">AI Box</div>
-                <div className="typing">
-                  <span></span>
-                  <span></span>
-                  <span></span>
+          {task && (
+            <TaskThread
+              task={task}
+              onApprove={(id, ok) => void answerTask(() => approveTask(id, ok))}
+              onReply={(id, text) => void answerTask(() => replyTask(id, text))}
+              renderImages={(imgs) => (
+                <div className="msg-images">
+                  {imgs.map((a) => (
+                    <AttachmentThumb key={a.id} a={a} />
+                  ))}
                 </div>
-              </div>
-            )}
+              )}
+            />
+          )}
         </div>
 
         <div className="promptbar-wrap">
-          <div className="prompt-toolbar">
-            <button
-              className="write-tools-toggle prompt-tools-toggle"
-              onClick={() => setToolsOpen((v) => !v)}
-              aria-expanded={toolsOpen}
-              title="Model & agent options"
-            >
-              Model &amp; options {toolsOpen ? "▲" : "▾"}
-            </button>
-            {toolsOpen && (
-              <div className="prompt-tools">
-                <ModelSelect
-                  settings={settings}
-                  ollamaModels={ollamaModels}
-                  orModels={orModels}
-                  directModels={directModels.models}
-                  onChange={onChange}
-                  onRefresh={() => {
-                    refreshOR();
-                    refreshOllama();
-                  }}
-                  onManageModels={() => setShowModels(true)}
-                />
-                <label className="agent-toggle" title="Let the AI read/write files and run commands">
-                  <input
-                    type="checkbox"
-                    checked={agentMode}
-                    onChange={(e) => {
-                      setAgentMode(e.target.checked);
-                      onChange({ agentMode: e.target.checked });
-                    }}
-                  />
-                  Agent
-                </label>
-              </div>
-            )}
-          </div>
-          {(attachments.length > 0 || attaching > 0) && (
-            <div className="attach-strip">
-              {attachments.map((a) => (
-                <AttachmentThumb
-                  key={a.id}
-                  a={a}
-                  onRemove={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
-                />
-              ))}
-              {Array.from({ length: attaching }, (_, k) => (
-                <div key={`pending-${k}`} className="attach-thumb pending">
-                  <span>…</span>
-                </div>
-              ))}
+          {toolsOpen && (
+            <div className="prompt-tools">
+              <ModelSelect
+                settings={settings}
+                ollamaModels={ollamaModels}
+                orModels={orModels}
+                directModels={directModels.models}
+                directLoading={directModels.loading}
+                directError={directModels.error}
+                onChange={onChange}
+                onRefresh={() => {
+                  refreshOR();
+                  refreshOllama();
+                }}
+              />
             </div>
           )}
-          <div className="promptbar">
+          <div className="composer">
+            {(attachments.length > 0 || attaching > 0) && (
+              <div className="attach-strip">
+                {attachments.map((a) => (
+                  <AttachmentThumb
+                    key={a.id}
+                    a={a}
+                    onRemove={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                  />
+                ))}
+                {Array.from({ length: attaching }, (_, k) => (
+                  <div key={`pending-${k}`} className="attach-thumb pending">
+                    <span>…</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <input
               type="file"
               ref={fileRef}
@@ -1029,114 +929,101 @@ export default function Chat({ settings, onChange, onOpenSettings, onInsertManus
               accept="image/*,.heic,.txt,.md,.json,.js,.ts,.tsx,.jsx,.py,.rs,.html,.css,.csv,.yml,.yaml,.toml"
               onChange={onAttach}
             />
-            <button
-              className="btn ghost attach-btn"
-              title="Attach an image or a text file (you can also drop or paste images)"
-              onClick={() => fileRef.current?.click()}
-            >
-              📎
-            </button>
-            <button
-              className={listening ? "btn ghost attach-btn dictating" : "btn ghost attach-btn"}
-              title={
-                listening
-                  ? "Stop and transcribe"
-                  : transcribing
-                    ? "Transcribing…"
-                    : "Dictate (the text lands here for you to check before sending)"
-              }
-              onClick={() => void toggleDictation()}
-              disabled={transcribing}
-            >
-              {transcribing ? (
-                "…"
-              ) : (
-                /* The same mic the overlay draws, so dictation looks like one
-                   feature in two places rather than two features. */
-                <svg
-                  viewBox="0 0 24 24"
-                  width="17"
-                  height="17"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.9"
-                  strokeLinecap="round"
-                >
-                  <rect x="9" y="2" width="6" height="12" rx="3" />
-                  <path d="M5 11a7 7 0 0 0 14 0M12 18v4" />
-                </svg>
-              )}
-            </button>
             <textarea
-              className="promptbar-input"
+              ref={inputRef}
+              className="composer-input"
               rows={1}
               placeholder={
-                agentMode
-                  ? "Ask the agent to build, edit files, install, run things…"
-                  : "Message AI Box…  (Enter to send, Shift+Enter for newline)"
+                task?.status === "waiting"
+                  ? "Answer, or say what to do instead…"
+                  : taskLive
+                    ? "Working… you can tell it more"
+                    : "What should I do?"
               }
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onPaste={onPaste}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+                // On a phone, Return is for new lines and the arrow sends —
+                // the keyboard has no Shift+Return to fall back on.
+                if (e.key === "Enter" && !e.shiftKey && !touchKeyboard) {
                   e.preventDefault();
-                  if (!generating) send();
+                  void send();
                 }
               }}
             />
-            <button
-              className={generating ? "btn stop promptbar-send" : "btn primary promptbar-send"}
-              onClick={generating ? stopGen : send}
-              disabled={!generating && attaching > 0}
-              title={!generating && attaching > 0 ? "Preparing images…" : undefined}
-            >
-              {generating ? "■" : "→"}
-            </button>
+            <div className="composer-row">
+              <button
+                className="btn ghost attach-btn"
+                title="Attach an image or a text file (you can also drop or paste images)"
+                onClick={() => fileRef.current?.click()}
+              >
+                📎
+              </button>
+              {canTranscribe && (
+                <button
+                  className={listening ? "btn ghost attach-btn dictating" : "btn ghost attach-btn"}
+                  title={
+                    listening
+                      ? "Stop and transcribe"
+                      : transcribing
+                        ? "Transcribing…"
+                        : "Speak — sent when you tap again, and the answer is read aloud"
+                  }
+                  onClick={() => {
+                    unlockSpeech();
+                    void toggleDictation();
+                  }}
+                  disabled={transcribing}
+                >
+                  {transcribing ? (
+                    "…"
+                  ) : (
+                    /* The same mic the overlay draws, so dictation looks like one
+                     feature in two places rather than two features. */
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="17"
+                      height="17"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.9"
+                      strokeLinecap="round"
+                    >
+                      <rect x="9" y="2" width="6" height="12" rx="3" />
+                      <path d="M5 11a7 7 0 0 0 14 0M12 18v4" />
+                    </svg>
+                  )}
+                </button>
+              )}
+              <button
+                className={toolsOpen ? "composer-chip open" : "composer-chip"}
+                onClick={() => setToolsOpen((v) => !v)}
+                aria-expanded={toolsOpen}
+                title="Model"
+              >
+                {shortModel(provider.model)} {toolsOpen ? "▴" : "▾"}
+              </button>
+              <span className="composer-spacer" />
+              {taskLive && (
+                <button className="btn stop promptbar-send" onClick={stopGen} title="Stop">
+                  ■
+                </button>
+              )}
+              {(!taskLive || input.trim() || attachments.length > 0) && (
+                <button
+                  className="btn primary promptbar-send"
+                  onClick={() => void send()}
+                  disabled={attaching > 0 || (!input.trim() && !attachments.length)}
+                  title={attaching > 0 ? "Preparing images…" : "Send"}
+                >
+                  →
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
-
-      {showModels && (
-        <ModelManager
-          settings={settings}
-          installed={ollamaModels}
-          onClose={() => setShowModels(false)}
-          onChanged={refreshOllama}
-        />
-      )}
-
-      {pending && (
-        <div className="modal-backdrop">
-          <div className="modal approve">
-            <div className="modal-head">
-              <h2>{pending.title}</h2>
-            </div>
-            <div className="modal-body">
-              <p className="hint">The agent wants to take this action on your Mac:</p>
-              <pre className="cmd-preview">{pending.body}</pre>
-              {pending.diff && <DiffPreview diff={pending.diff} />}
-            </div>
-            <div className="modal-foot approve-foot">
-              <button
-                className="btn ghost"
-                title={`Stop asking about ${pending.tool.replace(/_/g, " ")} until you quit the app. Other tools still ask.`}
-                onClick={() => answerApproval(true, true)}
-              >
-                Always allow “{pending.tool.replace(/_/g, " ")}”
-              </button>
-              <div className="approve-foot-right">
-                <button className="btn" onClick={() => answerApproval(false)}>
-                  Deny
-                </button>
-                <button className="btn primary" onClick={() => answerApproval(true)}>
-                  Approve
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

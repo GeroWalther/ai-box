@@ -158,6 +158,9 @@ export interface Settings {
   // default — a deliberate away-mode escape hatch (skips the "approve on the Mac"
   // safety gate for both the desktop agent and remote/phone requests).
   autoApproveTools: boolean;
+  /** Name, phone, email, address… — what the assistant may use to fill in
+   *  forms, so it never has to invent anything or ask every time. Free text. */
+  assistantProfile: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -248,6 +251,7 @@ export const DEFAULT_SETTINGS: Settings = {
   agentWorkspace: "~",
   allowProtectedPaths: false,
   autoApproveTools: false,
+  assistantProfile: "",
 };
 
 const STORAGE_KEY = "ai-studio.settings";

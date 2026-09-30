@@ -51,7 +51,7 @@ type ViewKey = "chat" | "write" | "images" | "video" | "terminal";
 const SECTIONS: { key: ViewKey; label: string; icon: React.ReactNode }[] = [
   {
     key: "chat",
-    label: "Agentic Chat",
+    label: "Assistant Agent",
     icon: (
       <svg viewBox="0 0 24 24" {...ICON_STROKE}>
         <path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.38 8.38 0 0 1 4 11.5 8.5 8.5 0 0 1 12.5 3 8.38 8.38 0 0 1 21 11.5z" />
@@ -102,14 +102,18 @@ const SECTIONS: { key: ViewKey; label: string; icon: React.ReactNode }[] = [
   },
 ];
 
+/** A stored or synced view name, or the chat if it names a tab that no longer
+ *  exists (the separate Assistant tab became part of the chat). */
+function asView(v: string | null | undefined): ViewKey {
+  return SECTIONS.some((s) => s.key === v) ? (v as ViewKey) : "chat";
+}
+
 export default function App() {
   const { error: toastError, success: toastSuccess } = useToast();
   const { settings, update: updateSettings, hydrated, needsOnboarding, dismissOnboarding, adoptRemote } =
     useAppSettings();
 
-  const [view, setView] = useState<ViewKey>(
-    () => (localStorage.getItem("ai-studio.view") as ViewKey) || "chat"
-  );
+  const [view, setView] = useState<ViewKey>(() => asView(localStorage.getItem("ai-studio.view")));
   const [showSettings, setShowSettings] = useState(false);
   const [showModels, setShowModels] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false); // mobile nav drawer
@@ -145,7 +149,9 @@ export default function App() {
 
   const canGenerate = useMemo(() => {
     if (!provider.model) return false;
-    if (settings.provider === "openrouter" && !settings.openrouterKey) return false;
+    // The model's own provider's key — a Gemini model needs no OpenRouter key —
+    // and only on the Mac: a phone never holds keys, the Mac supplies them.
+    if (isTauri() && settings.provider === "openrouter" && !provider.apiKey) return false;
     return true;
   }, [provider, settings]);
 
@@ -219,7 +225,7 @@ export default function App() {
     activeDocId: docs.activeDocId,
     onAdopt: (ws) => {
       if (ws.doc) docs.setActiveDocId(ws.doc);
-      if (ws.view) setView(ws.view as ViewKey);
+      if (ws.view) setView(asView(ws.view));
     },
   });
 
@@ -355,6 +361,24 @@ export default function App() {
     editor.commands.insertContentAt(editor.state.doc.content.size, html);
   }
 
+  // The Assistant Agent runs on the Mac and cannot reach the editor itself, so
+  // its write_story tool hands the prose to this window. A ref keeps the
+  // listener pointed at the current editor without re-subscribing.
+  const insertRef = useRef(insertIntoManuscript);
+  insertRef.current = insertIntoManuscript;
+  useEffect(() => {
+    if (!isTauri()) return;
+    let off: (() => void) | undefined;
+    let gone = false;
+    void import("@tauri-apps/api/event")
+      .then((m) => m.listen<{ text: string }>("assistant://manuscript", (e) => insertRef.current(e.payload?.text ?? "")))
+      .then((f) => (gone ? f() : (off = f)));
+    return () => {
+      gone = true;
+      off?.();
+    };
+  }, []);
+
   const wordCount = editor ? editor.getText().trim().split(/\s+/).filter(Boolean).length : 0;
 
   return (
@@ -467,7 +491,6 @@ export default function App() {
             settings={settings}
             onChange={updateSettings}
             onOpenSettings={() => setShowSettings(true)}
-            onInsertManuscript={insertIntoManuscript}
             sidebarSlot={sidebarSlot}
             onCloseDrawer={() => setDrawerOpen(false)}
           />
@@ -509,7 +532,6 @@ export default function App() {
               refreshOR();
               refreshOllama();
             }}
-            onManageModels={() => setShowModels(true)}
             sidebarSlot={sidebarSlot}
             onCloseDrawer={() => setDrawerOpen(false)}
             findOpen={findOpen}
@@ -544,6 +566,8 @@ export default function App() {
           settings={settings}
           onChange={updateSettings}
           onClose={() => setShowSettings(false)}
+          localModels={ollamaModels}
+          onManageModels={() => setShowModels(true)}
         />
       )}
 

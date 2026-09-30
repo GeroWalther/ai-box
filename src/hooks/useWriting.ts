@@ -18,7 +18,7 @@ import {
   MAX_CONTEXT_CHARS,
   type StoryBibleData,
 } from "../lib/presets";
-import type { Settings } from "../lib/settings";
+import { activeProvider, type Settings } from "../lib/settings";
 import { cancelStream } from "../lib/transport";
 import { logError } from "../lib/log";
 import type { QuickAction } from "../lib/writingActions";
@@ -95,13 +95,15 @@ export function useWriting({
 
   const ensureModel = useCallback((): boolean => {
     if (canGenerate) return true;
+    // Name the provider the model actually uses: a Gemini model needs the
+    // Gemini key, not OpenRouter's.
     onNeedsModel(
-      settings.provider === "openrouter" && !settings.openrouterKey
-        ? "Add your OpenRouter API key in Settings first."
+      provider.model && settings.provider === "openrouter"
+        ? `Add your ${activeProvider(settings).provider.label} API key in Settings first.`
         : "Pick a model in Settings first."
     );
     return false;
-  }, [canGenerate, onNeedsModel, settings.provider, settings.openrouterKey]);
+  }, [canGenerate, onNeedsModel, provider.model, settings]);
 
   /** Insert a streamed chunk, turning newlines into real paragraph blocks. */
   const insertChunk = useCallback(

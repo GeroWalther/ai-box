@@ -164,7 +164,8 @@ pub async fn list_models(provider: Direct, api_key: &str) -> Result<Vec<Provider
                 .await
                 .map_err(|e| format!("Request failed: {e}"))?;
             let json = read_json(resp).await?;
-            Ok(json["models"]
+            let mut seen = std::collections::HashSet::new();
+            let mut models: Vec<ProviderModel> = json["models"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default()
@@ -173,6 +174,10 @@ pub async fn list_models(provider: Direct, api_key: &str) -> Result<Vec<Provider
                     // "models/gemini-3.7-flash" — the prefix is Google's, not ours.
                     let full = m["name"].as_str()?;
                     let id = full.strip_prefix("models/").unwrap_or(full);
+                    let name = m["displayName"].as_str().unwrap_or(id);
+                    if !is_google_chat_model(id, name) {
+                        return None;
+                    }
                     let methods = m["supportedGenerationMethods"]
                         .as_array()
                         .map(|a| {
@@ -184,9 +189,14 @@ pub async fn list_models(provider: Direct, api_key: &str) -> Result<Vec<Provider
                     if !methods {
                         return None;
                     }
+                    // Aliases share a display name ("…-latest", dated
+                    // snapshots); one entry each is enough to choose from.
+                    if !seen.insert(name.to_string()) {
+                        return None;
+                    }
                     Some(ProviderModel {
                         id: format!("google:{id}"),
-                        name: m["displayName"].as_str().unwrap_or(id).to_string(),
+                        name: name.to_string(),
                         sees: true,
                         // Gemini's multimodal models take audio in the same
                         // request, which is what Screen Assist's push-to-talk
@@ -195,9 +205,27 @@ pub async fn list_models(provider: Direct, api_key: &str) -> Result<Vec<Provider
                         tools: true,
                     })
                 })
-                .collect())
+                .collect();
+            // Google lists oldest first; the model you want is usually new.
+            models.reverse();
+            Ok(models)
         }
     }
+}
+
+/// Does this Gemini-API model answer a chat request? Everything that can
+/// "generate content" is listed — speech, images, music, transcription —
+/// and none of those can hold a conversation.
+fn is_google_chat_model(id: &str, name: &str) -> bool {
+    const NOT_CHAT: &[&str] = &[
+        "tts", "image", "banana", "lyria", "transcribe", "embedding", "aqa", "veo", "imagen",
+        "native-audio", "live", "robotics",
+        // Agents behind their own interfaces, not chat models: they reject
+        // (or ignore) an ordinary conversation with our tools.
+        "deep-research", "deep research", "antigravity", "computer-use", "computer use",
+    ];
+    let (id, name) = (id.to_lowercase(), name.to_lowercase());
+    !NOT_CHAT.iter().any(|bad| id.contains(bad) || name.contains(bad))
 }
 
 /// Does this OpenAI id name something that answers a chat request?
@@ -244,6 +272,23 @@ mod tests {
             let (provider, model) = split(id);
             assert!(provider.is_none(), "{id} should stay on OpenRouter");
             assert_eq!(model, id);
+        }
+    }
+
+    #[test]
+    fn the_gemini_list_keeps_only_models_that_chat() {
+        assert!(is_google_chat_model("gemini-3.8-flash", "Gemini 3.8 Flash"));
+        assert!(is_google_chat_model("gemma-4-31b-it", "Gemma 4 31B IT"));
+        for (id, name) in [
+            ("gemini-3.8-flash-preview-tts", "Gemini 3.8 Flash TTS"),
+            ("gemini-3-pro-image-preview", "Nano Banana Pro"),
+            ("lyria-3-pro-preview", "Lyria 3 Pro Preview"),
+            ("gemini-3.5-transcribe", "Gemini 3.5 Transcribe"),
+            ("gemini-embedding-001", "Gemini Embedding 001"),
+            ("deep-research-pro-preview-12-2025", "Deep Research Pro Preview (Dec-12-2025)"),
+            ("gemini-2.5-computer-use-preview-10-2025", "Gemini 2.5 Computer Use Preview 10-2025"),
+        ] {
+            assert!(!is_google_chat_model(id, name), "{id}");
         }
     }
 
@@ -576,5 +621,261 @@ mod translation_tests {
         assert_eq!(out[0]["name"], "click");
         assert_eq!(out[0]["input_schema"]["properties"]["x"]["type"], "number");
         assert!(out[0].get("function").is_none(), "must be flat, not nested");
+    }
+}
+
+// ---- images on the provider's own key ---------------------------------------
+
+/// Aspect ratios Gemini's image models accept.
+const GEMINI_ASPECTS: &[&str] = &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
+/// OpenAI's image sizes, by the aspect ratio each one is.
+const OPENAI_SIZES: &[(&str, &str)] = &[("1:1", "1024x1024"), ("2:3", "1024x1536"), ("3:2", "1536x1024")];
+
+/// An image model on a direct provider, shaped like the picker's OpenRouter
+/// entries so the Images tab treats them the same.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageModel {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub created: u64,
+    pub resolutions: Vec<String>,
+    pub aspect_ratios: Vec<String>,
+    pub input_image: bool,
+}
+
+/// The image models a provider offers on this key. Anthropic has none.
+pub async fn list_image_models(provider: Direct, api_key: &str) -> Result<Vec<ImageModel>, String> {
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Ok(vec![]);
+    }
+    let client = reqwest::Client::new();
+    match provider {
+        Direct::Anthropic => Ok(vec![]),
+        Direct::Google => {
+            let resp = client
+                .get(format!("https://generativelanguage.googleapis.com/v1beta/models?key={key}&pageSize=200"))
+                .send()
+                .await
+                .map_err(|e| format!("Request failed: {e}"))?;
+            let json = read_json(resp).await?;
+            let mut all: Vec<serde_json::Value> = json["models"].as_array().cloned().unwrap_or_default();
+            // Several ids share one name ("Nano Banana 2" is both the release
+            // and its preview). Look at stable releases first, so the one kept
+            // is the model that will not be withdrawn.
+            all.sort_by_key(|m| m["name"].as_str().unwrap_or("").contains("preview"));
+            let mut seen = std::collections::HashSet::new();
+            let mut models: Vec<ImageModel> = all
+                .iter()
+                .filter_map(|m| {
+                    let full = m["name"].as_str()?;
+                    let id = full.strip_prefix("models/").unwrap_or(full);
+                    let name = m["displayName"].as_str().unwrap_or(id);
+                    // The Nano Banana family: Gemini models that draw.
+                    if !id.contains("image") || !id.starts_with("gemini") {
+                        return None;
+                    }
+                    if !seen.insert(name.to_string()) {
+                        return None;
+                    }
+                    // Gemini 3 image models take a size tier; 2.5 does not, and
+                    // sending one it does not know is an error.
+                    let tiers = id.starts_with("gemini-3") && !id.contains("lite");
+                    Some(ImageModel {
+                        id: format!("google:{id}"),
+                        name: name.to_string(),
+                        description: format!("Google · {id}"),
+                        created: 0,
+                        resolutions: if tiers { vec!["1K".into(), "2K".into(), "4K".into()] } else { vec![] },
+                        aspect_ratios: GEMINI_ASPECTS.iter().map(|s| s.to_string()).collect(),
+                        input_image: true,
+                    })
+                })
+                .collect();
+            // Newest family first.
+            models.sort_by(|a, b| b.id.cmp(&a.id));
+            Ok(models)
+        }
+        Direct::OpenAi => {
+            let resp = client
+                .get("https://api.openai.com/v1/models")
+                .header("Authorization", format!("Bearer {key}"))
+                .send()
+                .await
+                .map_err(|e| format!("Request failed: {e}"))?;
+            let json = read_json(resp).await?;
+            let mut models: Vec<ImageModel> = json["data"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|m| {
+                    let id = m["id"].as_str()?;
+                    if !id.starts_with("gpt-image") {
+                        return None;
+                    }
+                    Some(ImageModel {
+                        id: format!("openai:{id}"),
+                        name: id.to_string(),
+                        description: "OpenAI".into(),
+                        created: m["created"].as_u64().unwrap_or(0),
+                        resolutions: vec![],
+                        aspect_ratios: OPENAI_SIZES.iter().map(|(a, _)| a.to_string()).collect(),
+                        input_image: true,
+                    })
+                })
+                .collect();
+            models.sort_by(|a, b| b.created.cmp(&a.created));
+            Ok(models)
+        }
+    }
+}
+
+/// Make — or, given `source` (base64), edit — an image on the provider's own
+/// key. Returns base64 of the picture, no prefix.
+pub async fn generate_image(
+    provider: Direct,
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+    source: Option<&str>,
+    aspect: Option<&str>,
+    size: Option<&str>,
+) -> Result<String, String> {
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err(format!("No {} key — add it in Settings.", provider.id()));
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|e| e.to_string())?;
+    match provider {
+        Direct::Anthropic => Err("Anthropic has no image models. Use Local, or pick another provider in Settings.".into()),
+        Direct::Google => {
+            let mut parts = vec![serde_json::json!({ "text": prompt })];
+            if let Some(src) = source {
+                parts.push(serde_json::json!({ "inline_data": { "mime_type": sniff_mime(src), "data": src.trim() } }));
+            }
+            let mut image_config = serde_json::json!({});
+            if let Some(a) = aspect {
+                image_config["aspectRatio"] = serde_json::json!(a);
+            }
+            if let Some(s) = size {
+                image_config["imageSize"] = serde_json::json!(s);
+            }
+            let body = serde_json::json!({
+                "contents": [{ "role": "user", "parts": parts }],
+                "generationConfig": { "responseModalities": ["IMAGE", "TEXT"], "imageConfig": image_config },
+            });
+            let resp = client
+                .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"))
+                .header("x-goog-api-key", key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("Request failed: {e}"))?;
+            let json = read_json(resp).await?;
+            let parts = json["candidates"][0]["content"]["parts"].as_array().cloned().unwrap_or_default();
+            if let Some(data) = parts.iter().find_map(|p| p["inlineData"]["data"].as_str()) {
+                return Ok(data.to_string());
+            }
+            // No picture: Gemini says why in text, or in its finish reason.
+            let said = parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join(" ");
+            let reason = json["candidates"][0]["finishReason"].as_str().unwrap_or("");
+            Err(match reason {
+                // Google's own checks, said the way a person can act on them.
+                "IMAGE_RECITATION" | "RECITATION" => "Gemini declined: the picture would come out too close to an \
+existing image. Make the prompt more specific — add colours, style, setting."
+                    .into(),
+                "IMAGE_SAFETY" | "SAFETY" | "PROHIBITED_CONTENT" => {
+                    "Gemini's safety filter blocked this picture. Rephrase the prompt, or use a Local model.".into()
+                }
+                _ if !said.trim().is_empty() => format!("Gemini answered in words instead of drawing: {}", said.trim()),
+                _ => format!("Gemini returned no image ({reason}). Try describing the picture rather than naming the subject."),
+            })
+        }
+        Direct::OpenAi => {
+            let size = aspect
+                .and_then(|a| OPENAI_SIZES.iter().find(|(x, _)| *x == a))
+                .map(|(_, s)| *s)
+                .unwrap_or("1024x1024");
+            let resp = match source {
+                None => client
+                    .post("https://api.openai.com/v1/images/generations")
+                    .bearer_auth(key)
+                    .json(&serde_json::json!({ "model": model, "prompt": prompt, "size": size, "n": 1 }))
+                    .send()
+                    .await,
+                Some(src) => {
+                    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, src.trim())
+                        .map_err(|e| format!("decode source image: {e}"))?;
+                    let mime = sniff_mime(src);
+                    let file = reqwest::multipart::Part::bytes(bytes)
+                        .file_name(if mime == "image/jpeg" { "source.jpg" } else { "source.png" })
+                        .mime_str(mime)
+                        .map_err(|e| e.to_string())?;
+                    let form = reqwest::multipart::Form::new()
+                        .text("model", model.to_string())
+                        .text("prompt", prompt.to_string())
+                        .text("size", size.to_string())
+                        .part("image", file);
+                    client.post("https://api.openai.com/v1/images/edits").bearer_auth(key).multipart(form).send().await
+                }
+            }
+            .map_err(|e| format!("Request failed: {e}"))?;
+            let json = read_json(resp).await?;
+            json["data"][0]["b64_json"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "OpenAI returned no image.".into())
+        }
+    }
+}
+
+/// The image type of base64 bytes, from their first bytes.
+fn sniff_mime(b64: &str) -> &'static str {
+    let t = b64.trim_start();
+    if t.starts_with("/9j/") {
+        "image/jpeg"
+    } else if t.starts_with("UklGR") {
+        "image/webp"
+    } else {
+        "image/png"
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn source_images_are_labelled_by_their_bytes() {
+        assert_eq!(sniff_mime("/9j/4AAQSkZJRg"), "image/jpeg");
+        assert_eq!(sniff_mime("iVBORw0KGgo"), "image/png");
+        assert_eq!(sniff_mime("UklGRiQAAABXRUJQ"), "image/webp");
+    }
+
+    /// Draws a real picture on the Gemini key in the Keychain. Ignored: it costs
+    /// a few cents.
+    #[tokio::test]
+    #[ignore]
+    async fn gemini_draws_and_edits_on_its_own_key() {
+        let key = std::process::Command::new("/usr/bin/security")
+            .args(["find-generic-password", "-s", "com.gwintech.aibox", "-a", "googleKey", "-w"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        let models = list_image_models(Direct::Google, &key).await.unwrap();
+        assert!(models.iter().any(|m| m.id == "google:gemini-3.1-flash-image"), "{:?}", models.iter().map(|m| &m.id).collect::<Vec<_>>());
+        let made = generate_image(Direct::Google, &key, "gemini-3.1-flash-image", "a cosy reading nook by a rainy window, warm lamp light, watercolour style", None, Some("1:1"), Some("1K"))
+            .await
+            .unwrap();
+        let edited = generate_image(Direct::Google, &key, "gemini-3.1-flash-image", "make it a sunny morning instead", Some(&made), Some("1:1"), None)
+            .await
+            .unwrap();
+        assert!(made.len() > 1000 && edited.len() > 1000);
     }
 }
