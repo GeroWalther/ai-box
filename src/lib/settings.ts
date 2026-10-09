@@ -158,6 +158,11 @@ export interface Settings {
   // default — a deliberate away-mode escape hatch (skips the "approve on the Mac"
   // safety gate for both the desktop agent and remote/phone requests).
   autoApproveTools: boolean;
+  /** DANGEROUS. The Assistant runs a task to the end with no approvals at all —
+   *  not even for clicks that pay, send or delete — and no step limit. Implies
+   *  autoApproveTools. Protected paths and hand-overs (logins, CAPTCHAs) still
+   *  apply, and it still asks when it needs information. */
+  fullAutonomy: boolean;
   /** Name, phone, email, address… — what the assistant may use to fill in
    *  forms, so it never has to invent anything or ask every time. Free text. */
   assistantProfile: string;
@@ -251,6 +256,7 @@ export const DEFAULT_SETTINGS: Settings = {
   agentWorkspace: "~",
   allowProtectedPaths: false,
   autoApproveTools: false,
+  fullAutonomy: false,
   assistantProfile: "",
 };
 

@@ -4,9 +4,11 @@
 // agent" switch, because they answer different questions:
 //   • Workspace + protected paths = WHERE it may act (enforced in Rust)
 //   • Auto-approve = whether it stops to ASK (a convenience for remote use)
+//   • Full autonomy = also waives the commit-click gate and the step limit
 // Turning off the asking must never widen the where, so the copy here says so.
 
 import type { Settings } from "../lib/settings";
+import { isTauri } from "../lib/transport";
 
 interface Props {
   settings: Settings;
@@ -14,6 +16,12 @@ interface Props {
 }
 
 export default function AgentSettings({ settings, onChange }: Props) {
+  // Approvals are decided on the Mac, from the Mac's settings — a phone's copy is
+  // never sent back. So on the phone these show the Mac's choice, read-only.
+  const onMac = isTauri();
+  const macOnly = onMac ? null : (
+    <span className="hint">Set on the Mac — tasks you start from this phone follow it.</span>
+  );
   return (
     <section>
       <h3>Agent &amp; Assistant</h3>
@@ -50,6 +58,7 @@ export default function AgentSettings({ settings, onChange }: Props) {
         <input
           type="checkbox"
           checked={settings.autoApproveTools}
+          disabled={!onMac}
           onChange={(e) => onChange({ autoApproveTools: e.target.checked })}
         />
         <span>
@@ -59,6 +68,28 @@ export default function AgentSettings({ settings, onChange }: Props) {
             when you're driving the Mac from your phone and nobody is there to click
             Approve. Protected paths below stay protected either way.
           </span>
+          {macOnly}
+        </span>
+      </label>
+
+      <label className="remote-inline">
+        <input
+          type="checkbox"
+          checked={settings.fullAutonomy}
+          disabled={!onMac}
+          onChange={(e) => onChange({ fullAutonomy: e.target.checked })}
+        />
+        <span>
+          ⚠️ Full autonomy (dangerous)
+          <span className="remote-danger">
+            The Assistant works a task through to the end without ever asking for approval
+            — including clicks that pay, book, send or delete, using your mouse and keyboard,
+            and quitting apps — and with no step limit. It only stops when it is done, when
+            you press Stop, or when it needs information from you (or a login / CAPTCHA).
+            Applies to tasks started from your phone too. Includes away mode. Protected paths
+            stay protected. Turn it off when you're done.
+          </span>
+          {macOnly}
         </span>
       </label>
 

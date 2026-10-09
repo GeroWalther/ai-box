@@ -20,6 +20,10 @@
 //   * Logging in, CAPTCHAs, two-factor codes: handed to the person. The page
 //     reader never exposes password fields, so the model could not type one if
 //     it tried.
+//   * Full autonomy (a separate, dangerous setting) waives every approval —
+//     the commit clicks too — and the step limit: the task runs until it is
+//     done, stopped, or asks a question. Protected paths, hand-overs for
+//     passwords and CAPTCHAs, and ask_user still apply.
 
 use crate::browser::{self, BrowserHost, Tab};
 use serde::{Deserialize, Serialize};
@@ -31,6 +35,9 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::oneshot;
 
 const MAX_STEPS: usize = 60;
+/// Full autonomy has no step limit as such, only this backstop against a model
+/// that loops forever on someone's API bill.
+const MAX_STEPS_AUTONOMOUS: usize = 2_000;
 /// Tool output kept in the conversation. Long logs are cut, not dropped, so the
 /// model still sees how a command ended.
 const MAX_TOOL_TEXT: usize = 12_000;
@@ -325,6 +332,9 @@ struct Run<R: Runtime> {
     cwd: Option<String>,
     policy: crate::guard::Policy,
     auto_approve: bool,
+    /// Full autonomy: every approval is granted without asking, and the step
+    /// limit is lifted. Implies auto_approve.
+    full_auto: bool,
     /// The user's own tab last read, and its elements by number.
     my_tab: Option<crate::userbrowser::TabRef>,
     my_elements: Vec<Value>,
@@ -384,6 +394,12 @@ impl<R: Runtime> Run<R> {
     }
 
     async fn approve(&self, title: &str, body: &str, shot: Option<String>) -> bool {
+        if self.full_auto {
+            // Still on the timeline, so what it decided on its own is visible.
+            let i = self.step("note", &format!("Auto-approved (full autonomy): {title}"));
+            self.finish(i, true, (!body.is_empty()).then(|| body.to_string()));
+            return true;
+        }
         matches!(self.wait_for("approve", title, body, shot).await, Some(Answer::Approve(true)))
     }
 
@@ -765,7 +781,7 @@ fn describe_call(name: &str, args: &Value, tab_label: Option<String>) -> (&'stat
     }
 }
 
-fn system_prompt(profile: &str) -> String {
+fn system_prompt(profile: &str, full_auto: bool) -> String {
     let today = std::process::Command::new("/bin/date")
         .arg("+%A, %d %B %Y, %H:%M %Z")
         .output()
@@ -804,6 +820,16 @@ account from that point on.\n\n\
 If you cannot call tools natively, emit EXACTLY one action as JSON on its own line and nothing \
 else: {{\"tool\":\"<tool_name>\",\"args\":{{ … }}}} — then stop and wait for the Observation."
     );
+    if full_auto {
+        p.push_str(
+            "\n\nFULL AUTONOMY is on: the user is not watching and has pre-approved every action, \
+including final clicks. Nobody will be asked to approve anything. Keep going until the task is \
+completely done — verify the result yourself — and do not stop to report progress. Only stop early \
+(reply without a tool) when it is truly finished or truly impossible; use ask_user only for \
+information you cannot find or reasonably decide yourself, and hand_over only for logins, CAPTCHAs \
+and codes. Act carefully: there is no second check on what you pay, send or delete.",
+        );
+    }
     if !profile.trim().is_empty() {
         p.push_str("\n\nThe user's details, for forms:\n");
         p.push_str(profile.trim());
@@ -911,12 +937,13 @@ fn text_tool_call(content: &str) -> Option<(String, Value)> {
 }
 
 async fn run<R: Runtime>(mut r: Run<R>, base_url: String, model: String, api_key: String, profile: String) {
-    let system = system_prompt(&profile);
+    let system = system_prompt(&profile, r.full_auto);
+    let max_steps = if r.full_auto { MAX_STEPS_AUTONOMOUS } else { MAX_STEPS };
     let mut messages = r.tasks.get(&r.id).map(|t| t.messages).unwrap_or_default();
     let tools = tools();
 
     let outcome: Result<String, String> = async {
-        for _ in 0..MAX_STEPS {
+        for _ in 0..max_steps {
             if r.tasks.stopped(&r.id) {
                 return Err("stopped".into());
             }
@@ -1007,7 +1034,7 @@ async fn run<R: Runtime>(mut r: Run<R>, base_url: String, model: String, api_key
             let msgs = messages.clone();
             r.tasks.update(&r.app, &r.id, |t| t.messages = msgs);
         }
-        Err(format!("stopped after {MAX_STEPS} steps without finishing — say \"continue\" to let it go on"))
+        Err(format!("stopped after {max_steps} steps without finishing — say \"continue\" to let it go on"))
     }
     .await;
 
@@ -1054,6 +1081,7 @@ fn launch<R: Runtime>(app: &AppHandle<R>, id: &str, base_url: String, model: Str
         crate::guard::Policy::from_settings(&settings)
     };
     tasks.0.stops.lock().unwrap().insert(id.to_string(), Arc::new(AtomicBool::new(false)));
+    let full_auto = settings["fullAutonomy"].as_bool().unwrap_or(false);
     let r = Run {
         app: app.clone(),
         tasks,
@@ -1062,7 +1090,8 @@ fn launch<R: Runtime>(app: &AppHandle<R>, id: &str, base_url: String, model: Str
         tab: None,
         cwd: None,
         policy,
-        auto_approve: settings["autoApproveTools"].as_bool().unwrap_or(false),
+        auto_approve: full_auto || settings["autoApproveTools"].as_bool().unwrap_or(false),
+        full_auto,
         my_tab: None,
         my_elements: vec![],
         screen_ok: false,
