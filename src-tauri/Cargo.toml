@@ -1,6 +1,6 @@
 [package]
 name = "ai-box"
-version = "0.6.1"
+version = "0.6.2"
 description = "AI Box — your Mac's AI workstation"
 authors = ["Gero Walther"]
 edition = "2021"
@@ -42,6 +42,7 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 vt100 = "0.16.2"
+tauri-plugin-notification = "2"
 
 # Already in the tree via Tauri; declared here so the overlay can talk to AppKit
 # directly and become a non-activating NSPanel. Pinned to the version Tauri

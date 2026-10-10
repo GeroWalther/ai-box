@@ -173,9 +173,9 @@ impl Tasks {
         let _ = app.emit("task://changed", json!({ "id": t.id, "rev": t.rev }));
         if t.status != before {
             match t.status.as_str() {
-                "waiting" => notify("AI Box needs you", t.pending.as_ref().map(|p| p.title.as_str()).unwrap_or(&t.goal)),
-                "done" => notify("Task done", &t.goal),
-                "failed" => notify("Task failed", t.error.as_deref().unwrap_or(&t.goal)),
+                "waiting" => notify(app, "AI Box needs you", t.pending.as_ref().map(|p| p.title.as_str()).unwrap_or(&t.goal)),
+                "done" => notify(app, "Task done", &t.goal),
+                "failed" => notify(app, "Task failed", t.error.as_deref().unwrap_or(&t.goal)),
                 _ => {}
             }
         }
@@ -193,11 +193,14 @@ fn save(t: &Task) {
     }
 }
 
-/// A macOS notification. The phone learns the same thing from the task itself.
-fn notify(title: &str, body: &str) {
-    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").chars().take(180).collect::<String>();
-    let script = format!("display notification \"{}\" with title \"{}\"", esc(body), esc(title));
-    let _ = std::process::Command::new("/usr/bin/osascript").args(["-e", &script]).spawn();
+/// A macOS notification, posted as AI Box. (`osascript display notification`
+/// shows up as Script Editor, and clicking it opened an empty script.) The
+/// phone learns the same thing from the task itself.
+fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
+    // try_state: test apps are built without the plugin.
+    let Some(n) = app.try_state::<tauri_plugin_notification::Notification<R>>() else { return };
+    let body: String = body.chars().take(180).collect();
+    let _ = n.builder().title(title).body(body).show();
 }
 
 // ---- tools -----------------------------------------------------------------
