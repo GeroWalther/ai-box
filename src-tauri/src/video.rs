@@ -499,6 +499,20 @@ fn ffmpeg_bin() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+pub(crate) fn ffmpeg_path() -> Option<String> {
+    ffmpeg_bin()
+}
+
+/// File a video made on the Mac (motion graphics) under a library id.
+pub(crate) fn store_file(id: &str, src: &str) -> Result<(), String> {
+    let sid = safe_id(id);
+    if sid.is_empty() {
+        return Err("bad video id".into());
+    }
+    std::fs::create_dir_all(videos_dir()).map_err(|e| e.to_string())?;
+    std::fs::copy(src, mp4_path(&sid)).map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// Is stitching available on this machine?
 #[tauri::command]
 pub fn video_stitch_available() -> bool {

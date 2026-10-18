@@ -55,6 +55,7 @@ import { isTauri } from "../lib/transport";
 import { logError } from "../lib/log";
 import { useToast } from "../lib/toast";
 import { SidebarSlot } from "./SidebarList";
+import MotionPanel from "./MotionPanel";
 import { registerSyncSource } from "../lib/syncBus";
 
 /** How often a running job is polled, and when to give up on it. */
@@ -107,7 +108,7 @@ export default function VideoPanel({
   const [catalogError, setCatalogError] = useState("");
   const [loadingCatalog, setLoadingCatalog] = useState(true);
 
-  const [mode, setMode] = useState<"single" | "storyboard">("single");
+  const [mode, setMode] = useState<"single" | "storyboard" | "motion">("single");
   const [prompt, setPrompt] = useState("");
   const [brief, setBrief] = useState<AdBrief>(EMPTY_BRIEF);
   const [briefOpen, setBriefOpen] = useState(true);
@@ -704,8 +705,23 @@ export default function VideoPanel({
             >
               Storyboard ad
             </button>
+            <button
+              className={mode === "motion" ? "seg active" : "seg"}
+              onClick={() => setMode("motion")}
+            >
+              Motion graphics
+            </button>
           </div>
         </div>
+
+        {mode === "motion" ? (
+          <MotionPanel
+            settings={settings}
+            onChange={onChange}
+            onFinished={(id) => void loadLibrary(false).then(() => openClip(id))}
+          />
+        ) : (
+          <>
 
         {needsKey && (
           <p className="hint error">
@@ -989,6 +1005,8 @@ export default function VideoPanel({
             {pendingCount} {pendingCount === 1 ? "clip is" : "clips are"} rendering. You can
             leave this tab — they keep going, and unfinished ones resume next launch.
           </p>
+        )}
+          </>
         )}
       </div>
 

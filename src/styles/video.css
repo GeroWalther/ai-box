@@ -199,3 +199,118 @@
   width: auto;
   margin: 0;
 }
+
+/* ---- motion graphics ---- */
+.motion {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.motion-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.motion-steps li {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+}
+.motion-steps li .hint {
+  display: block;
+  margin: 2px 0 0;
+}
+.motion-mark {
+  flex: none;
+  width: 16px;
+  text-align: center;
+}
+.motion-steps li.ok .motion-mark {
+  color: #2e9e5b;
+}
+.motion-steps li.bad .motion-mark {
+  color: #d64545;
+}
+.motion-steps li.run .motion-mark {
+  color: var(--accent);
+  animation: motion-spin 1.2s linear infinite;
+}
+@keyframes motion-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.motion-voices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.motion-voice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 13px;
+}
+.motion-voice:hover {
+  background: var(--panel-2);
+}
+.motion-voice.active {
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+.motion-voice .hint {
+  display: block;
+  margin: 0;
+  font-size: 11px;
+}
+.motion-play {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+}
+.motion-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.motion-image,
+.motion-add {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  border: 1px dashed var(--border);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.motion-image img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.motion-image .history-del {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+}
+.motion-add {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 22px;
+}

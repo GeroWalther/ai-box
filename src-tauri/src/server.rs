@@ -531,7 +531,7 @@ fn strip_secrets(mut v: Value) -> Value {
     if let Some(o) = v.as_object_mut() {
         // Every provider key. This listed only the first two, so a Google,
         // Anthropic or OpenAI key went to the phone as itself.
-        for k in ["openrouterKey", "customKey", "anthropicKey", "openaiKey", "googleKey"] {
+        for k in ["openrouterKey", "customKey", "anthropicKey", "openaiKey", "googleKey", "elevenlabsKey"] {
             let configured = o.get(k).and_then(|x| x.as_str()).map_or(false, |s| !s.is_empty());
             o.insert(
                 k.into(),
@@ -726,6 +726,20 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             Ok(Value::Null)
         }
         "task_list" => Ok(Value::Array(crate::tasks::list(&ctx.app))),
+        // Motion graphics. Like a task, the job runs on the Mac with the Mac's
+        // keys (ElevenLabs, OpenRouter); the phone starts and watches it.
+        "motion_voices" => serde_json::to_value(crate::motion::motion_voices(ctx.app.clone()).await?).map_err(|e| e.to_string()),
+        "motion_image_models" => serde_json::to_value(crate::motion::motion_image_models(ctx.app.clone()).await?).map_err(|e| e.to_string()),
+        "motion_script" => serde_json::to_value(crate::motion::motion_script(ctx.app.clone(), params(&args)?).await?).map_err(|e| e.to_string()),
+        "motion_make" => crate::motion::motion_make(ctx.app.clone(), params(&args)?).map(|_| Value::Null),
+        "motion_get" => serde_json::to_value(crate::motion::motion_get(ctx.app.clone(), s("id"), args.get("since").and_then(|v| v.as_u64()))?)
+            .map_err(|e| e.to_string()),
+        "motion_list" => Ok(Value::Array(crate::motion::motion_list(ctx.app.clone()))),
+        "motion_stop" => {
+            crate::motion::motion_stop(ctx.app.clone(), s("id"));
+            Ok(Value::Null)
+        }
+        "motion_delete" => crate::motion::motion_delete(ctx.app.clone(), s("id")).map(|_| Value::Null),
         "task_get" => serde_json::to_value(crate::tasks::get(&ctx.app, &s("id"), args.get("since").and_then(|v| v.as_u64()))?)
             .map_err(|e| e.to_string()),
         "task_answer" => {

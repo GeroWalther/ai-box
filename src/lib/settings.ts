@@ -29,6 +29,9 @@ export interface Settings {
   anthropicKey: string;
   openaiKey: string;
   googleKey: string;
+  /** ElevenLabs, for the voice of motion-graphics videos. A secret like the
+   *  provider keys: keychain on the Mac, never sent to a phone. */
+  elevenlabsKey: string;
   openrouterModel: string;
 
   // Local Ollama
@@ -92,6 +95,12 @@ export interface Settings {
   videoAudio: boolean;
   /** Shots in a storyboarded spot. 1 means a single-clip ad. */
   videoShots: number;
+  // Motion graphics (Video → Motion graphics): last choices, kept between videos.
+  motionVoice: string;
+  motionImageModel: string;
+  motionFormat: "9:16" | "16:9" | "1:1";
+  motionSeconds: number;
+  motionLanguage: string;
 
   // Screen Assist: the overlay that sees the screen, answers aloud and draws.
   assistEnabled: boolean;
@@ -181,6 +190,7 @@ export const DEFAULT_SETTINGS: Settings = {
   anthropicKey: "",
   openaiKey: "",
   googleKey: "",
+  elevenlabsKey: "",
   openrouterModel: "anthropic/claude-fable-5",
 
   ollamaUrl: "http://localhost:11434/v1",
@@ -230,6 +240,11 @@ export const DEFAULT_SETTINGS: Settings = {
   videoAspect: "16:9",
   videoAudio: true,
   videoShots: 4,
+  motionVoice: "",
+  motionImageModel: "",
+  motionFormat: "9:16",
+  motionSeconds: 30,
+  motionLanguage: "English",
 
   assistEnabled: true,
   assistHotkey: "Alt+Space",
@@ -272,6 +287,7 @@ const SECRET_FIELDS = [
   "anthropicKey",
   "openaiKey",
   "googleKey",
+  "elevenlabsKey",
 ] as const;
 
 /** Whether a settings change touches an API key, and so must reach the keychain. */

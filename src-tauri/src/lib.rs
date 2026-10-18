@@ -20,6 +20,7 @@ mod panel;
 mod screen;
 mod server;
 mod video;
+mod motion;
 
 /// The guard policy for a desktop tool call, derived from the settings the
 /// frontend pushes on every change. Falls back to "home directory, protections
@@ -2856,6 +2857,7 @@ pub fn run() {
         .manage(server::CancelRegistry::default())
         .manage(comfy::ManagedComfy::default())
         .manage(pty::PtyRegistry::default())
+        .manage(motion::Motion::default())
         .manage(tasks::Tasks::default())
         .manage(browser::BrowserHost::default())
         .invoke_handler(tauri::generate_handler![
@@ -2964,6 +2966,14 @@ pub fn run() {
             attach::attach_image_bytes,
             attach::attachment_get,
             tasks::task_start,
+            motion::motion_voices,
+            motion::motion_image_models,
+            motion::motion_script,
+            motion::motion_make,
+            motion::motion_get,
+            motion::motion_list,
+            motion::motion_stop,
+            motion::motion_delete,
             tasks::task_send,
             tasks::task_list,
             tasks::task_get,

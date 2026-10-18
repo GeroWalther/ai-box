@@ -142,6 +142,22 @@ export default function SettingsModal({ settings, onChange, onClose, localModels
               </section>
 
               <section>
+                <h3>Voice for videos</h3>
+                <label>ElevenLabs API key</label>
+                <input
+                  type="password"
+                  placeholder="Key from elevenlabs.io → Developers → API keys"
+                  value={settings.elevenlabsKey}
+                  onChange={(e) => onChange({ elevenlabsKey: e.target.value.trim() })}
+                />
+                <p className="hint">
+                  Speaks motion-graphics videos (Video → Motion graphics), with a timestamp for
+                  every word so the animation lands on it. Kept in the macOS keychain; billed
+                  to your ElevenLabs plan.
+                </p>
+              </section>
+
+              <section>
                 <h3>Local models</h3>
                 <p className="hint">
                   Models that run on this Mac through Ollama. They appear in every model

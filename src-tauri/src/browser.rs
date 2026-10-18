@@ -125,7 +125,8 @@ fn active_port(profile: &str) -> Option<String> {
 pub struct BrowserHost {
     conn: Arc<tokio::sync::Mutex<Option<Cdp>>>,
     profile: String,
-    /// Only for tests: the person needs to see the real one, to log in.
+    /// The assistant's browser is visible: the person needs to see it to log
+    /// in. Headless is for tests and for rendering motion video (motion.rs).
     headless: bool,
 }
 
@@ -140,7 +141,6 @@ impl BrowserHost {
         BrowserHost { conn: Arc::default(), profile, headless: false }
     }
 
-    #[cfg(test)]
     pub fn headless(profile: String) -> Self {
         BrowserHost { headless: true, ..Self::with_profile(profile) }
     }
@@ -456,6 +456,40 @@ impl Tab {
         Ok(())
     }
 
+    /// Any DevTools call on this tab's session. For the motion renderer, which
+    /// drives the page as a film strip rather than reading it.
+    pub async fn cdp(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.call(method, params).await
+    }
+
+    /// Evaluate JS, awaiting a returned promise, with the page's own error
+    /// message on failure (eval() words it for the model reading a page).
+    pub async fn js(&self, expression: &str) -> Result<Value, String> {
+        let r = self
+            .call(
+                "Runtime.evaluate",
+                json!({ "expression": expression, "returnByValue": true, "awaitPromise": true }),
+            )
+            .await?;
+        if let Some(ex) = r.get("exceptionDetails") {
+            let why = ex["exception"]["description"].as_str().or(ex["text"].as_str()).unwrap_or("script error");
+            return Err(why.chars().take(600).collect());
+        }
+        Ok(r["result"]["value"].clone())
+    }
+
+    /// Open a local file — the motion renderer's composition. navigate() takes
+    /// web addresses only, on purpose: the model must never open files.
+    pub async fn open_file(&mut self, path: &str) -> Result<(), String> {
+        let url = format!("file://{}", path.split('/').map(|p| urlencode_segment(p)).collect::<Vec<_>>().join("/"));
+        let r = self.call("Page.navigate", json!({ "url": url })).await?;
+        if let Some(e) = r.get("errorText").and_then(|e| e.as_str()) {
+            return Err(format!("could not open {path}: {e}"));
+        }
+        self.settle().await;
+        Ok(())
+    }
+
     /// A JPEG of what the tab shows, for the person — never sent to the model.
     pub async fn screenshot(&self) -> Result<Vec<u8>, String> {
         use base64::Engine;
@@ -476,6 +510,15 @@ impl Tab {
     pub async fn close(self) {
         let _ = self.cdp.call(None, "Target.closeTarget", json!({ "targetId": self.target })).await;
     }
+}
+
+fn urlencode_segment(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// The page as text for the model: where it is, its elements, then its words.
