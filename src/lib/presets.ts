@@ -679,19 +679,6 @@ export function isUncensoredModel(text: string): boolean {
   return UNCENSORED_RE.test(text);
 }
 
-// ---- Video ---------------------------------------------------------------------
-
-/** Tones offered in the Video tab's brief (motion-graphics videos). */
-export const AD_TONES = [
-  "Premium & cinematic",
-  "Warm & human",
-  "Bold & energetic",
-  "Clean & minimal",
-  "Playful & bright",
-  "Moody & dramatic",
-  "Documentary & real",
-] as const;
-
 // ---- Screen Assist ---------------------------------------------------------
 // Ask about what's on screen, get a spoken answer plus something drawn over the
 // real interface.

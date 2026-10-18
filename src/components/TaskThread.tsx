@@ -7,6 +7,9 @@
 import { useEffect, useState } from "react";
 import { attachmentUrl, type Attached } from "../lib/attachments";
 import { isLive, type Task, type TaskStep } from "../lib/tasks";
+import { invokeCmd } from "../lib/transport";
+import { revokeVideoUrl, videoObjectUrl } from "../lib/videoStore";
+import { saveVideo } from "../lib/api";
 import Markdown from "./Markdown";
 
 const KIND_ICON: Record<string, string> = {
@@ -16,7 +19,85 @@ const KIND_ICON: Record<string, string> = {
   web: "↓",
   ask: "✋",
   mac: "🖥",
+  video: "🎬",
+  audio: "♪",
 };
+
+export function AttachmentThumb({ a, onRemove }: { a: Attached; onRemove?: () => void }) {
+  const [url, setUrl] = useState("");
+  const [missing, setMissing] = useState(false);
+  useEffect(() => {
+    let live = true;
+    attachmentUrl(a.id).then(
+      (u) => live && setUrl(u),
+      () => live && setMissing(true),
+    );
+    return () => {
+      live = false;
+    };
+  }, [a.id]);
+  return (
+    <div className="attach-thumb" title={a.source || a.name}>
+      {url ? <img src={url} alt={a.name} /> : <span>{missing ? "missing" : "…"}</span>}
+      {onRemove && (
+        <button className="attach-thumb-x" onClick={onRemove} title="Remove image" aria-label="Remove image">
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** A finished video, in the chat: plays in place, saves to Downloads. */
+function InlineVideo({ id, title }: { id: string; title: string }) {
+  const [url, setUrl] = useState("");
+  const [saved, setSaved] = useState("");
+  useEffect(() => {
+    let live = true;
+    let made = "";
+    videoObjectUrl(id).then(
+      (u) => {
+        made = u;
+        if (live) setUrl(u);
+        else revokeVideoUrl(u);
+      },
+      () => {}
+    );
+    return () => {
+      live = false;
+      revokeVideoUrl(made);
+    };
+  }, [id]);
+  return (
+    <div className="task-video">
+      {url ? <video src={url} controls playsInline /> : <div className="task-shot loading" />}
+      <div className="task-video-actions">
+        <button
+          className="btn"
+          onClick={() =>
+            void saveVideo(id, title).then(
+              (p) => setSaved(p),
+              (e) => setSaved(String(e))
+            )
+          }
+        >
+          Save MP4
+        </button>
+        {saved && <span className="hint">{saved}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** A voice sample the director made: "<project>/<file>". */
+function InlineAudio({ where }: { where: string }) {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    const [id, file] = where.split("/");
+    invokeCmd<string>("motion_audio", { id, file }).then(setUrl, () => {});
+  }, [where]);
+  return url ? <audio className="task-audio" src={url} controls /> : null;
+}
 
 /** A picture stored on the Mac, fetched on demand. */
 export function StoredImage({ id, className, alt }: { id: string; className?: string; alt?: string }) {
@@ -67,6 +148,18 @@ function Step({ s, renderImages }: { s: TaskStep; renderImages: (a: Attached[]) 
   }
   if (s.kind === "note") {
     return <div className="task-note">{s.title}</div>;
+  }
+  if (s.kind === "video" && s.ok && s.detail) {
+    return <InlineVideo id={s.detail} title={s.title} />;
+  }
+  if (s.kind === "audio" && s.ok && s.detail) {
+    return (
+      <div className="tool-line task-step">
+        <span className="tool-icon">♪</span>
+        <span className="task-step-title">{s.title}</span>
+        <InlineAudio where={s.detail} />
+      </div>
+    );
   }
   const running = s.ok == null;
   const failed = s.ok === false || s.kind === "error";

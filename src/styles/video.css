@@ -1,8 +1,5 @@
-/* Video tab: the library rail, the motion-graphics steps, the player.
- *
- * Shares the Images tab's two-column shell (.image-controls-col /
- * .image-preview-col) on purpose — the two tabs are the same shape of work, and
- * a second set of near-identical rules would only drift. */
+/* Video tab: the video chats and library in the sidebar, the conversation,
+ * and a player for library videos. */
 
 .video-tab {
   flex: 1;
@@ -92,27 +89,6 @@
   }
 }
 
-/* ---- controls ---- */
-.video-disclosure {
-  background: none;
-  border: none;
-  padding: 0;
-  text-align: left;
-  color: var(--text);
-  font-size: 12px;
-  cursor: pointer;
-}
-.video-brief {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel-2);
-}
-
 .btn.tiny {
   padding: 2px 7px;
   font-size: 11px;
@@ -147,156 +123,74 @@
   margin: 0;
 }
 
-/* ---- motion graphics ---- */
-.motion {
+/* ---- the video chat ---- */
+.video-tab.chat-mode {
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
-.motion-steps {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.video-tab.chat-mode > .chat-view {
+  flex: 1;
+  min-height: 0;
 }
-.motion-steps li {
-  display: flex;
-  gap: 8px;
-  font-size: 13px;
-}
-.motion-steps li .hint {
-  display: block;
-  margin: 2px 0 0;
-}
-.motion-mark {
-  flex: none;
-  width: 16px;
-  text-align: center;
-}
-.motion-steps li.ok .motion-mark {
-  color: #2e9e5b;
-}
-.motion-steps li.bad .motion-mark {
-  color: #d64545;
-}
-.motion-steps li.run .motion-mark {
-  color: var(--accent);
-  animation: motion-spin 1.2s linear infinite;
-}
-@keyframes motion-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-.motion-voices {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 240px;
-  overflow-y: auto;
-}
-.motion-voice {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  cursor: pointer;
-  font-size: 13px;
-}
-.motion-voice:hover {
-  background: var(--panel-2);
-}
-.motion-voice.active {
-  border-color: var(--accent);
-  background: var(--panel-2);
-}
-.motion-voice .hint {
-  display: block;
-  margin: 0;
+.video-section {
   font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 10px 10px 2px;
 }
-.motion-play {
-  flex: none;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  background: var(--panel);
+.video-dot.chat {
+  background: var(--border);
+}
+.video-empty b {
+  font-size: 15px;
   color: var(--text);
-  cursor: pointer;
-  font-size: 11px;
 }
-.motion-images {
+.video-starters {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
+  margin-top: 16px;
 }
-.motion-image,
-.motion-add {
-  position: relative;
-  width: 64px;
-  height: 64px;
-  border-radius: 8px;
-  border: 1px dashed var(--border);
-  display: grid;
-  place-items: center;
-  overflow: hidden;
+.video-starters .btn {
+  font-size: 12.5px;
 }
-.motion-image img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
-.motion-image .history-del {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-}
-.motion-add {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 22px;
-}
-/* Where you are: brief → script & voice → video. */
-.motion-stages {
-  list-style: none;
-  margin: 0 0 4px;
-  padding: 0;
+.video-watch {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--muted);
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
 }
-.motion-stages li {
+.video-watch > .btn {
+  align-self: flex-start;
+}
+/* A finished video inside the conversation. */
+.task-video {
+  margin: 8px 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+}
+.task-video video {
+  width: 100%;
+  max-height: 60vh;
+  border-radius: 10px;
+  background: #000;
+}
+.task-video-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex: 1;
+  gap: 10px;
 }
-.motion-stages li span {
-  flex: none;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--border);
-  font-size: 11px;
-}
-.motion-stages li.now {
-  color: var(--text);
-  font-weight: 600;
-}
-.motion-stages li.now span {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-.motion-stages li.past span {
-  border-color: var(--accent);
-  color: var(--accent);
+.task-audio {
+  height: 32px;
+  margin-left: 8px;
+  max-width: 260px;
 }

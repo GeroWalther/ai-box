@@ -1,16 +1,37 @@
-// The Video tab: motion-graphics videos, made on this Mac (MotionPanel /
-// motion.rs), and the library of finished ones.
+// The Video tab: a conversation with a video director that makes motion-
+// graphics videos on this Mac, and the library of finished ones.
 //
-// Three columns, one job each: the library on the left (it lives on the Mac,
-// so a paired phone sees the same set), the steps in the middle (brief →
-// script & voice → video), the player on the right.
+// A video chat is an assistant task of kind "video" (tasks.rs): it runs on the
+// Mac, keeps going when this tab closes, and works the same from the phone.
+// Images attached here — a logo, product photos — become the video's own
+// images, kept as they are. Videos and voice samples appear in the thread.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Settings } from "../lib/settings";
+import { resolveTextProvider } from "../lib/settings";
 import { saveVideo } from "../lib/api";
+import {
+  attachFile,
+  attachPath,
+  isImageFile,
+  isImagePath,
+  type Attached,
+} from "../lib/attachments";
+import {
+  approveTask,
+  deleteTask,
+  getTask,
+  isLive,
+  listTasks,
+  replyTask,
+  sendToTask,
+  startTask,
+  stopTask,
+  type Task,
+  type TaskSummary,
+} from "../lib/tasks";
 import {
   allVideos,
   deleteVideo,
-  getVideo,
   revokeVideoUrl,
   videoObjectUrl,
   type VideoRecord,
@@ -18,9 +39,16 @@ import {
 import { isTauri } from "../lib/transport";
 import { logError } from "../lib/log";
 import { useToast } from "../lib/toast";
+import { useFileDrop } from "../hooks/useFileDrop";
 import { SidebarSlot } from "./SidebarList";
-import MotionPanel from "./MotionPanel";
+import TaskThread, { AttachmentThumb } from "./TaskThread";
 import { registerSyncSource } from "../lib/syncBus";
+
+const STARTERS = [
+  "A 30-second ad for my app — here's the App Store link: ",
+  "A 45-second explainer video about ",
+  "A 15-second teaser for my product launch, vertical for Reels",
+];
 
 interface Props {
   settings: Settings;
@@ -32,139 +60,237 @@ interface Props {
   onCloseDrawer?: () => void;
 }
 
-export default function VideoPanel({
-  settings,
-  onChange,
-  prefill,
-  onPrefillConsumed,
-  sidebarSlot,
-  onCloseDrawer,
-}: Props) {
-  const { success: toastOk, error: toastError } = useToast();
-  const [library, setLibrary] = useState<VideoRecord[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [playUrl, setPlayUrl] = useState<string | null>(null);
-  // Bumped by "New video": remounts the steps on an empty brief.
-  const [session, setSession] = useState(0);
-  const [topic, setTopic] = useState<string | null>(null);
+function shortModel(id: string): string {
+  return (id.split(/[/:]/).pop() || id).replace(/-\d{8}$/, "");
+}
 
-  const alive = useRef(true);
-  useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
+export default function VideoPanel({ settings, prefill, onPrefillConsumed, sidebarSlot, onCloseDrawer }: Props) {
+  const { success: toastOk, error: toastError } = useToast();
+  const [chats, setChats] = useState<TaskSummary[]>([]);
+  const [chatId, setChatId] = useState<string | null>(null);
+  const [task, setTask] = useState<Task | null>(null);
+  const [library, setLibrary] = useState<VideoRecord[]>([]);
+  // A library video being watched in place of the chat.
+  const [watching, setWatching] = useState<{ rec: VideoRecord; url: string } | null>(null);
+  const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<Attached[]>([]);
+  const [attaching, setAttaching] = useState(0);
+  const [sending, setSending] = useState(false);
+  const viewRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const provider = resolveTextProvider(settings);
+
+  const loadChats = useCallback(async () => {
+    const rows = await listTasks().catch(() => [] as TaskSummary[]);
+    const videos = rows.filter((t) => t.kind === "video");
+    setChats(videos);
+    return videos;
+  }, []);
+  const loadLibrary = useCallback(async () => {
+    setLibrary(await allVideos().catch(() => [] as VideoRecord[]));
   }, []);
 
-  // Something sent over from Write or Images: start a new video about it.
+  // Open on the newest video chat.
+  useEffect(() => {
+    void loadLibrary();
+    void loadChats().then((v) => {
+      if (v[0]) setChatId(v[0].id);
+    });
+  }, [loadChats, loadLibrary]);
+
+  useEffect(() => registerSyncSource("videos", () => loadLibrary()), [loadLibrary]);
+
+  // Something sent over from Write or Images: a new chat, about that.
   useEffect(() => {
     if (prefill?.trim()) {
-      setTopic(prefill.trim().slice(0, 500));
-      setSession((n) => n + 1);
+      newChat();
+      setInput(`A short video about: ${prefill.trim().slice(0, 500)}`);
       onPrefillConsumed?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill]);
 
-  const loadLibrary = useCallback(async (selectNewest: boolean) => {
-    const rows = await allVideos().catch(() => [] as VideoRecord[]);
-    if (!alive.current) return rows;
-    setLibrary(rows);
-    if (selectNewest) {
-      const playable = rows.find((r) => r.status === "completed");
-      if (playable) void openClip(playable.id);
-    }
-    return rows;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
+  // Follow the open chat. `since` makes an unchanged poll nearly free.
+  const rev = task?.rev;
   useEffect(() => {
-    void loadLibrary(true);
-  }, [loadLibrary]);
-
-  useEffect(
-    () => registerSyncSource("videos", () => loadLibrary(false).then(() => undefined)),
-    [loadLibrary]
-  );
-
-  // Free the Blob when the selection changes or the tab unmounts — these are
-  // tens of megabytes each.
-  useEffect(() => () => revokeVideoUrl(playUrl), [playUrl]);
-
-  async function openClip(id: string) {
-    setActiveId(id);
-    const rec = await getVideo(id).catch(() => null);
-    if (!rec || rec.status !== "completed") {
-      setPlayUrl((old) => {
-        revokeVideoUrl(old);
-        return null;
-      });
+    if (!chatId) {
+      setTask(null);
       return;
     }
-    try {
-      const url = await videoObjectUrl(id);
-      if (!alive.current) {
-        revokeVideoUrl(url);
-        return;
-      }
-      setPlayUrl((old) => {
-        revokeVideoUrl(old);
-        return url;
+    let live = true;
+    const tick = async () => {
+      const t = await getTask(chatId, task?.id === chatId ? rev : undefined).catch(() => null);
+      if (!live || !t) return;
+      setTask((old) => {
+        // A new video in the thread: it is in the library now too.
+        const videos = (x: Task | null) => x?.steps.filter((s) => s.kind === "video" && s.ok).length ?? 0;
+        if (videos(t) !== videos(old)) void loadLibrary();
+        if (old?.status !== t.status) void loadChats();
+        return t;
       });
+    };
+    void tick();
+    const timer = setInterval(tick, task && isLive(task.status) ? 1000 : 3000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId, rev, task?.status]);
+
+  // Keep the newest message in view.
+  const steps = task?.steps.length ?? 0;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [steps, task?.pending?.id]);
+
+  useEffect(() => () => revokeVideoUrl(watching?.url ?? null), [watching]);
+
+  function newChat() {
+    setChatId(null);
+    setTask(null);
+    setWatching(null);
+    setInput("");
+    setAttachments([]);
+  }
+
+  async function send() {
+    const text = input.trim();
+    if ((!text && !attachments.length) || attaching > 0) return;
+    if (!provider.model) {
+      toastError("Pick a text model in Settings first — it directs the video and writes the animation.");
+      return;
+    }
+    const images = attachments;
+    setSending(true);
+    setInput("");
+    setAttachments([]);
+    try {
+      if (chatId) {
+        await sendToTask(chatId, text, images, provider.baseUrl, provider.model);
+        const t = await getTask(chatId);
+        if (t) setTask(t);
+      } else {
+        const t = await startTask(text, images, provider.baseUrl, provider.model, [], "video");
+        setTask(t);
+        setChatId(t.id);
+        void loadChats();
+      }
+    } catch (e) {
+      toastError(String(e));
+      setInput(text);
+      setAttachments(images);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function addImages(jobs: (() => Promise<Attached>)[]) {
+    setAttaching((n) => n + jobs.length);
+    await Promise.all(
+      jobs.map(async (job) => {
+        try {
+          const a = await job();
+          setAttachments((prev) => [...prev, a]);
+        } catch (e) {
+          logError("video.attach", e);
+          toastError(String(e));
+        } finally {
+          setAttaching((n) => n - 1);
+        }
+      })
+    );
+  }
+
+  const dropHover = useFileDrop({
+    target: viewRef,
+    enabled: true,
+    onPaths: (paths) => {
+      const images = paths.filter(isImagePath);
+      if (images.length) void addImages(images.map((p) => () => attachPath(p)));
+    },
+    onFiles: (files) => {
+      const images = files.filter(isImageFile);
+      if (images.length) void addImages(images.map((f) => () => attachFile(f)));
+    },
+  });
+
+  async function watch(rec: VideoRecord) {
+    try {
+      const url = await videoObjectUrl(rec.id);
+      setWatching({ rec, url });
     } catch (e) {
       logError("video.open", e);
       toastError("That video's file is missing.");
     }
   }
 
-  const active = library.find((r) => r.id === activeId) ?? null;
-
-  async function save() {
-    if (!active) return;
-    try {
-      const path = await saveVideo(active.id, active.prompt.slice(0, 40));
-      toastOk(`Saved to ${path}`);
-    } catch (e) {
-      toastError(String(e));
-    }
-  }
-
-  async function remove(id: string) {
+  async function removeVideo(id: string) {
     await deleteVideo(id).catch(() => {});
     setLibrary((rows) => rows.filter((r) => r.id !== id));
-    if (activeId === id) {
-      setActiveId(null);
-      setPlayUrl((old) => {
-        revokeVideoUrl(old);
-        return null;
-      });
-    }
+    if (watching?.rec.id === id) setWatching(null);
   }
 
+  async function removeChat(id: string) {
+    await deleteTask(id).catch(() => {});
+    setChats((rows) => rows.filter((r) => r.id !== id));
+    if (chatId === id) newChat();
+  }
+
+  const live = !!task && isLive(task.status);
+
   return (
-    <div className="video-tab">
+    <div className="video-tab chat-mode">
       <SidebarSlot slot={sidebarSlot}>
         <button
           className="sidebar-new"
           onClick={() => {
-            setTopic(null);
-            setSession((n) => n + 1);
+            newChat();
             onCloseDrawer?.();
           }}
         >
           + New video
         </button>
         <div className="video-library">
-          {library.length === 0 && (
-            <div className="image-history-empty">Your videos appear here.</div>
-          )}
+          {chats.length > 0 && <div className="video-section">Chats</div>}
+          {chats.map((c) => (
+            <div
+              key={c.id}
+              className={chatId === c.id && !watching ? "video-item active" : "video-item"}
+              title={c.goal}
+              onClick={() => {
+                setChatId(c.id);
+                setWatching(null);
+                onCloseDrawer?.();
+              }}
+            >
+              <div className="video-item-top">
+                <span className={`video-dot ${isLive(c.status) ? "in_progress" : "chat"}`} aria-hidden="true" />
+                <span className="video-item-title">{c.goal.slice(0, 60) || "Video"}</span>
+                <button
+                  className="history-del"
+                  title="Delete this chat"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void removeChat(c.id);
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          ))}
+          <div className="video-section">Videos</div>
+          {library.length === 0 && <div className="image-history-empty">Finished videos appear here.</div>}
           {library.map((r) => (
             <div
               key={r.id}
-              className={activeId === r.id ? "video-item active" : "video-item"}
+              className={watching?.rec.id === r.id ? "video-item active" : "video-item"}
               title={r.prompt}
               onClick={() => {
-                void openClip(r.id);
+                void watch(r);
                 onCloseDrawer?.();
               }}
             >
@@ -176,7 +302,7 @@ export default function VideoPanel({
                   title="Delete"
                   onClick={(e) => {
                     e.stopPropagation();
-                    void remove(r.id);
+                    void removeVideo(r.id);
                   }}
                 >
                   ×
@@ -185,57 +311,168 @@ export default function VideoPanel({
               <div className="video-item-meta">
                 {r.duration ? `${r.duration}s` : ""}
                 {r.aspect ? ` · ${r.aspect}` : ""}
-                {r.status === "failed" ? " · failed" : ""}
               </div>
             </div>
           ))}
         </div>
       </SidebarSlot>
 
-      <div className="image-controls-col">
-        <MotionPanel
-          key={session}
-          resume={session === 0}
-          topic={topic}
-          settings={settings}
-          onChange={onChange}
-          onFinished={(id) => void loadLibrary(false).then(() => openClip(id))}
-        />
-      </div>
-
-      <div className="image-preview-col">
-        {playUrl && active ? (
-          <>
-            <video className="video-player" src={playUrl} controls autoPlay loop playsInline />
-            <div className="preview-actions">
-              <button className="btn" onClick={() => void save()}>
-                {isTauri() ? "Save MP4" : "Save to Mac"}
-              </button>
-              <button className="btn danger" onClick={() => void remove(active.id)}>
-                Delete
-              </button>
-            </div>
-            <p className="hint">
-              {active.prompt}
-              {active.duration ? ` · ${active.duration}s` : ""}
-              {active.resolution ? ` · ${active.resolution}` : ""}
-              {active.bytes ? ` · ${(active.bytes / 1e6).toFixed(1)} MB` : ""}
-              {typeof active.cost === "number" && active.cost > 0
-                ? ` · $${active.cost.toFixed(2)}`
-                : ""}
-            </p>
-          </>
-        ) : (
-          <div className="image-placeholder">
-            Your video appears here.
-            <br />
-            <span className="muted">
-              Describe it, approve the script, and AI Box voices, scores, animates and renders
-              it on this Mac — usually a few minutes and a few cents.
-            </span>
+      {watching ? (
+        <div className="video-watch">
+          <button className="btn ghost" onClick={() => setWatching(null)}>
+            ← Back to the chat
+          </button>
+          <video className="video-player" src={watching.url} controls autoPlay playsInline />
+          <div className="preview-actions">
+            <button
+              className="btn"
+              onClick={() =>
+                void saveVideo(watching.rec.id, watching.rec.prompt.slice(0, 40)).then(
+                  (p) => toastOk(`Saved to ${p}`),
+                  (e) => toastError(String(e))
+                )
+              }
+            >
+              {isTauri() ? "Save MP4" : "Save to Mac"}
+            </button>
+            <button className="btn danger" onClick={() => void removeVideo(watching.rec.id)}>
+              Delete
+            </button>
           </div>
-        )}
-      </div>
+          <p className="hint">
+            {watching.rec.prompt}
+            {watching.rec.duration ? ` · ${watching.rec.duration}s` : ""}
+            {watching.rec.resolution ? ` · ${watching.rec.resolution}` : ""}
+            {typeof watching.rec.cost === "number" && watching.rec.cost > 0 ? ` · $${watching.rec.cost.toFixed(2)}` : ""}
+          </p>
+        </div>
+      ) : (
+        <div className={dropHover ? "chat-view drop-hover" : "chat-view"} ref={viewRef}>
+          <div className="chat-scroll" ref={scrollRef}>
+            {!task && (
+              <div className="chat-empty video-empty">
+                <b>What video do you want to make?</b>
+                <br />
+                Tell me what it's for — an ad, an explainer, a teaser — and drop in your logo or
+                product photos. I'll ask what I need, write the script with you, and make it on this
+                Mac: voice, music, animation. Usually a few minutes and a few cents.
+                <div className="video-starters">
+                  {STARTERS.map((s) => (
+                    <button key={s} className="btn" onClick={() => setInput(s)}>
+                      {s.replace(/: $/, "…")}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {task && (
+              <TaskThread
+                task={task}
+                onApprove={(id, ok) => void approveTask(id, ok).catch((e) => toastError(String(e)))}
+                onReply={(id, text) => void replyTask(id, text).catch((e) => toastError(String(e)))}
+                renderImages={(imgs) => (
+                  <div className="msg-images">
+                    {imgs.map((a) => (
+                      <AttachmentThumb key={a.id} a={a} />
+                    ))}
+                  </div>
+                )}
+              />
+            )}
+          </div>
+
+          <div className="promptbar-wrap">
+            <div className="composer">
+              {(attachments.length > 0 || attaching > 0) && (
+                <div className="attach-strip">
+                  {attachments.map((a) => (
+                    <AttachmentThumb
+                      key={a.id}
+                      a={a}
+                      onRemove={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                    />
+                  ))}
+                  {Array.from({ length: attaching }, (_, k) => (
+                    <div key={`pending-${k}`} className="attach-thumb pending">
+                      <span>…</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <input
+                type="file"
+                ref={fileRef}
+                hidden
+                multiple
+                accept="image/*,.heic"
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? []).filter(isImageFile);
+                  if (files.length) void addImages(files.map((f) => () => attachFile(f)));
+                  e.target.value = "";
+                }}
+              />
+              <textarea
+                className="composer-input"
+                rows={2}
+                placeholder={
+                  task?.status === "waiting"
+                    ? "Answer, or say what to do instead…"
+                    : live
+                      ? "Working… you can tell it more"
+                      : task
+                        ? "What should change?"
+                        : "Describe the video — and drop in your logo or product photos"
+                }
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onPaste={(e) => {
+                  const files = Array.from(e.clipboardData.items)
+                    .filter((i) => i.kind === "file")
+                    .map((i) => i.getAsFile())
+                    .filter((f): f is File => !!f && isImageFile(f));
+                  if (!files.length) return;
+                  e.preventDefault();
+                  void addImages(files.map((f) => () => attachFile(f)));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void send();
+                  }
+                }}
+              />
+              <div className="composer-row">
+                <button
+                  className="btn ghost attach-btn"
+                  title="Add your logo, product photos or screenshots (or drop / paste them)"
+                  onClick={() => fileRef.current?.click()}
+                >
+                  📎
+                </button>
+                <span className="composer-chip" title="The text model — change it in Settings">
+                  {shortModel(provider.model || "no model")}
+                </span>
+                <span className="composer-spacer" />
+                {live && (
+                  <button className="btn stop promptbar-send" onClick={() => void stopTask(task!.id)} title="Stop">
+                    ■
+                  </button>
+                )}
+                {(!live || input.trim() || attachments.length > 0) && (
+                  <button
+                    className="btn primary promptbar-send"
+                    onClick={() => void send()}
+                    disabled={sending || attaching > 0 || (!input.trim() && !attachments.length)}
+                    title={attaching > 0 ? "Preparing images…" : "Send"}
+                  >
+                    →
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

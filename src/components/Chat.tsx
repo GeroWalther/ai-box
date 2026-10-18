@@ -20,7 +20,7 @@ import {
   stopTask,
   type Task,
 } from "../lib/tasks";
-import TaskThread from "./TaskThread";
+import TaskThread, { AttachmentThumb } from "./TaskThread";
 import { listen } from "@tauri-apps/api/event";
 import ModelSelect from "./ModelSelect";
 import { useDirectModels } from "../hooks/useDirectModels";
@@ -30,7 +30,6 @@ import { useFileDrop } from "../hooks/useFileDrop";
 import {
   attachFile,
   attachPath,
-  attachmentUrl,
   isImageFile,
   isImagePath,
   type Attached,
@@ -75,30 +74,6 @@ function splitThink(raw: string): { think: string; answer: string } {
   return { think, answer };
 }
 /** One attached image, loaded from the Mac on demand. */
-function AttachmentThumb({ a, onRemove }: { a: Attached; onRemove?: () => void }) {
-  const [url, setUrl] = useState("");
-  const [missing, setMissing] = useState(false);
-  useEffect(() => {
-    let live = true;
-    attachmentUrl(a.id).then(
-      (u) => live && setUrl(u),
-      () => live && setMissing(true),
-    );
-    return () => {
-      live = false;
-    };
-  }, [a.id]);
-  return (
-    <div className="attach-thumb" title={a.source || a.name}>
-      {url ? <img src={url} alt={a.name} /> : <span>{missing ? "missing" : "…"}</span>}
-      {onRemove && (
-        <button className="attach-thumb-x" onClick={onRemove} title="Remove image" aria-label="Remove image">
-          ×
-        </button>
-      )}
-    </div>
-  );
-}
 
 /** A model id as a person would say it: "google:gemini-3.8-flash" → "gemini-3.8-flash". */
 function shortModel(id: string): string {

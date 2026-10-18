@@ -86,19 +86,9 @@ export interface Settings {
   imageOutWidth: number;
   imageOutHeight: number;
 
-  // Video (motion graphics): last choices, kept between videos.
-  /** Where the voice comes from: any speech model on OpenRouter (one key for
-   *  everything), or ElevenLabs on its own key (free voice previews). */
-  motionVoiceSource: "openrouter" | "elevenlabs";
-  motionSpeechModel: string;
-  /** The voice on the OpenRouter speech model. */
-  motionOrVoice: string;
-  /** The ElevenLabs voice id, for the ElevenLabs route. */
-  motionVoice: string;
+  /** The image model for videos' cut-out images; empty means the newest on
+   *  OpenRouter that can make transparent images. */
   motionImageModel: string;
-  motionFormat: "9:16" | "16:9" | "1:1";
-  motionSeconds: number;
-  motionLanguage: string;
 
   // Screen Assist: the overlay that sees the screen, answers aloud and draws.
   assistEnabled: boolean;
@@ -232,14 +222,7 @@ export const DEFAULT_SETTINGS: Settings = {
   imageOutWidth: 2400,
   imageOutHeight: 2400,
 
-  motionVoiceSource: "openrouter",
-  motionSpeechModel: "",
-  motionOrVoice: "",
-  motionVoice: "",
   motionImageModel: "",
-  motionFormat: "9:16",
-  motionSeconds: 30,
-  motionLanguage: "English",
 
   assistEnabled: true,
   assistHotkey: "Alt+Space",

@@ -96,6 +96,12 @@ fn store(bytes: &[u8], name: &str, source: Option<String>) -> Result<Attachment,
 
     let id = uuid::Uuid::new_v4().to_string();
     let path = file_for(&id)?;
+    // A logo with a transparent background is kept as a PNG as well: the
+    // model sees the JPEG, but a video that places the logo needs the cut-out.
+    if rgba.pixels().any(|p| p[3] < 250) {
+        std::fs::create_dir_all(dir()).map_err(|e| format!("create attachments folder: {e}"))?;
+        let _ = img.save_with_format(path.with_extension("png"), image::ImageFormat::Png);
+    }
     std::fs::create_dir_all(dir()).map_err(|e| format!("create attachments folder: {e}"))?;
     let mut out = std::io::BufWriter::new(
         std::fs::File::create(&path).map_err(|e| format!("write attachment: {e}"))?,
@@ -129,6 +135,15 @@ pub fn attach_image_bytes(base64: String, name: String) -> Result<Attachment, St
         .decode(base64.trim())
         .map_err(|e| format!("decode image: {e}"))?;
     store(&bytes, &name, None)
+}
+
+/// The best copy of an attachment: the transparent PNG when there is one,
+/// else the JPEG.
+pub fn original_bytes(id: &str) -> Result<Vec<u8>, String> {
+    let jpg = file_for(id)?;
+    std::fs::read(jpg.with_extension("png"))
+        .or_else(|_| std::fs::read(&jpg))
+        .map_err(|_| "that image is no longer on the Mac".to_string())
 }
 
 /// The stored image as a data URL, for thumbnails and for the model request.

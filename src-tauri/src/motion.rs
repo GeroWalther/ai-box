@@ -144,6 +144,9 @@ pub struct Project {
     pub cost: f64,
     /// Characters sent to ElevenLabs (billed against the person's quota).
     pub voice_chars: usize,
+    /// Videos made from this project so far.
+    #[serde(default)]
+    pub versions: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -323,7 +326,6 @@ fn stage_size(format: &str) -> (u32, u32) {
 
 /// Image models on OpenRouter that can return a transparent background,
 /// newest first. Read from the live catalog, like every other model list here.
-#[tauri::command]
 pub async fn motion_image_models<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Value>, String> {
     let s = settings(&app);
     let resp = reqwest::Client::new()
@@ -350,7 +352,6 @@ pub async fn motion_image_models<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Va
 }
 
 /// The person's ElevenLabs voices, each with its free preview clip.
-#[tauri::command]
 pub async fn motion_voices<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Value>, String> {
     let k = key(&settings(&app), "elevenlabsKey");
     if k.is_empty() {
@@ -490,133 +491,110 @@ async fn app_store(query: &str, dir: &str) -> Result<(String, Vec<Asset>), Strin
     Ok((text, assets))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserImage {
-    pub name: String,
-    pub base64: String,
-}
+// ---- the chat's handle on a project ---------------------------------------------------
+//
+// A video is made in conversation (tasks.rs, kind "video"): the agent asks what
+// it needs, researches, writes the script with the person, and calls these.
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScriptParams {
-    pub brief: Brief,
-    #[serde(default)]
-    pub images: Vec<UserImage>,
-    pub base_url: String,
-    pub model: String,
-}
-
-const SCRIPT_SYSTEM: &str = "You write voice-over scripts for short motion-graphics videos.\n\
-Rules:\n\
-- Written to be SPOKEN: complete, natural sentences with rhythm. No staccato fragments, no lists, no hashtags.\n\
-- Plain text only. No stage directions, no [brackets], no emojis, no speaker names — everything you write is read aloud.\n\
-- Length: about {words} words for {seconds} seconds. Never more.\n\
-- An explainer opens with the question of what this is about, then answers it simply.\n\
-- An ad wins attention in the first two seconds, shows the benefit to the viewer rather than listing features, and ends with one clear call to action.\n\
-- Use only facts from the brief and research. Never invent prices, numbers, awards or features.\n\
-- Write in {language}.\n\
-Reply with JSON only: {\"title\": \"short working title\", \"script\": \"the voice-over\"}";
-
-fn words_for(seconds: u32, language: &str) -> u32 {
-    // Spoken pace: English ~2.5 words/s; German and others run a little slower.
-    let rate = if language.to_lowercase().starts_with("en") { 2.5 } else { 2.2 };
-    ((seconds as f64) * rate * 0.92) as u32
-}
-
-/// Research the subject and write a script for the person to approve. Nothing
-/// paid has run when this returns.
-#[tauri::command]
-pub async fn motion_script<R: Runtime>(app: AppHandle<R>, params: ScriptParams) -> Result<Project, String> {
+/// A new, empty project for a video chat.
+pub fn create<R: Runtime>(app: &AppHandle<R>, base_url: &str, model: &str) -> Project {
     let motion = app.state::<Motion>().inner().clone();
     motion.ensure_loaded();
-    let mut brief = params.brief;
-    if brief.seconds == 0 {
-        brief.seconds = 30;
-    }
-    brief.seconds = brief.seconds.clamp(10, 120);
-    if brief.language.trim().is_empty() {
-        brief.language = "English".into();
-    }
-    if brief.product.trim().is_empty() && brief.app_store.trim().is_empty() && brief.website.trim().is_empty() {
-        return Err("Say what the video is about — a product, an App Store link or a website.".into());
-    }
     let id = uuid::Uuid::new_v4().to_string();
-    let dir = dir_of(&id);
-    std::fs::create_dir_all(format!("{dir}/assets")).map_err(|e| e.to_string())?;
-
-    let mut research = vec![];
-    let mut assets = vec![];
-    for (i, img) in params.images.iter().enumerate() {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(img.base64.split(',').last().unwrap_or("").trim())
-            .map_err(|e| format!("{}: {e}", img.name))?;
-        let stem: String = img.name.rsplit('/').next().unwrap_or("image").split('.').next().unwrap_or("image").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(30).collect();
-        let a = store_image(&dir, &format!("user-{}-{stem}.png", i + 1), &bytes, "user", &format!("the person's own image \"{}\" — show it as it is", img.name), 1600)?;
-        assets.push(a);
-    }
-    if !brief.app_store.trim().is_empty() {
-        match app_store(&brief.app_store, &dir).await {
-            Ok((text, a)) => {
-                research.push(text);
-                assets.extend(a);
-            }
-            Err(e) => research.push(format!("(App Store lookup failed: {e})")),
-        }
-    }
-    if !brief.website.trim().is_empty() {
-        let url = if brief.website.contains("://") { brief.website.clone() } else { format!("https://{}", brief.website.trim()) };
-        match crate::web_fetch(url.clone()).await {
-            Ok(t) => research.push(format!("Website {url}:\n{}", t.chars().take(5000).collect::<String>())),
-            Err(e) => research.push(format!("(Could not read {url}: {e})")),
-        }
-    }
-    let research = research.join("\n\n");
-
-    let words = words_for(brief.seconds, &brief.language);
-    let system = SCRIPT_SYSTEM
-        .replace("{words}", &words.to_string())
-        .replace("{seconds}", &brief.seconds.to_string())
-        .replace("{language}", &brief.language);
-    let user = format!(
-        "Video type: {}\nProduct / subject: {}\nAudience: {}\nMessage to land: {}\nTone: {}\nNotes: {}\n\nResearch:\n{}",
-        if brief.kind == "explainer" { "explainer" } else { "ad / promo spot" },
-        brief.product, brief.audience, brief.message, brief.tone, brief.notes,
-        if research.is_empty() { "(none)" } else { &research }
-    );
-    let reply = ask(&app, &params.base_url, &params.model, &system, json!(user), 0.7).await?;
-    let v = json_in(&reply).ok_or("The text model's script wasn't readable — try again.")?;
-    let script = v["script"].as_str().unwrap_or("").trim().to_string();
-    if script.is_empty() {
-        return Err("The text model wrote no script — try again.".into());
-    }
-    let project = Project {
+    let _ = std::fs::create_dir_all(format!("{}/assets", dir_of(&id)));
+    let p = Project {
         id: id.clone(),
-        status: "script".into(),
+        status: "draft".into(),
         created: now_ms(),
         updated: now_ms(),
         rev: 1,
-        title: v["title"].as_str().unwrap_or(&brief.product).trim().to_string(),
-        brief,
-        research,
-        script,
+        brief: Brief { kind: "ad".into(), format: "9:16".into(), language: "English".into(), ..Default::default() },
+        research: String::new(),
+        title: "New video".into(),
+        script: String::new(),
         voice_id: String::new(),
         voice_name: String::new(),
         voice_source: String::new(),
         speech_model: String::new(),
         image_model: String::new(),
-        text_model: params.model,
-        base_url: params.base_url,
-        assets,
+        text_model: model.into(),
+        base_url: base_url.into(),
+        assets: vec![],
         steps: vec![],
         cost: 0.0,
         voice_chars: 0,
+        versions: 0,
         video_id: None,
         error: None,
     };
-    save(&project);
-    motion.0.projects.lock().unwrap().insert(id, project.clone());
-    Ok(project)
+    save(&p);
+    motion.0.projects.lock().unwrap().insert(id, p.clone());
+    p
+}
+
+/// The text model follows the chat's: switching models in the chat switches
+/// who writes the animation too.
+pub fn set_text_model<R: Runtime>(app: &AppHandle<R>, id: &str, base_url: &str, model: &str) {
+    app.state::<Motion>().update(app, id, |p| {
+        p.base_url = base_url.into();
+        p.text_model = model.into();
+    });
+}
+
+/// An image the person attached in the chat — a logo, a product photo — kept
+/// as the original, transparency and all. Returns the asset's file name.
+pub fn add_image<R: Runtime>(app: &AppHandle<R>, id: &str, attachment: &str, name: &str) -> Result<String, String> {
+    let motion = app.state::<Motion>().inner().clone();
+    let p = motion.get(id).ok_or("no such video project")?;
+    let bytes = crate::attach::original_bytes(attachment)?;
+    let stem: String = name
+        .rsplit('/')
+        .next()
+        .unwrap_or("image")
+        .split('.')
+        .next()
+        .unwrap_or("image")
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .take(30)
+        .collect();
+    let n = p.assets.iter().filter(|a| a.kind == "user").count() + 1;
+    let a = store_image(&dir_of(id), &format!("user-{n}-{stem}.png"), &bytes, "user", &format!("the person's own image \"{name}\" — show it as it is"), 1600)?;
+    let file = a.file.clone();
+    motion.update(app, id, |p| p.assets.push(a));
+    Ok(file)
+}
+
+/// The App Store record and/or a website, for the script and the real assets.
+pub async fn research<R: Runtime>(app: &AppHandle<R>, id: &str, app_store_query: &str, website: &str) -> Result<String, String> {
+    let motion = app.state::<Motion>().inner().clone();
+    let dir = dir_of(id);
+    let mut found = vec![];
+    if !app_store_query.trim().is_empty() {
+        let (text, assets) = app_store(app_store_query, &dir).await?;
+        let files: Vec<String> = assets.iter().map(|a| format!("assets/{} ({})", a.file, a.note)).collect();
+        motion.update(app, id, |p| {
+            p.assets.retain(|a| a.kind != "icon" && a.kind != "screenshot");
+            p.assets.extend(assets);
+        });
+        found.push(format!("{text}\n\nSaved for the video: {}", if files.is_empty() { "(no images)".into() } else { files.join(", ") }));
+    }
+    if !website.trim().is_empty() {
+        let url = if website.contains("://") { website.to_string() } else { format!("https://{}", website.trim()) };
+        let t = crate::web_fetch(url.clone()).await?;
+        found.push(format!("Website {url}:\n{}", t.chars().take(5000).collect::<String>()));
+    }
+    let text = found.join("\n\n");
+    motion.update(app, id, |p| {
+        p.research = format!("{}\n\n{}", p.research, text).trim().to_string();
+    });
+    Ok(text)
+}
+
+/// The images the video can use, for the agent.
+pub fn assets_text<R: Runtime>(app: &AppHandle<R>, id: &str) -> String {
+    app.state::<Motion>().get(id).map(|p| asset_lines(&p.assets)).unwrap_or_default()
 }
 
 // ---- 3. voice -------------------------------------------------------------------
@@ -835,7 +813,6 @@ async fn voice_openrouter<R: Runtime>(job: &Job<R>, p: &Project) -> Result<(Vec<
 }
 
 /// OpenRouter's speech models, each with the voices it offers, newest first.
-#[tauri::command]
 pub async fn motion_speech_models<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Value>, String> {
     let s = settings(&app);
     let resp = reqwest::Client::new()
@@ -857,16 +834,6 @@ pub async fn motion_speech_models<R: Runtime>(app: AppHandle<R>) -> Result<Vec<V
     Ok(out)
 }
 
-/// A short paid sample of an OpenRouter voice (a fraction of a cent), as a
-/// data URL to play. ElevenLabs voices have free previews; these do not.
-#[tauri::command]
-pub async fn motion_voice_sample<R: Runtime>(app: AppHandle<R>, model: String, voice: String, text: String) -> Result<String, String> {
-    let k = key(&settings(&app), "openrouterKey");
-    let text: String = if text.trim().is_empty() { "Here is how this voice sounds.".into() } else { text.chars().take(160).collect() };
-    let (audio, ext, _) = or_speech(&k, &model, &voice, &text).await?;
-    let mime = if ext == "wav" { "audio/wav" } else { "audio/mpeg" };
-    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(audio)))
-}
 
 async fn probe_seconds(path: &str) -> Option<f64> {
     let ffprobe = ffmpeg()?.replace("ffmpeg", "ffprobe");
@@ -1231,10 +1198,13 @@ background moves the whole time (drifting gradients, particles, grids, shapes). 
 (the word list below has each word's start time in seconds). Scene changes land on sentence starts.\n\
 - Every scene has its own visual idea. Images are building blocks: animate them in, move, rotate, combine, \
 parallax — never a slideshow, and never the same image in the same way twice.\n\
+- On-screen words come only from the voice-over and the brief: never invent offers, prices, claims, \
+\"free\", ratings or features.\n\
 - On-screen text is short (2–6 words), big, bold, high contrast. Keep important content inside the central 80% \
 (for 9:16, also clear of the top 12% and bottom 18%, where apps put their own interface).\n\
 - Use the real assets (app icon, screenshots — show those inside a phone frame drawn in CSS — and the person's \
-images) where the voice talks about the product. Never draw a fake version of the product.\n\
+images) where the voice talks about the product. Never draw a fake version of the product. The person's logo is \
+the brand: show it clearly, at least on the end card, never distorted or recoloured.\n\
 - Use easing with character (power3.out, back.out(1.7), expo.inOut), overlap tweens, and stagger letters/words.\n\
 - End with a held end card: product name / logo and the call to action, from the last sentence to the end.\n\n\
 Reply with the HTML document only.";
@@ -1386,8 +1356,28 @@ async fn render<R: Runtime>(job: &Job<R>, tab: &mut crate::browser::Tab, w: u32,
 
 // ---- the job ------------------------------------------------------------------------------
 
-async fn make<R: Runtime>(job: &Job<R>) -> Result<(), String> {
+/// Where a run starts. Everything before it is reused from the last run, so a
+/// note like "make the logo bigger" costs one animation pass, not a new voice
+/// and new images.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum From {
+    /// Everything: a new script or a new voice.
+    Voice,
+    /// Same voice; a new look, new images, new sound.
+    Images,
+    /// Same voice, images and sound; the animation is revised.
+    Animation,
+}
+
+async fn make<R: Runtime>(job: &Job<R>, from: From, feedback: &str) -> Result<String, String> {
     let p = job.project();
+    let from = if from != From::Voice && !std::path::Path::new(&job.path("words.json")).exists() { From::Voice } else { from };
+    let from = if from == From::Animation && !std::path::Path::new(&job.path("plan.json")).exists() { From::Images } else { from };
+    let note = if feedback.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n\nWhat the person asked for after the previous version — this matters most:\n{}", feedback.trim())
+    };
     let s = settings(&job.app);
     let or_key = key(&s, "openrouterKey");
     if or_key.is_empty() {
@@ -1404,31 +1394,47 @@ async fn make<R: Runtime>(job: &Job<R>) -> Result<(), String> {
     } else {
         p.speech_model.split('/').last().unwrap_or(&p.speech_model).to_string()
     };
-    let (words, spoken, voice_cost) = job
-        .step(&format!("Recording the voice · {} · {via}", p.voice_name), async {
-            let r = voice(job, &p).await?;
-            let mut detail = format!("{:.1} s spoken, {} words timed", r.1, r.0.len());
-            if r.2 > 0.0 {
-                detail.push_str(&format!(" · ${:.3}", r.2));
+    let (words, spoken) = if from == From::Voice {
+        let (words, spoken, voice_cost) = job
+            .step(&format!("Recording the voice · {} · {via}", p.voice_name), async {
+                let r = voice(job, &p).await?;
+                let mut detail = format!("{:.1} s spoken, {} words timed", r.1, r.0.len());
+                if r.2 > 0.0 {
+                    detail.push_str(&format!(" · ${:.3}", r.2));
+                }
+                Ok((r, Some(detail)))
+            })
+            .await?;
+        job.motion.update(&job.app, &job.id, |p| {
+            if p.voice_source == "elevenlabs" {
+                p.voice_chars += p.script.chars().count();
             }
-            Ok((r, Some(detail)))
-        })
-        .await?;
-    job.motion.update(&job.app, &job.id, |p| {
-        if p.voice_source == "elevenlabs" {
-            p.voice_chars += p.script.chars().count();
-        }
-        p.cost += voice_cost;
-    });
+            p.cost += voice_cost;
+        });
+        (words, spoken)
+    } else {
+        let words: Vec<Word> = serde_json::from_str(&std::fs::read_to_string(job.path("words.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let spoken = probe_seconds(&voice_file(&job.dir)).await.unwrap_or_else(|| words.last().map_or(0.0, |w| w.e - LEAD));
+        (words, spoken)
+    };
     let dur = LEAD + spoken + TAIL;
 
     // 4. Look, images, accents.
-    let plan = job
-        .step("Planning the look, images and sound", async {
+    let plan = if from == From::Animation {
+        serde_json::from_str::<Value>(&std::fs::read_to_string(job.path("plan.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?
+    } else {
+        // New images replace the last run's; the real ones stay.
+        for a in p.assets.iter().filter(|a| a.kind == "ai") {
+            let _ = std::fs::remove_file(job.path(&format!("assets/{}", a.file)));
+        }
+        job.motion.update(&job.app, &job.id, |p| p.assets.retain(|a| a.kind != "ai"));
+        let p = job.project();
+        job.step("Planning the look, images and sound", async {
             let system = PLAN_SYSTEM.replace("{max}", &MAX_IMAGES.to_string());
             let user = format!(
                 "Title: {}\nType: {}\nAudience: {}\nTone: {}\nBrand notes: {}\nFormat: {}×{}\n\nReal assets already available:\n{}\n\n\
-Voice-over:\n{}\n\nWord start times (seconds):\n{}\n\nTotal: {:.2} s",
+Voice-over:\n{}\n\nWord start times (seconds):\n{}\n\nTotal: {:.2} s{note}",
                 p.title, p.brief.kind, p.brief.audience, p.brief.tone, p.brief.notes, w, h,
                 asset_lines(&p.assets), p.script, word_lines(&words), dur
             );
@@ -1442,11 +1448,14 @@ Voice-over:\n{}\n\nWord start times (seconds):\n{}\n\nTotal: {:.2} s",
             );
             Ok((plan, Some(detail)))
         })
-        .await?;
-    let _ = std::fs::write(job.path("plan.json"), serde_json::to_string_pretty(&plan).unwrap_or_default());
+        .await?
+    };
+    if from != From::Animation {
+        let _ = std::fs::write(job.path("plan.json"), serde_json::to_string_pretty(&plan).unwrap_or_default());
+    }
 
     let wanted: Vec<Value> = plan["images"].as_array().cloned().unwrap_or_default().into_iter().take(MAX_IMAGES).collect();
-    if !wanted.is_empty() {
+    if from != From::Animation && !wanted.is_empty() {
         let style = plan["look"]["imageStyle"].as_str().unwrap_or("").to_string();
         let model = p.image_model.clone();
         let made = job
@@ -1509,6 +1518,7 @@ background. No text, no lettering, no frame, no ground shadow, no background sce
         .collect();
     let mood = plan["music"]["mood"].as_str().unwrap_or("upbeat").to_string();
     let bpm = plan["music"]["bpm"].as_f64().unwrap_or(104.0) as f32;
+    if from != From::Animation || !std::path::Path::new(&job.path("mix.wav")).exists() {
     job.step("Composing music and effects, mixing to −14 LUFS", async {
         let dir = job.dir.clone();
         let (accents2, mood2) = (accents.clone(), mood.clone());
@@ -1522,6 +1532,7 @@ background. No text, no lettering, no frame, no ground shadow, no background sce
         Ok(((), Some(format!("{mood} at {bpm:.0} bpm · {} accents · {lufs}", accents.len()))))
     })
     .await?;
+    }
 
     // 6 + 7. Composition, checked in the render browser and fixed by the model
     // until it loads cleanly, then filmed.
@@ -1531,8 +1542,19 @@ background. No text, no lettering, no frame, no ground shadow, no background sce
         tab.cdp("Emulation.setDeviceMetricsOverride", json!({ "width": w, "height": h, "deviceScaleFactor": 1, "mobile": false })).await?;
         std::fs::write(job.path("gsap.min.js"), GSAP).map_err(|e| e.to_string())?;
         let system = COMPOSE_SYSTEM.replace("{w}", &w.to_string()).replace("{h}", &h.to_string()).replace("{dur:.2}", &format!("{dur:.2}"));
-        let user = compose_user(&p, &words, &plan, &p.assets, dur);
-        job.step("Writing the animation", async {
+        let previous = std::fs::read_to_string(job.path("index.html")).ok().filter(|_| from == From::Animation);
+        let user = match &previous {
+            // A revision: the last document, changed where the person asked.
+            Some(prev) => format!(
+                "{}{note}\n\nThis is a revision. Below is the previous document, which already works. Change what the person \
+asked for and keep everything else as it is. Return the complete revised document.\n\n{}",
+                compose_user(&p, &words, &plan, &p.assets, dur),
+                prev
+            ),
+            None => format!("{}{note}", compose_user(&p, &words, &plan, &p.assets, dur)),
+        };
+        let title = if previous.is_some() { "Revising the animation" } else { "Writing the animation" };
+        job.step(title, async {
             let mut messages_user = json!(user.clone());
             let mut last_err = String::new();
             for attempt in 0..3 {
@@ -1565,109 +1587,235 @@ background. No text, no lettering, no frame, no ground shadow, no background sce
     }
     result?;
 
-    // File it in the clip library.
+    // File it in the library — every run a version of its own, so an earlier
+    // cut is still there when a change turns out worse.
+    job.motion.update(&job.app, &job.id, |p| p.versions += 1);
     let p = job.project();
     let video_id = uuid::Uuid::new_v4().to_string();
     let bytes = std::fs::metadata(job.path("video.mp4")).map(|m| m.len()).unwrap_or(0);
     crate::video::store_file(&video_id, &job.path("video.mp4"))?;
+    let name = if p.versions > 1 { format!("{} (v{})", p.title, p.versions) } else { p.title.clone() };
     let record = json!({
-        "id": video_id, "jobId": format!("motion:{}", p.id), "prompt": p.title, "model": "motion",
+        "id": video_id, "jobId": format!("motion:{}", p.id), "prompt": name, "model": "motion",
         "modelName": "Motion graphics", "status": "completed", "at": now_ms(), "duration": dur.round() as u64,
         "resolution": format!("{w}×{h}"), "aspect": p.brief.format, "audio": true, "bytes": bytes, "cost": p.cost,
     });
     crate::video::video_put(video_id.clone(), record.to_string())?;
-    job.motion.update(&job.app, &job.id, |p| p.video_id = Some(video_id));
-    Ok(())
+    job.motion.update(&job.app, &job.id, |p| p.video_id = Some(video_id.clone()));
+    Ok(video_id)
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MakeParams {
-    pub id: String,
+/// What the chat decided: the script, the voice, the shape of the video.
+#[derive(Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct Spec {
     pub title: String,
     pub script: String,
-    pub voice_id: String,
-    #[serde(default)]
-    pub voice_name: String,
-    /// "elevenlabs" | "openrouter" (the default: one key for everything).
-    #[serde(default)]
+    /// "ad" | "explainer"
+    pub kind: String,
+    /// "9:16" | "16:9" | "1:1"
+    pub format: String,
+    pub language: String,
+    pub audience: String,
+    pub tone: String,
+    /// Brand colours, fonts, style direction, things to avoid.
+    pub notes: String,
+    /// "openrouter" | "elevenlabs"
     pub voice_source: String,
-    #[serde(default)]
+    /// The OpenRouter speech model (voice_source "openrouter").
     pub speech_model: String,
-    pub image_model: String,
+    /// The voice: a name on the speech model, or an ElevenLabs voice id.
+    pub voice: String,
+    pub voice_name: String,
 }
 
-/// Approve the script and make the video. Runs on the Mac in the background;
-/// watch it with motion_get.
-#[tauri::command]
-pub fn motion_make<R: Runtime>(app: AppHandle<R>, params: MakeParams) -> Result<(), String> {
+/// Apply what changed. Empty fields keep what the project has.
+pub fn apply<R: Runtime>(app: &AppHandle<R>, id: &str, spec: &Spec) {
+    let keep = |new: &str, old: &str| if new.trim().is_empty() { old.to_string() } else { new.trim().to_string() };
+    app.state::<Motion>().update(app, id, |p| {
+        p.title = keep(&spec.title, &p.title);
+        p.script = keep(&spec.script, &p.script);
+        p.brief.kind = keep(&spec.kind, &p.brief.kind);
+        p.brief.format = match spec.format.trim() {
+            f @ ("9:16" | "16:9" | "1:1") => f.to_string(),
+            _ => p.brief.format.clone(),
+        };
+        p.brief.language = keep(&spec.language, &p.brief.language);
+        p.brief.audience = keep(&spec.audience, &p.brief.audience);
+        p.brief.tone = keep(&spec.tone, &p.brief.tone);
+        p.brief.notes = keep(&spec.notes, &p.brief.notes);
+        if !spec.voice.trim().is_empty() {
+            p.voice_source = if spec.voice_source == "elevenlabs" { "elevenlabs".into() } else { "openrouter".into() };
+            p.speech_model = spec.speech_model.trim().to_string();
+            p.voice_id = spec.voice.trim().to_string();
+            p.voice_name = keep(&spec.voice_name, &spec.voice);
+        }
+    });
+}
+
+/// Make (or remake) the video, from `from`, and wait for it. `progress` hears
+/// the step being worked on; `cancelled` is asked between frames and steps.
+/// Returns the library id of the new video and a summary for the agent.
+pub async fn run<R: Runtime>(
+    app: &AppHandle<R>,
+    id: &str,
+    from: From,
+    feedback: &str,
+    mut progress: impl FnMut(&str),
+    cancelled: impl Fn() -> bool,
+) -> Result<(String, String), String> {
     let motion = app.state::<Motion>().inner().clone();
-    let p = motion.get(&params.id).ok_or("no such video project")?;
+    let p = motion.get(id).ok_or("no such video project")?;
     if p.status == "running" {
         return Err("This video is already being made.".into());
     }
-    let script = params.script.trim().to_string();
-    if script.is_empty() {
-        return Err("The script is empty.".into());
+    if p.script.trim().is_empty() {
+        return Err("There is no script yet.".into());
     }
-    if params.voice_id.trim().is_empty() {
-        return Err("Pick a voice.".into());
+    if p.voice_id.trim().is_empty() || (p.voice_source != "elevenlabs" && p.speech_model.trim().is_empty()) {
+        return Err("No voice chosen yet — pick one (list_voices) and pass it to make_video.".into());
     }
-    let source = if params.voice_source == "elevenlabs" { "elevenlabs" } else { "openrouter" };
-    if source == "openrouter" && params.speech_model.trim().is_empty() {
-        return Err("Pick a speech model.".into());
-    }
-    if params.image_model.trim().is_empty() {
-        return Err("Pick an image model.".into());
-    }
-    // A fresh run: earlier AI images and steps go, the real assets stay.
-    let dir = dir_of(&p.id);
-    for a in p.assets.iter().filter(|a| a.kind == "ai") {
-        let _ = std::fs::remove_file(format!("{dir}/assets/{}", a.file));
-    }
-    motion.update(&app, &params.id, |p| {
+    // The image model: the person's choice, else the newest that can cut out.
+    let image_model = match key(&settings(app), "motionImageModel") {
+        m if !m.is_empty() => m,
+        _ => motion_image_models(app.clone())
+            .await?
+            .first()
+            .and_then(|m| m["id"].as_str().map(String::from))
+            .ok_or("OpenRouter lists no image model that can make transparent images.")?,
+    };
+    let cost_before = p.cost;
+    motion.update(app, id, |p| {
         p.status = "running".into();
-        p.title = if params.title.trim().is_empty() { p.title.clone() } else { params.title.trim().to_string() };
-        p.script = script;
-        p.voice_id = params.voice_id;
-        p.voice_name = params.voice_name;
-        p.voice_source = source.into();
-        p.speech_model = params.speech_model;
-        p.image_model = params.image_model;
-        p.assets.retain(|a| a.kind != "ai");
+        p.image_model = image_model;
         p.steps.clear();
-        p.cost = 0.0;
         p.error = None;
-        p.video_id = None;
     });
-    motion.0.stops.lock().unwrap().insert(params.id.clone(), Arc::new(AtomicBool::new(false)));
-    let job = Job { app: app.clone(), motion: motion.clone(), id: params.id.clone(), dir };
-    tauri::async_runtime::spawn(async move {
-        let outcome = make(&job).await;
-        job.motion.0.stops.lock().unwrap().remove(&job.id);
-        let title = job.project().title;
-        job.motion.update(&job.app, &job.id, |p| match outcome {
-            Ok(()) => p.status = "done".into(),
-            Err(e) if e == "stopped" => p.status = "stopped".into(),
-            Err(e) => {
-                p.status = "failed".into();
-                p.error = Some(e);
+    let flag = Arc::new(AtomicBool::new(false));
+    motion.0.stops.lock().unwrap().insert(id.to_string(), flag.clone());
+    let job = Job { app: app.clone(), motion: motion.clone(), id: id.to_string(), dir: dir_of(id) };
+    let feedback = feedback.to_string();
+    let work = tauri::async_runtime::spawn(async move {
+        let r = make(&job, from, &feedback).await;
+        (job, r)
+    });
+    tokio::pin!(work);
+    let (job, outcome) = loop {
+        tokio::select! {
+            done = &mut work => break done.map_err(|e| e.to_string())?,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(700)) => {
+                if cancelled() {
+                    flag.store(true, Ordering::Relaxed);
+                }
+                if let Some(s) = motion.get(id).and_then(|p| p.steps.into_iter().rev().find(|s| s.ok.is_none())) {
+                    progress(&s.title);
+                }
             }
-        });
-        let p = job.project();
-        match p.status.as_str() {
-            "done" => notify(&job.app, "Video ready", &title),
-            "failed" => notify(&job.app, "Video failed", p.error.as_deref().unwrap_or(&title)),
-            _ => {}
+        }
+    };
+    motion.0.stops.lock().unwrap().remove(id);
+    motion.update(app, id, |p| match &outcome {
+        Ok(_) => p.status = "done".into(),
+        Err(e) if e == "stopped" => p.status = "stopped".into(),
+        Err(e) => {
+            p.status = "failed".into();
+            p.error = Some(e.clone());
         }
     });
-    Ok(())
+    let video_id = outcome?;
+    let p = job.project();
+    let steps: Vec<String> = p
+        .steps
+        .iter()
+        .map(|s| format!("- {}{}", s.title, s.detail.as_ref().map(|d| format!(": {d}")).unwrap_or_default()))
+        .collect();
+    let summary = format!(
+        "Video ready (version {}). It is shown to the person in the chat and saved in their library.\nCost of this run: ${:.3} on OpenRouter{}.\nWhat was done:\n{}",
+        p.versions,
+        p.cost - cost_before,
+        if p.voice_source == "elevenlabs" && from == From::Voice { format!(" + {} ElevenLabs characters", p.script.chars().count()) } else { String::new() },
+        steps.join("\n")
+    );
+    Ok((video_id, summary))
 }
 
-fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
-    let Some(n) = app.try_state::<tauri_plugin_notification::Notification<R>>() else { return };
-    let body: String = body.chars().take(180).collect();
-    let _ = n.builder().title(title).body(body).show();
+/// The voices on offer, as text for the agent: OpenRouter's speech models with
+/// their voices, and the person's ElevenLabs voices when they have a key.
+pub async fn voice_catalog<R: Runtime>(app: &AppHandle<R>) -> String {
+    let mut out = String::new();
+    match motion_speech_models(app.clone()).await {
+        Ok(models) => {
+            out.push_str("OpenRouter speech models (voice_source \"openrouter\"; voice = one of the names listed):\n");
+            for m in models.iter().take(14) {
+                let voices: Vec<&str> = m["voices"].as_array().map(|v| v.iter().filter_map(|x| x.as_str()).take(40).collect()).unwrap_or_default();
+                out.push_str(&format!("- {} ({}): {}\n", m["id"].as_str().unwrap_or(""), m["name"].as_str().unwrap_or(""), voices.join(", ")));
+            }
+            out.push_str("Good defaults: elevenlabs/eleven-v4 (most natural; voices are ElevenLabs' stock voices), google/gemini-3.8-flash-tts (cheapest, many languages).\n");
+        }
+        Err(e) => out.push_str(&format!("(OpenRouter speech models unavailable: {e})\n")),
+    }
+    match motion_voices(app.clone()).await {
+        Ok(voices) => {
+            out.push_str("\nThe person's own ElevenLabs account (voice_source \"elevenlabs\"; voice = the id):\n");
+            for v in voices.iter().take(40) {
+                out.push_str(&format!("- {} — id {} — {}\n", v["name"].as_str().unwrap_or(""), v["id"].as_str().unwrap_or(""), v["tags"].as_str().unwrap_or("")));
+            }
+        }
+        Err(_) => out.push_str("\n(No ElevenLabs key in Settings, so only the OpenRouter voices are available.)\n"),
+    }
+    out
+}
+
+/// A short sample of a voice, saved in the project for the chat to play.
+/// Returns the file name under samples/.
+pub async fn sample<R: Runtime>(app: &AppHandle<R>, id: &str, source: &str, model: &str, voice: &str, text: &str) -> Result<String, String> {
+    let dir = format!("{}/samples", dir_of(id));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let text: String = if text.trim().is_empty() { "Here is how this voice sounds.".into() } else { text.chars().take(200).collect() };
+    let (bytes, ext) = if source == "elevenlabs" {
+        let k = key(&settings(app), "elevenlabsKey");
+        let resp = reqwest::Client::new()
+            .post(format!("{ELEVEN}/v1/text-to-speech/{voice}?output_format=mp3_44100_128"))
+            .header("xi-api-key", &k)
+            .json(&json!({ "text": text, "model_id": "eleven_v4" }))
+            .send()
+            .await
+            .map_err(|e| format!("ElevenLabs: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            return Err(eleven_error(status, &resp.text().await.unwrap_or_default()));
+        }
+        (resp.bytes().await.map_err(|e| e.to_string())?.to_vec(), "mp3")
+    } else {
+        let (b, ext, _) = or_speech(&key(&settings(app), "openrouterKey"), model, voice, &text).await?;
+        (b, ext)
+    };
+    let file = format!("{}.{ext}", uuid::Uuid::new_v4());
+    std::fs::write(format!("{dir}/{file}"), bytes).map_err(|e| e.to_string())?;
+    Ok(file)
+}
+
+/// A voice sample, as a data URL the chat can play.
+#[tauri::command]
+pub fn motion_audio(id: String, file: String) -> Result<String, String> {
+    let file = file.rsplit('/').next().unwrap_or("").to_string();
+    if file.is_empty() || file.starts_with('.') {
+        return Err("bad file".into());
+    }
+    let bytes = std::fs::read(format!("{}/samples/{file}", dir_of(&id))).map_err(|_| "that sample is gone".to_string())?;
+    let mime = if file.ends_with(".wav") { "audio/wav" } else { "audio/mpeg" };
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+/// Remove a project with its chat.
+pub fn delete<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    let m = app.state::<Motion>();
+    if let Some(f) = m.0.stops.lock().unwrap().get(id) {
+        f.store(true, Ordering::Relaxed);
+    }
+    m.ensure_loaded();
+    m.0.projects.lock().unwrap().remove(id);
+    let _ = std::fs::remove_dir_all(dir_of(id));
 }
 
 /// The project, or nothing if it has not changed since `since`.
@@ -1677,17 +1825,6 @@ pub fn motion_get<R: Runtime>(app: AppHandle<R>, id: String, since: Option<u64>)
     Ok((since.map_or(true, |r| p.rev > r)).then_some(p))
 }
 
-/// Projects, newest first, without their research text.
-#[tauri::command]
-pub fn motion_list<R: Runtime>(app: AppHandle<R>) -> Vec<Value> {
-    let m = app.state::<Motion>();
-    m.ensure_loaded();
-    let map = m.0.projects.lock().unwrap();
-    let mut out: Vec<&Project> = map.values().collect();
-    out.sort_by(|a, b| b.created.cmp(&a.created));
-    out.iter().map(|p| json!({ "id": p.id, "title": p.title, "status": p.status, "created": p.created, "rev": p.rev })).collect()
-}
-
 #[tauri::command]
 pub fn motion_stop<R: Runtime>(app: AppHandle<R>, id: String) {
     if let Some(f) = app.state::<Motion>().0.stops.lock().unwrap().get(&id) {
@@ -1695,89 +1832,49 @@ pub fn motion_stop<R: Runtime>(app: AppHandle<R>, id: String) {
     }
 }
 
-#[tauri::command]
-pub fn motion_delete<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
-    motion_stop(app.clone(), id.clone());
-    let m = app.state::<Motion>();
-    m.ensure_loaded();
-    m.0.projects.lock().unwrap().remove(&id);
-    let _ = std::fs::remove_dir_all(dir_of(&id));
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The whole pipeline against the real services: script → voice → images →
-    /// sound → animation → render. Ignored by default: it needs
-    /// ELEVENLABS_API_KEY and OPENROUTER_API_KEY in the environment, Chrome and
-    /// ffmpeg, and spends real money (a few images, ~40 words of voice).
+    /// The whole pipeline against the real services, as the chat drives it:
+    /// voice → images → sound → animation → render, then a revision of the
+    /// animation only. Ignored by default: it needs OPENROUTER_API_KEY in the
+    /// environment, Chrome and ffmpeg, and spends a few cents.
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
-    async fn makes_a_spot_end_to_end() {
-        let (eleven, or) = (std::env::var("ELEVENLABS_API_KEY").unwrap(), std::env::var("OPENROUTER_API_KEY").unwrap());
+    async fn makes_and_revises_a_spot_end_to_end() {
+        let or = std::env::var("OPENROUTER_API_KEY").unwrap();
         let app = tauri::test::mock_builder()
             .manage(Motion::default())
             .manage(crate::server::RemoteSettings::default())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let handle = app.handle().clone();
-        handle
-            .state::<crate::server::RemoteSettings>()
-            .set(json!({ "openrouterKey": or, "elevenlabsKey": eleven }).to_string());
+        handle.state::<crate::server::RemoteSettings>().set(json!({ "openrouterKey": or }).to_string());
         let model = std::env::var("MOTION_TEXT_MODEL").unwrap_or("google/gemini-3.8-flash".into());
-        let brief = Brief {
-            product: "Green Reader — an iPhone app that reads a golf green with LiDAR and shows the putt line in AR".into(),
-            audience: "amateur golfers".into(),
-            message: "see the break before you putt".into(),
-            tone: "Bold & energetic".into(),
+        let p = create(&handle, "https://openrouter.ai/api/v1", &model);
+        let catalog = voice_catalog(&handle).await;
+        assert!(catalog.contains("gemini"), "{catalog}");
+        apply(&handle, &p.id, &Spec {
+            title: "See the Break".into(),
+            script: "Stop guessing your putts. Green Reader reads the green with your iPhone's LiDAR and shows your line in augmented reality. See the break before you putt.".into(),
             kind: "ad".into(),
             format: "9:16".into(),
-            seconds: 15,
-            language: "English".into(),
+            tone: "Bold & energetic".into(),
+            voice_source: "openrouter".into(),
+            speech_model: "google/gemini-3.8-flash-tts".into(),
+            voice: "Puck".into(),
             ..Default::default()
-        };
-        let p = motion_script(handle.clone(), ScriptParams { brief, images: vec![], base_url: "https://openrouter.ai/api/v1".into(), model })
+        });
+        let show = |s: &str| println!("… {s}");
+        let (v1, summary) = run(&handle, &p.id, From::Voice, "", show, || false).await.unwrap();
+        println!("{summary}");
+        let (v2, summary) = run(&handle, &p.id, From::Animation, "Make the end card's call to action twice as big and hold it longer.", show, || false)
             .await
             .unwrap();
-        println!("SCRIPT {}: {}", p.title, p.script);
-        let models = motion_image_models(handle.clone()).await.unwrap();
-        // MOTION_VOICE=openrouter (default) or elevenlabs.
-        let (voice_source, speech_model, voice_id, voice_name) = if std::env::var("MOTION_VOICE").as_deref() == Ok("elevenlabs") {
-            let v = motion_voices(handle.clone()).await.unwrap()[0].clone();
-            ("elevenlabs".to_string(), String::new(), v["id"].as_str().unwrap().to_string(), v["name"].as_str().unwrap().to_string())
-        } else {
-            let speech = motion_speech_models(handle.clone()).await.unwrap();
-            let m = speech.iter().find(|m| m["id"] == "google/gemini-3.8-flash-tts").unwrap_or(&speech[0]).clone();
-            let v = m["voices"][0].as_str().unwrap().to_string();
-            ("openrouter".to_string(), m["id"].as_str().unwrap().to_string(), v.clone(), v)
-        };
-        println!("VOICE {voice_name} via {voice_source} {speech_model} · IMAGE MODEL {}", models[0]["id"]);
-        motion_make(handle.clone(), MakeParams {
-            id: p.id.clone(), title: p.title.clone(), script: p.script.clone(),
-            voice_id, voice_name, voice_source, speech_model,
-            image_model: models[0]["id"].as_str().unwrap().into(),
-        })
-        .unwrap();
-        let mut seen = 0;
-        let done = loop {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let p = motion_get(handle.clone(), p.id.clone(), None).unwrap().unwrap();
-            for s in p.steps.iter().skip(seen) {
-                if s.ok.is_some() {
-                    println!("{} {} — {}", if s.ok == Some(true) { "✓" } else { "✗" }, s.title, s.detail.clone().unwrap_or_default());
-                    seen += 1;
-                } else {
-                    break;
-                }
-            }
-            if p.status != "running" {
-                break p;
-            }
-        };
-        println!("STATUS {} ERROR {:?} COST ${:.2} DIR {}", done.status, done.error, done.cost, dir_of(&done.id));
-        assert_eq!(done.status, "done");
+        println!("{summary}\nDIR {}", dir_of(&p.id));
+        assert_ne!(v1, v2);
+        assert!(summary.contains("Revising the animation") && !summary.contains("Recording the voice"), "{summary}");
     }
 
     /// Re-mix a finished project: MOTION_DIR=~/.ai-box/motion/<id>.

@@ -7,7 +7,19 @@ import type { Attached } from "./attachments";
 export interface TaskStep {
   at: number;
   /** `user` and `reply` are the conversation; the rest are its work. */
-  kind: "user" | "reply" | "note" | "error" | "browser" | "terminal" | "file" | "web" | "ask" | "mac";
+  kind:
+    | "user"
+    | "reply"
+    | "note"
+    | "error"
+    | "browser"
+    | "terminal"
+    | "file"
+    | "web"
+    | "ask"
+    | "mac"
+    | "video"
+    | "audio";
   title: string;
   detail?: string;
   /** Unset while the step is still running. */
@@ -39,9 +51,11 @@ export interface Task {
   result?: string;
   error?: string;
   shot?: string;
+  /** "video" for a Video tab chat. */
+  kind?: string;
 }
 
-export type TaskSummary = Pick<Task, "id" | "goal" | "status" | "created" | "updated" | "rev">;
+export type TaskSummary = Pick<Task, "id" | "goal" | "status" | "created" | "updated" | "rev" | "kind">;
 
 /** A new conversation. `history` is plain text turns from before it became a
  *  task, so an older chat carries on rather than starting cold. */
@@ -50,8 +64,9 @@ export const startTask = (
   images: Attached[],
   baseUrl: string,
   model: string,
-  history: { role: "user" | "assistant"; content: string }[] = []
-) => invokeCmd<Task>("task_start", { goal, images, baseUrl, model, history });
+  history: { role: "user" | "assistant"; content: string }[] = [],
+  kind = ""
+) => invokeCmd<Task>("task_start", { goal, images, baseUrl, model, history, kind });
 
 /** Say more: steers it while it works, answers what it waits on, or carries
  *  the conversation on once it has finished. */
