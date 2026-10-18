@@ -86,16 +86,14 @@ export interface Settings {
   imageOutWidth: number;
   imageOutHeight: number;
 
-  // Video generation (OpenRouter /api/v1/videos). The model list is live, so
-  // only the last-used choices are stored — never a hardcoded catalog.
-  videoModel: string;
-  videoDuration: number;
-  videoResolution: string;
-  videoAspect: string;
-  videoAudio: boolean;
-  /** Shots in a storyboarded spot. 1 means a single-clip ad. */
-  videoShots: number;
-  // Motion graphics (Video → Motion graphics): last choices, kept between videos.
+  // Video (motion graphics): last choices, kept between videos.
+  /** Where the voice comes from: any speech model on OpenRouter (one key for
+   *  everything), or ElevenLabs on its own key (free voice previews). */
+  motionVoiceSource: "openrouter" | "elevenlabs";
+  motionSpeechModel: string;
+  /** The voice on the OpenRouter speech model. */
+  motionOrVoice: string;
+  /** The ElevenLabs voice id, for the ElevenLabs route. */
   motionVoice: string;
   motionImageModel: string;
   motionFormat: "9:16" | "16:9" | "1:1";
@@ -234,12 +232,9 @@ export const DEFAULT_SETTINGS: Settings = {
   imageOutWidth: 2400,
   imageOutHeight: 2400,
 
-  videoModel: "",
-  videoDuration: 0,
-  videoResolution: "",
-  videoAspect: "16:9",
-  videoAudio: true,
-  videoShots: 4,
+  motionVoiceSource: "openrouter",
+  motionSpeechModel: "",
+  motionOrVoice: "",
   motionVoice: "",
   motionImageModel: "",
   motionFormat: "9:16",

@@ -645,11 +645,6 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
         // key; the Mac lists them on its own key for that provider. Missing
         // from here, the phone's pickers said "no models; check the key" while
         // the very same key was doing the work.
-        "list_provider_video_models" => {
-            let provider = s("provider");
-            let key = mac_key_for(&ctx.settings.value(), "", &format!("{provider}:"));
-            Ok(json!(crate::video::list_provider_video_models(provider, key).await?))
-        }
         "list_provider_image_models" => {
             let provider = s("provider");
             let key = mac_key_for(&ctx.settings.value(), "", &format!("{provider}:"));
@@ -729,6 +724,8 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
         // Motion graphics. Like a task, the job runs on the Mac with the Mac's
         // keys (ElevenLabs, OpenRouter); the phone starts and watches it.
         "motion_voices" => serde_json::to_value(crate::motion::motion_voices(ctx.app.clone()).await?).map_err(|e| e.to_string()),
+        "motion_speech_models" => serde_json::to_value(crate::motion::motion_speech_models(ctx.app.clone()).await?).map_err(|e| e.to_string()),
+        "motion_voice_sample" => Ok(Value::String(crate::motion::motion_voice_sample(ctx.app.clone(), s("model"), s("voice"), s("text")).await?)),
         "motion_image_models" => serde_json::to_value(crate::motion::motion_image_models(ctx.app.clone()).await?).map_err(|e| e.to_string()),
         "motion_script" => serde_json::to_value(crate::motion::motion_script(ctx.app.clone(), params(&args)?).await?).map_err(|e| e.to_string()),
         "motion_make" => crate::motion::motion_make(ctx.app.clone(), params(&args)?).map(|_| Value::Null),
@@ -764,35 +761,6 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
                 .unwrap_or_default();
             Ok(Value::String(crate::export_library(files)?))
         }
-        // --- video generation (safe) — the Mac injects its own OpenRouter key ---
-        // Generation is async, so the phone drives create → status → download
-        // exactly as the desktop does; only the key handling differs.
-        "list_video_models" | "video_create" | "video_status" | "video_download" => {
-            // Whose key: the model says it when creating, the job id when
-            // polling ("google:…"), and the file's address when downloading.
-            let p = &args["params"];
-            let url = p["url"].as_str().unwrap_or("");
-            let owner = if url.starts_with("https://generativelanguage.googleapis.com") {
-                "google:".to_string()
-            } else if url.starts_with("https://api.openai.com") {
-                "openai:".to_string()
-            } else {
-                p["model"].as_str().or(p["jobId"].as_str()).unwrap_or("").to_string()
-            };
-            let a = inject_key_value(
-                args.clone(),
-                &mac_key_for(&ctx.settings.value(), "https://openrouter.ai", &owner),
-            );
-            match command {
-                "list_video_models" => {
-                    serde_json::to_value(crate::video::list_video_models(params(&a)?).await?)
-                        .map_err(|e| e.to_string())
-                }
-                "video_create" => crate::video::video_create(params(&a)?).await,
-                "video_status" => crate::video::video_status(params(&a)?).await,
-                _ => crate::video::video_download(params(&a)?).await,
-            }
-        }
         "video_put" => {
             crate::video::video_put(s("id"), s("record"))?;
             Ok(Value::Null)
@@ -807,16 +775,6 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
         "video_save" => {
             let name = args.get("name").and_then(|v| v.as_str()).map(|x| x.to_string());
             Ok(Value::String(crate::video::video_save(s("id"), name)?))
-        }
-        "video_stitch_available" => Ok(Value::Bool(crate::video::video_stitch_available())),
-        "video_stitch" => {
-            let ids: Vec<String> = args
-                .get("ids")
-                .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-                .unwrap_or_default();
-            let name = args.get("name").and_then(|v| v.as_str()).map(|x| x.to_string());
-            Ok(Value::String(crate::video::video_stitch(ids, name).await?))
         }
         "image_get" => Ok(crate::image_get(s("id")).map(Value::String).unwrap_or(Value::Null)),
         "image_delete" => {

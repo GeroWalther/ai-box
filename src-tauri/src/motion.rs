@@ -10,10 +10,13 @@
 //      real product, never an invented one.
 //   2. Script. The text model writes it; the person edits and approves it
 //      before anything that costs money runs.
-//   3. Voice. ElevenLabs reads the whole script in one take (more natural than
-//      sentence by sentence) and returns the time of every character. Those
-//      become word times, and every animation is placed on them — that is what
-//      makes the picture land on the word.
+//   3. Voice. The whole script in one take (more natural than sentence by
+//      sentence), then the time of every word. Two routes: ElevenLabs on the
+//      person's own key returns character times with the audio; any speech
+//      model on OpenRouter (ElevenLabs, Gemini, MiniMax…) needs no second key,
+//      and its word times come from a transcription of the take. Every
+//      animation is placed on those times — that is what makes the picture
+//      land on the word.
 //   4. Look + images. The text model plans the look, the image motifs and the
 //      sound accents; the images are made with a transparent background so the
 //      composition can move, turn and combine them rather than show slides.
@@ -126,6 +129,12 @@ pub struct Project {
     pub script: String,
     pub voice_id: String,
     pub voice_name: String,
+    /// "elevenlabs" (own key) | "openrouter"
+    #[serde(default)]
+    pub voice_source: String,
+    /// The OpenRouter speech model, when voice_source is "openrouter".
+    #[serde(default)]
+    pub speech_model: String,
     pub image_model: String,
     pub text_model: String,
     pub base_url: String,
@@ -593,6 +602,8 @@ pub async fn motion_script<R: Runtime>(app: AppHandle<R>, params: ScriptParams) 
         script,
         voice_id: String::new(),
         voice_name: String::new(),
+        voice_source: String::new(),
+        speech_model: String::new(),
         image_model: String::new(),
         text_model: params.model,
         base_url: params.base_url,
@@ -644,7 +655,23 @@ fn words_from(alignment: &Value, offset: f64) -> Vec<Word> {
     out
 }
 
-async fn voice<R: Runtime>(job: &Job<R>, p: &Project) -> Result<(Vec<Word>, f64), String> {
+/// The recorded take, whichever route made it.
+fn voice_file(dir: &str) -> String {
+    let wav = format!("{dir}/voice.wav");
+    if std::path::Path::new(&wav).exists() { wav } else { format!("{dir}/voice.mp3") }
+}
+
+async fn voice<R: Runtime>(job: &Job<R>, p: &Project) -> Result<(Vec<Word>, f64, f64), String> {
+    let _ = std::fs::remove_file(job.path("voice.wav"));
+    let _ = std::fs::remove_file(job.path("voice.mp3"));
+    if p.voice_source == "elevenlabs" {
+        let (w, d) = voice_elevenlabs(job, p).await?;
+        return Ok((w, d, 0.0));
+    }
+    voice_openrouter(job, p).await
+}
+
+async fn voice_elevenlabs<R: Runtime>(job: &Job<R>, p: &Project) -> Result<(Vec<Word>, f64), String> {
     let k = key(&settings(&job.app), "elevenlabsKey");
     if k.is_empty() {
         return Err("No ElevenLabs key — add it in Settings.".into());
@@ -672,6 +699,173 @@ async fn voice<R: Runtime>(job: &Job<R>, p: &Project) -> Result<(Vec<Word>, f64)
     let spoken = probe_seconds(&job.path("voice.mp3")).await.unwrap_or_else(|| words.last().map_or(0.0, |w| w.e - LEAD));
     std::fs::write(job.path("words.json"), serde_json::to_string(&words).unwrap_or_default()).map_err(|e| e.to_string())?;
     Ok((words, spoken))
+}
+
+/// Speech from an OpenRouter model. Returns the audio and its file extension.
+/// Most models answer in MP3; some (Gemini) only in raw PCM, which is wrapped
+/// as WAV here using the rate the response declares.
+async fn or_speech(key: &str, model: &str, voice: &str, text: &str) -> Result<(Vec<u8>, &'static str, Option<String>), String> {
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(240)).build().map_err(|e| e.to_string())?;
+    let mut format = "mp3";
+    loop {
+        let resp = client
+            .post("https://openrouter.ai/api/v1/audio/speech")
+            .header("Authorization", format!("Bearer {key}"))
+            .header("HTTP-Referer", "https://ai-box.local")
+            .header("X-Title", "AI Box")
+            .json(&json!({ "model": model, "input": text, "voice": voice, "response_format": format }))
+            .send()
+            .await
+            .map_err(|e| format!("speech request failed: {e}"))?;
+        let status = resp.status();
+        let ctype = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        let gen = resp.headers().get("x-generation-id").and_then(|v| v.to_str().ok()).map(String::from);
+        let bytes = resp.bytes().await.map_err(|e| e.to_string())?.to_vec();
+        if !status.is_success() {
+            let body = String::from_utf8_lossy(&bytes).to_string();
+            if format == "mp3" && body.contains("pcm") {
+                format = "pcm";
+                continue;
+            }
+            return Err(format!("{model}: {}", crate::friendly_http_error(status, &body)));
+        }
+        if ctype.starts_with("audio/pcm") || format == "pcm" {
+            let param = |k: &str| ctype.split(';').find_map(|p| p.trim().strip_prefix(k).and_then(|v| v.parse::<u32>().ok()));
+            return Ok((pcm_wav(&bytes, param("rate=").unwrap_or(24_000), param("channels=").unwrap_or(1) as u16), "wav", gen));
+        }
+        return Ok((bytes, "mp3", gen));
+    }
+}
+
+/// 16-bit little-endian PCM → a WAV file.
+fn pcm_wav(pcm: &[u8], rate: u32, channels: u16) -> Vec<u8> {
+    let mut out = Vec::with_capacity(44 + pcm.len());
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + pcm.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * channels as u32 * 2).to_le_bytes());
+    out.extend_from_slice(&(channels * 2).to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
+    out.extend_from_slice(pcm);
+    out
+}
+
+/// What a generation cost, as OpenRouter bills it. Best effort: the record
+/// can take a moment to appear.
+async fn generation_cost(key: &str, id: &str) -> f64 {
+    for _ in 0..4 {
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        let Ok(r) = reqwest::Client::new()
+            .get(format!("https://openrouter.ai/api/v1/generation?id={id}"))
+            .header("Authorization", format!("Bearer {key}"))
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if let Ok(v) = r.json::<Value>().await {
+            if let Some(c) = v["data"]["total_cost"].as_f64() {
+                return c;
+            }
+        }
+    }
+    0.0
+}
+
+/// Word times for a take, from a transcription. The script goes along as the
+/// prompt, so names and brand words are heard the way they are written.
+async fn transcribe_words(key: &str, path: &str, script: &str) -> Result<(Vec<Word>, f64), String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let name = path.rsplit('/').next().unwrap_or("voice.mp3").to_string();
+    let mime = if name.ends_with(".wav") { "audio/wav" } else { "audio/mpeg" };
+    let form = reqwest::multipart::Form::new()
+        .text("model", "openai/whisper-1")
+        .text("response_format", "verbose_json")
+        .text("timestamp_granularities[]", "word")
+        .text("prompt", script.chars().take(800).collect::<String>())
+        .part("file", reqwest::multipart::Part::bytes(bytes).file_name(name).mime_str(mime).map_err(|e| e.to_string())?);
+    let resp = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|e| e.to_string())?
+        .post("https://openrouter.ai/api/v1/audio/transcriptions")
+        .header("Authorization", format!("Bearer {key}"))
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("transcription failed: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("Word timing: {}", crate::friendly_http_error(status, &text)));
+    }
+    let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let words: Vec<Word> = v["words"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|w| Some(Word { w: w["word"].as_str()?.trim().to_string(), s: w["start"].as_f64()? + LEAD, e: w["end"].as_f64()? + LEAD }))
+        .collect();
+    if words.is_empty() {
+        return Err("The transcription returned no word times.".into());
+    }
+    Ok((words, v["usage"]["cost"].as_f64().unwrap_or(0.0)))
+}
+
+async fn voice_openrouter<R: Runtime>(job: &Job<R>, p: &Project) -> Result<(Vec<Word>, f64, f64), String> {
+    let k = key(&settings(&job.app), "openrouterKey");
+    let (audio, ext, gen) = or_speech(&k, &p.speech_model, &p.voice_id, &p.script).await?;
+    let file = job.path(&format!("voice.{ext}"));
+    std::fs::write(&file, &audio).map_err(|e| e.to_string())?;
+    let (words, timing_cost) = transcribe_words(&k, &file, &p.script).await?;
+    let spoken = probe_seconds(&file).await.unwrap_or_else(|| words.last().map_or(0.0, |w| w.e - LEAD));
+    std::fs::write(job.path("words.json"), serde_json::to_string(&words).unwrap_or_default()).map_err(|e| e.to_string())?;
+    let speech_cost = match gen {
+        Some(id) => generation_cost(&k, &id).await,
+        None => 0.0,
+    };
+    Ok((words, spoken, speech_cost + timing_cost))
+}
+
+/// OpenRouter's speech models, each with the voices it offers, newest first.
+#[tauri::command]
+pub async fn motion_speech_models<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Value>, String> {
+    let s = settings(&app);
+    let resp = reqwest::Client::new()
+        .get("https://openrouter.ai/api/v1/models?output_modalities=speech")
+        .header("Authorization", format!("Bearer {}", key(&s, "openrouterKey")))
+        .send()
+        .await
+        .map_err(|e| format!("Speech model list failed: {e}"))?;
+    let json: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let mut out: Vec<Value> = json["data"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| m["supported_voices"].as_array().map_or(false, |v| !v.is_empty()))
+        .map(|m| json!({ "id": m["id"], "name": m["name"], "created": m["created"], "voices": m["supported_voices"] }))
+        .collect();
+    out.sort_by(|a, b| b["created"].as_u64().cmp(&a["created"].as_u64()));
+    Ok(out)
+}
+
+/// A short paid sample of an OpenRouter voice (a fraction of a cent), as a
+/// data URL to play. ElevenLabs voices have free previews; these do not.
+#[tauri::command]
+pub async fn motion_voice_sample<R: Runtime>(app: AppHandle<R>, model: String, voice: String, text: String) -> Result<String, String> {
+    let k = key(&settings(&app), "openrouterKey");
+    let text: String = if text.trim().is_empty() { "Here is how this voice sounds.".into() } else { text.chars().take(160).collect() };
+    let (audio, ext, _) = or_speech(&k, &model, &voice, &text).await?;
+    let mime = if ext == "wav" { "audio/wav" } else { "audio/mpeg" };
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(audio)))
 }
 
 async fn probe_seconds(path: &str) -> Option<f64> {
@@ -958,7 +1152,7 @@ fn write_wav(path: &str, samples: &[[f32; 2]]) -> Result<(), String> {
 }
 
 fn ffmpeg() -> Option<String> {
-    crate::video::ffmpeg_path()
+    crate::video::ffmpeg_bin()
 }
 
 async fn run_ffmpeg(args: &[String]) -> Result<String, String> {
@@ -980,7 +1174,7 @@ async fn run_ffmpeg(args: &[String]) -> Result<String, String> {
 async fn mix(dir: &str, total: f64) -> Result<String, String> {
     let s = |x: &str| x.to_string();
     let inputs = || vec![
-        s("-y"), s("-i"), format!("{dir}/voice.mp3"), s("-i"), format!("{dir}/music.wav"), s("-i"), format!("{dir}/sfx.wav"),
+        s("-y"), s("-i"), voice_file(dir), s("-i"), format!("{dir}/music.wav"), s("-i"), format!("{dir}/sfx.wav"),
     ];
     let base = format!(
         "[0:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay={ms}|{ms},apad[v];\
@@ -1197,7 +1391,7 @@ async fn make<R: Runtime>(job: &Job<R>) -> Result<(), String> {
     let s = settings(&job.app);
     let or_key = key(&s, "openrouterKey");
     if or_key.is_empty() {
-        return Err("The images are made through OpenRouter — add an OpenRouter key in Settings.".into());
+        return Err("Images (and the voice, unless it's ElevenLabs on your own key) come through OpenRouter — add an OpenRouter key in Settings.".into());
     }
     if ffmpeg().is_none() {
         return Err("Motion video needs ffmpeg: install it with `brew install ffmpeg`.".into());
@@ -1205,14 +1399,27 @@ async fn make<R: Runtime>(job: &Job<R>) -> Result<(), String> {
     let (w, h) = stage_size(&p.brief.format);
 
     // 3. Voice.
-    let (words, spoken) = job
-        .step(&format!("Recording the voice · {}", p.voice_name), async {
+    let via = if p.voice_source == "elevenlabs" {
+        "ElevenLabs".to_string()
+    } else {
+        p.speech_model.split('/').last().unwrap_or(&p.speech_model).to_string()
+    };
+    let (words, spoken, voice_cost) = job
+        .step(&format!("Recording the voice · {} · {via}", p.voice_name), async {
             let r = voice(job, &p).await?;
-            let detail = format!("{:.1} s spoken, {} words timed", r.1, r.0.len());
+            let mut detail = format!("{:.1} s spoken, {} words timed", r.1, r.0.len());
+            if r.2 > 0.0 {
+                detail.push_str(&format!(" · ${:.3}", r.2));
+            }
             Ok((r, Some(detail)))
         })
         .await?;
-    job.motion.update(&job.app, &job.id, |p| p.voice_chars += p.script.chars().count());
+    job.motion.update(&job.app, &job.id, |p| {
+        if p.voice_source == "elevenlabs" {
+            p.voice_chars += p.script.chars().count();
+        }
+        p.cost += voice_cost;
+    });
     let dur = LEAD + spoken + TAIL;
 
     // 4. Look, images, accents.
@@ -1382,6 +1589,11 @@ pub struct MakeParams {
     pub voice_id: String,
     #[serde(default)]
     pub voice_name: String,
+    /// "elevenlabs" | "openrouter" (the default: one key for everything).
+    #[serde(default)]
+    pub voice_source: String,
+    #[serde(default)]
+    pub speech_model: String,
     pub image_model: String,
 }
 
@@ -1401,6 +1613,10 @@ pub fn motion_make<R: Runtime>(app: AppHandle<R>, params: MakeParams) -> Result<
     if params.voice_id.trim().is_empty() {
         return Err("Pick a voice.".into());
     }
+    let source = if params.voice_source == "elevenlabs" { "elevenlabs" } else { "openrouter" };
+    if source == "openrouter" && params.speech_model.trim().is_empty() {
+        return Err("Pick a speech model.".into());
+    }
     if params.image_model.trim().is_empty() {
         return Err("Pick an image model.".into());
     }
@@ -1415,6 +1631,8 @@ pub fn motion_make<R: Runtime>(app: AppHandle<R>, params: MakeParams) -> Result<
         p.script = script;
         p.voice_id = params.voice_id;
         p.voice_name = params.voice_name;
+        p.voice_source = source.into();
+        p.speech_model = params.speech_model;
         p.image_model = params.image_model;
         p.assets.retain(|a| a.kind != "ai");
         p.steps.clear();
@@ -1524,13 +1742,21 @@ mod tests {
             .await
             .unwrap();
         println!("SCRIPT {}: {}", p.title, p.script);
-        let voices = motion_voices(handle.clone()).await.unwrap();
-        let v = &voices[0];
         let models = motion_image_models(handle.clone()).await.unwrap();
-        println!("VOICE {} · IMAGE MODEL {}", v["name"], models[0]["id"]);
+        // MOTION_VOICE=openrouter (default) or elevenlabs.
+        let (voice_source, speech_model, voice_id, voice_name) = if std::env::var("MOTION_VOICE").as_deref() == Ok("elevenlabs") {
+            let v = motion_voices(handle.clone()).await.unwrap()[0].clone();
+            ("elevenlabs".to_string(), String::new(), v["id"].as_str().unwrap().to_string(), v["name"].as_str().unwrap().to_string())
+        } else {
+            let speech = motion_speech_models(handle.clone()).await.unwrap();
+            let m = speech.iter().find(|m| m["id"] == "google/gemini-3.8-flash-tts").unwrap_or(&speech[0]).clone();
+            let v = m["voices"][0].as_str().unwrap().to_string();
+            ("openrouter".to_string(), m["id"].as_str().unwrap().to_string(), v.clone(), v)
+        };
+        println!("VOICE {voice_name} via {voice_source} {speech_model} · IMAGE MODEL {}", models[0]["id"]);
         motion_make(handle.clone(), MakeParams {
             id: p.id.clone(), title: p.title.clone(), script: p.script.clone(),
-            voice_id: v["id"].as_str().unwrap().into(), voice_name: v["name"].as_str().unwrap().into(),
+            voice_id, voice_name, voice_source, speech_model,
             image_model: models[0]["id"].as_str().unwrap().into(),
         })
         .unwrap();

@@ -4,8 +4,8 @@
 
 A native macOS app that puts five things behind one window: an **agentic chat**
 that can actually touch your machine, a **writing studio** for long-form prose and
-everyday copy, **image generation** that runs on your own GPU, **video generation**
-that boards and renders a whole ad, and a real **terminal**. Then it does the part nobody else does — it hands you all of that on
+everyday copy, **image generation** that runs on your own GPU, **motion-graphics
+videos** — voiced, scored and animated explainers and ads, and a real **terminal**. Then it does the part nobody else does — it hands you all of that on
 your phone, over your own network, with your Mac still holding the keys.
 
 Built with **Tauri 2 + React + Rust**. Bring your own model: any OpenRouter model,
@@ -46,22 +46,21 @@ manuscript — the prompt is composed from your prose *and* your Story Bible, so
 recurring characters stay visually consistent.
 
 ### 🎬 Video
-Make a finished spot, not a novelty clip. Pick any video model OpenRouter carries
-— Kling v3, Veo 3.1, Seedance 2.5, Sora 2 Pro, Wan, Hailuo, Runway — from a
-**live catalog**, never a hardcoded list, so a model released tomorrow shows up
-today. Every control is built from what that model actually accepts: its
-durations, resolutions, aspect ratios, first/last-frame slots, audio and seed
-support, so an invalid request can't be assembled.
+Animated explainers and ads, made end to end on your Mac. Describe it — or
+paste an App Store link, and the real icon and screenshots are used — then:
 
-- **Ad brief → shot language.** Say what the product is, who it's for and the
-  tone; your text model writes the prompt in the terms video models respond to —
-  shot size, lens, camera move, light, palette.
-- **Storyboard mode** boards a spot as *N* continuous shots that hold one look,
-  queues each as its own render, and **joins the finished shots into one MP4**
-  (needs `ffmpeg`).
-- **Renders are jobs, not requests.** Quit mid-render and the job is picked back
-  up next launch — a paid render is never lost with the window that started it.
-- Clips are stored on the Mac, so the library is the same on your phone.
+- **Approve the script first.** Your text model writes it; you edit it.
+  Nothing paid runs until you approve.
+- **A voice that drives the picture.** Any speech model on OpenRouter
+  (ElevenLabs, Gemini, MiniMax…), or ElevenLabs on your own key. Every word
+  gets a timestamp, and every animation is placed on the word it belongs to.
+- **Motion graphics, not slides.** Transparent cut-out images, kinetic type,
+  a background that never stops moving — written as one HTML page with a GSAP
+  timeline, then filmed frame by frame by a headless Chrome into an MP4.
+- **Its own sound.** Music and effects are synthesised on the Mac (no licences),
+  ducked under the voice, and mastered to −14 LUFS.
+- A 30-second video takes about four minutes and a few cents. It runs on the
+  Mac, so you can start and watch it from your phone. Needs Chrome and `ffmpeg`.
 
 ### 💻 Terminal
 A real PTY. `vim`, `top`, `claude`, whatever you like — including from your phone.

@@ -143,6 +143,11 @@ export default function SettingsModal({ settings, onChange, onClose, localModels
 
               <section>
                 <h3>Voice for videos</h3>
+                <p className="hint">
+                  Optional. Videos are voiced through OpenRouter by default; with your own
+                  ElevenLabs key you can use your ElevenLabs voices (and their free previews)
+                  instead.
+                </p>
                 <label>ElevenLabs API key</label>
                 <input
                   type="password"
@@ -151,9 +156,7 @@ export default function SettingsModal({ settings, onChange, onClose, localModels
                   onChange={(e) => onChange({ elevenlabsKey: e.target.value.trim() })}
                 />
                 <p className="hint">
-                  Speaks motion-graphics videos (Video → Motion graphics), with a timestamp for
-                  every word so the animation lands on it. Kept in the macOS keychain; billed
-                  to your ElevenLabs plan.
+                  Kept in the macOS keychain; billed to your ElevenLabs plan.
                 </p>
               </section>
 

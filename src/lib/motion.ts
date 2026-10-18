@@ -43,6 +43,8 @@ export interface MotionProject {
   script: string;
   voiceId: string;
   voiceName: string;
+  voiceSource: string;
+  speechModel: string;
   imageModel: string;
   assets: MotionAsset[];
   steps: MotionStep[];
@@ -61,12 +63,25 @@ export interface MotionVoice {
   category: string;
 }
 
+/** A speech model on OpenRouter and the voices it offers. */
+export interface MotionSpeechModel {
+  id: string;
+  name: string;
+  voices: string[];
+}
+
 export interface MotionImageModel {
   id: string;
   name: string;
 }
 
 export const motionVoices = () => invokeCmd<MotionVoice[]>("motion_voices");
+export const motionSpeechModels = () => invokeCmd<MotionSpeechModel[]>("motion_speech_models");
+
+/** A one-sentence paid sample of an OpenRouter voice, as a playable data URL. */
+export const motionVoiceSample = (model: string, voice: string, text: string) =>
+  invokeCmd<string>("motion_voice_sample", { model, voice, text });
+
 export const motionImageModels = () => invokeCmd<MotionImageModel[]>("motion_image_models");
 
 export const motionScript = (params: {
@@ -82,6 +97,8 @@ export const motionMake = (params: {
   script: string;
   voiceId: string;
   voiceName: string;
+  voiceSource: "openrouter" | "elevenlabs";
+  speechModel: string;
   imageModel: string;
 }) => invokeCmd<void>("motion_make", { params });
 

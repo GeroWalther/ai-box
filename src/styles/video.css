@@ -1,4 +1,4 @@
-/* Video tab: clip library, capability-driven controls, storyboard, player.
+/* Video tab: the library rail, the motion-graphics steps, the player.
  *
  * Shares the Images tab's two-column shell (.image-controls-col /
  * .image-preview-col) on purpose — the two tabs are the same shape of work, and
@@ -113,59 +113,6 @@
   background: var(--panel-2);
 }
 
-.video-frames {
-  display: flex;
-  gap: 10px;
-}
-.video-frame {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: center;
-}
-.video-frame img {
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  object-fit: cover;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-}
-.video-frame-drop {
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  color: var(--muted);
-  font-size: 12px;
-  cursor: pointer;
-}
-.video-frame-drop:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.video-shots {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.video-shot {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px;
-  background: var(--panel-2);
-}
-.video-shot-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 12px;
-  margin-bottom: 6px;
-}
 .btn.tiny {
   padding: 2px 7px;
   font-size: 11px;
@@ -313,4 +260,43 @@
   cursor: pointer;
   color: var(--muted);
   font-size: 22px;
+}
+/* Where you are: brief → script & voice → video. */
+.motion-stages {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0;
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.motion-stages li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+.motion-stages li span {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  font-size: 11px;
+}
+.motion-stages li.now {
+  color: var(--text);
+  font-weight: 600;
+}
+.motion-stages li.now span {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.motion-stages li.past span {
+  border-color: var(--accent);
+  color: var(--accent);
 }

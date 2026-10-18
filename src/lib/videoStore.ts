@@ -1,41 +1,28 @@
-// The clip library. Like the image gallery, records live as files ON THE MAC,
-// so the desktop and a paired phone see the same set. Unlike it, the MP4 is a
-// separate file rather than base64 inside the record — clips are tens of
-// megabytes, and listing must not drag them along.
-//
-// A record is written the moment a job is submitted, not when it finishes. That
-// is what makes generation survivable: quitting mid-render leaves a `pending`
-// record with its job id, and the panel resumes polling it on next launch
-// instead of losing a paid render.
+// The video library. Like the image gallery, records live as files ON THE
+// MAC, so the desktop and a paired phone see the same set. Unlike it, the MP4
+// is a separate file rather than base64 inside the record — videos are tens
+// of megabytes, and listing must not drag them along. Records are written by
+// motion.rs when a video is finished.
 import { invokeCmd } from "./transport";
-import type { VideoJobStatus } from "./api";
 
 export interface VideoRecord {
   /** Local id — also the filename of the stored MP4. */
   id: string;
-  /** OpenRouter job id, used to resume polling. */
+  /** "motion:<project id>" — the project the video was made from. */
   jobId: string;
+  /** The video's title. */
   prompt: string;
   model: string;
   modelName: string;
-  status: VideoJobStatus;
+  status: "completed" | "failed";
   at: number;
   duration?: number;
   resolution?: string;
   aspect?: string;
   audio?: boolean;
-  /** Set once the MP4 is on disk. */
   bytes?: number;
   cost?: number;
   error?: string;
-  /** Shot number within a storyboard, when this clip came from one. */
-  shot?: number;
-  /** Groups the shots of one storyboard so they can be joined in order. */
-  storyboardId?: string;
-}
-
-export async function putVideo(rec: VideoRecord): Promise<void> {
-  await invokeCmd("video_put", { id: rec.id, record: JSON.stringify(rec) });
 }
 
 /** Library metadata, newest first. Never carries video bytes. */
@@ -73,9 +60,4 @@ export async function videoObjectUrl(id: string): Promise<string> {
 
 export function revokeVideoUrl(url: string | null): void {
   if (url) URL.revokeObjectURL(url);
-}
-
-/** A job that hasn't reached a terminal state — resumed on next launch. */
-export function isPending(r: VideoRecord): boolean {
-  return r.status === "pending" || r.status === "in_progress";
 }
