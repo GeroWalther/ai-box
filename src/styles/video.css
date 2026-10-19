@@ -348,3 +348,31 @@
   flex: 1;
   min-width: 0;
 }
+
+.video-length-label {
+  display: flex;
+  justify-content: space-between;
+}
+.video-length-label span {
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.video-length {
+  width: 100%;
+  accent-color: var(--accent);
+  margin: 4px 0 0;
+}
+/* Labels under the slider, each at its own value. */
+.video-length-scale {
+  position: relative;
+  height: 14px;
+  margin: 0 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.video-length-scale span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}

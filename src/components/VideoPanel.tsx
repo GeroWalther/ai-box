@@ -61,7 +61,13 @@ const FORMATS: [string, string][] = [
   ["16:9", "16:9 · YouTube"],
   ["1:1", "1:1 · Feed"],
 ];
-const LENGTHS = [15, 30, 45, 60];
+/** The length slider's range, in seconds. Longer would need the animation
+ *  split into scenes; one document holds up to about two minutes. */
+const MIN_SECONDS = 10;
+const MAX_SECONDS = 120;
+function clock(seconds: number) {
+  return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")} min`;
+}
 const REDO: [string, string][] = [
   ["animation", "Animation only — quick, about a cent"],
   ["images", "New look, images and music"],
@@ -616,17 +622,29 @@ export default function VideoPanel({ settings, onChange, prefill, onPrefillConsu
           </div>
         </div>
 
-        <div className="video-row">
-          <div className="field">
-            <label>Length</label>
-            <div className="segmented">
-              {LENGTHS.map((n) => (
-                <button key={n} className={form.seconds === n ? "seg active" : "seg"} onClick={() => set({ seconds: n })}>
-                  {n}s
-                </button>
-              ))}
-            </div>
+        <div className="field">
+          <label className="video-length-label">
+            Length <span>{clock(form.seconds)}</span>
+          </label>
+          <input
+            type="range"
+            className="video-length"
+            min={MIN_SECONDS}
+            max={MAX_SECONDS}
+            step={5}
+            value={Math.min(Math.max(form.seconds, MIN_SECONDS), MAX_SECONDS)}
+            onChange={(e) => set({ seconds: Number(e.target.value) })}
+          />
+          <div className="video-length-scale">
+            {[10, 30, 60, 90, 120].map((n) => (
+              <span key={n} style={{ left: `${((n - MIN_SECONDS) / (MAX_SECONDS - MIN_SECONDS)) * 100}%` }}>
+                {n < 60 ? `${n} s` : `${n / 60} min`}
+              </span>
+            ))}
           </div>
+        </div>
+
+        <div className="video-row">
           <div className="field">
             <label>Type</label>
             <div className="segmented">
@@ -641,15 +659,14 @@ export default function VideoPanel({ settings, onChange, prefill, onPrefillConsu
               </button>
             </div>
           </div>
-        </div>
-
-        <div className="field">
-          <label>Language</label>
-          <select value={form.language} onChange={(e) => set({ language: e.target.value })}>
-            {(LANGUAGES.includes(form.language) ? LANGUAGES : [form.language, ...LANGUAGES]).map((l) => (
-              <option key={l}>{l}</option>
-            ))}
-          </select>
+          <div className="field">
+            <label>Language</label>
+            <select value={form.language} onChange={(e) => set({ language: e.target.value })}>
+              {(LANGUAGES.includes(form.language) ? LANGUAGES : [form.language, ...LANGUAGES]).map((l) => (
+                <option key={l}>{l}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div className="field">
