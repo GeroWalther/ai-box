@@ -4,7 +4,8 @@
 // A video chat is an assistant task of kind "video" (tasks.rs): it runs on the
 // Mac, keeps going when this tab closes, and works the same from the phone.
 // Images attached here — a logo, product photos — become the video's own
-// images, kept as they are. Videos and voice samples appear in the thread.
+// images, kept as they are. Voice samples play in the thread; videos play in
+// the pane on the right — the chat's newest, or whichever was picked.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Settings } from "../lib/settings";
 import { resolveTextProvider } from "../lib/settings";
@@ -70,8 +71,10 @@ export default function VideoPanel({ settings, prefill, onPrefillConsumed, sideb
   const [chatId, setChatId] = useState<string | null>(null);
   const [task, setTask] = useState<Task | null>(null);
   const [library, setLibrary] = useState<VideoRecord[]>([]);
-  // A library video being watched in place of the chat.
-  const [watching, setWatching] = useState<{ rec: VideoRecord; url: string } | null>(null);
+  // A video picked from the library or the thread; otherwise the pane shows
+  // the open chat's newest.
+  const [picked, setPicked] = useState<string | null>(null);
+  const [playUrl, setPlayUrl] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attached[]>([]);
   const [attaching, setAttaching] = useState(0);
@@ -95,7 +98,7 @@ export default function VideoPanel({ settings, prefill, onPrefillConsumed, sideb
   useEffect(() => {
     void loadLibrary();
     void loadChats().then((v) => {
-      if (v[0]) setChatId(v[0].id);
+      if (v[0]) openChat(v[0].id);
     });
   }, [loadChats, loadLibrary]);
 
@@ -125,7 +128,11 @@ export default function VideoPanel({ settings, prefill, onPrefillConsumed, sideb
       setTask((old) => {
         // A new video in the thread: it is in the library now too.
         const videos = (x: Task | null) => x?.steps.filter((s) => s.kind === "video" && s.ok).length ?? 0;
-        if (videos(t) !== videos(old)) void loadLibrary();
+        if (videos(t) !== videos(old)) {
+          void loadLibrary();
+          // A new one arrived (not just the chat opening): show it.
+          if (old?.id === t.id) setPicked(null);
+        }
         if (old?.status !== t.status) void loadChats();
         return t;
       });
@@ -146,12 +153,46 @@ export default function VideoPanel({ settings, prefill, onPrefillConsumed, sideb
     if (el) el.scrollTop = el.scrollHeight;
   }, [steps, task?.pending?.id]);
 
-  useEffect(() => () => revokeVideoUrl(watching?.url ?? null), [watching]);
+  const chatVideos = (task?.steps ?? []).filter((s) => s.kind === "video" && s.ok && s.detail).map((s) => s.detail!);
+  const shownId = picked ?? chatVideos[chatVideos.length - 1] ?? null;
+  const shown = library.find((r) => r.id === shownId) ?? null;
+  const lastStep = task?.steps[task.steps.length - 1];
+  const making =
+    task && isLive(task.status) && lastStep?.kind === "video" && lastStep.ok == null ? lastStep.title : null;
+
+  useEffect(() => {
+    if (!shownId) {
+      setPlayUrl(null);
+      return;
+    }
+    let live = true;
+    let made: string | null = null;
+    videoObjectUrl(shownId).then(
+      (u) => {
+        made = u;
+        if (live) setPlayUrl(u);
+        else revokeVideoUrl(u);
+      },
+      (e) => {
+        logError("video.open", e);
+        if (live) setPlayUrl(null);
+      }
+    );
+    return () => {
+      live = false;
+      revokeVideoUrl(made);
+    };
+  }, [shownId]);
+
+  function openChat(id: string) {
+    setChatId(id);
+    setPicked(null);
+  }
 
   function newChat() {
     setChatId(null);
     setTask(null);
-    setWatching(null);
+    setPicked(null);
     setInput("");
     setAttachments([]);
   }
@@ -175,7 +216,7 @@ export default function VideoPanel({ settings, prefill, onPrefillConsumed, sideb
       } else {
         const t = await startTask(text, images, provider.baseUrl, provider.model, [], "video");
         setTask(t);
-        setChatId(t.id);
+        openChat(t.id);
         void loadChats();
       }
     } catch (e) {
@@ -217,20 +258,10 @@ export default function VideoPanel({ settings, prefill, onPrefillConsumed, sideb
     },
   });
 
-  async function watch(rec: VideoRecord) {
-    try {
-      const url = await videoObjectUrl(rec.id);
-      setWatching({ rec, url });
-    } catch (e) {
-      logError("video.open", e);
-      toastError("That video's file is missing.");
-    }
-  }
-
   async function removeVideo(id: string) {
     await deleteVideo(id).catch(() => {});
     setLibrary((rows) => rows.filter((r) => r.id !== id));
-    if (watching?.rec.id === id) setWatching(null);
+    if (picked === id) setPicked(null);
   }
 
   async function removeChat(id: string) {
@@ -242,7 +273,7 @@ export default function VideoPanel({ settings, prefill, onPrefillConsumed, sideb
   const live = !!task && isLive(task.status);
 
   return (
-    <div className="video-tab chat-mode">
+    <div className="video-tab">
       <SidebarSlot slot={sidebarSlot}>
         <button
           className="sidebar-new"
@@ -258,11 +289,10 @@ export default function VideoPanel({ settings, prefill, onPrefillConsumed, sideb
           {chats.map((c) => (
             <div
               key={c.id}
-              className={chatId === c.id && !watching ? "video-item active" : "video-item"}
+              className={chatId === c.id ? "video-item active" : "video-item"}
               title={c.goal}
               onClick={() => {
-                setChatId(c.id);
-                setWatching(null);
+                openChat(c.id);
                 onCloseDrawer?.();
               }}
             >
@@ -287,10 +317,10 @@ export default function VideoPanel({ settings, prefill, onPrefillConsumed, sideb
           {library.map((r) => (
             <div
               key={r.id}
-              className={watching?.rec.id === r.id ? "video-item active" : "video-item"}
+              className={shownId === r.id ? "video-item active" : "video-item"}
               title={r.prompt}
               onClick={() => {
-                void watch(r);
+                setPicked(r.id);
                 onCloseDrawer?.();
               }}
             >
@@ -317,37 +347,7 @@ export default function VideoPanel({ settings, prefill, onPrefillConsumed, sideb
         </div>
       </SidebarSlot>
 
-      {watching ? (
-        <div className="video-watch">
-          <button className="btn ghost" onClick={() => setWatching(null)}>
-            ← Back to the chat
-          </button>
-          <video className="video-player" src={watching.url} controls autoPlay playsInline />
-          <div className="preview-actions">
-            <button
-              className="btn"
-              onClick={() =>
-                void saveVideo(watching.rec.id, watching.rec.prompt.slice(0, 40)).then(
-                  (p) => toastOk(`Saved to ${p}`),
-                  (e) => toastError(String(e))
-                )
-              }
-            >
-              {isTauri() ? "Save MP4" : "Save to Mac"}
-            </button>
-            <button className="btn danger" onClick={() => void removeVideo(watching.rec.id)}>
-              Delete
-            </button>
-          </div>
-          <p className="hint">
-            {watching.rec.prompt}
-            {watching.rec.duration ? ` · ${watching.rec.duration}s` : ""}
-            {watching.rec.resolution ? ` · ${watching.rec.resolution}` : ""}
-            {typeof watching.rec.cost === "number" && watching.rec.cost > 0 ? ` · $${watching.rec.cost.toFixed(2)}` : ""}
-          </p>
-        </div>
-      ) : (
-        <div className={dropHover ? "chat-view drop-hover" : "chat-view"} ref={viewRef}>
+      <div className={dropHover ? "chat-view drop-hover" : "chat-view"} ref={viewRef}>
           <div className="chat-scroll" ref={scrollRef}>
             {!task && (
               <div className="chat-empty video-empty">
@@ -370,6 +370,8 @@ export default function VideoPanel({ settings, prefill, onPrefillConsumed, sideb
                 task={task}
                 onApprove={(id, ok) => void approveTask(id, ok).catch((e) => toastError(String(e)))}
                 onReply={(id, text) => void replyTask(id, text).catch((e) => toastError(String(e)))}
+                onShowVideo={setPicked}
+                shownVideo={shownId}
                 renderImages={(imgs) => (
                   <div className="msg-images">
                     {imgs.map((a) => (
@@ -472,7 +474,54 @@ export default function VideoPanel({ settings, prefill, onPrefillConsumed, sideb
             </div>
           </div>
         </div>
-      )}
+
+      <div className="video-stage">
+        {shownId && playUrl ? (
+          <>
+            <video key={shownId} className="video-player" src={playUrl} controls autoPlay playsInline />
+            <div className="preview-actions">
+              <button
+                className="btn"
+                onClick={() =>
+                  void saveVideo(shownId, (shown?.prompt ?? "video").slice(0, 40)).then(
+                    (p) => toastOk(`Saved to ${p}`),
+                    (e) => toastError(String(e))
+                  )
+                }
+              >
+                {isTauri() ? "Save MP4" : "Save to Mac"}
+              </button>
+              <button className="btn danger" onClick={() => void removeVideo(shownId)}>
+                Delete
+              </button>
+            </div>
+            {shown && (
+              <p className="hint">
+                {shown.prompt}
+                {shown.duration ? ` · ${shown.duration}s` : ""}
+                {shown.resolution ? ` · ${shown.resolution}` : ""}
+                {typeof shown.cost === "number" && shown.cost > 0 ? ` · $${shown.cost.toFixed(2)}` : ""}
+              </p>
+            )}
+            {making && <p className="hint video-making">{making}…</p>}
+          </>
+        ) : making ? (
+          <div className="image-placeholder">
+            <span className="video-dot in_progress" aria-hidden="true" /> {making}…
+            <br />
+            <span className="muted">The video appears here when it&apos;s rendered.</span>
+          </div>
+        ) : (
+          <div className="image-placeholder">
+            Your video appears here.
+            <br />
+            <span className="muted">
+              Talk it through in the chat, approve the script, and AI Box voices, scores, animates and
+              renders it on this Mac.
+            </span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

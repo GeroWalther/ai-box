@@ -119,7 +119,14 @@ export function StoredImage({ id, className, alt }: { id: string; className?: st
   );
 }
 
-function Step({ s, renderImages }: { s: TaskStep; renderImages: (a: Attached[]) => React.ReactNode }) {
+interface StepProps {
+  s: TaskStep;
+  renderImages: (a: Attached[]) => React.ReactNode;
+  onShowVideo?: (id: string) => void;
+  shownVideo?: string | null;
+}
+
+function Step({ s, renderImages, onShowVideo, shownVideo }: StepProps) {
   if (s.kind === "user") {
     return (
       <div className="msg user">
@@ -150,7 +157,20 @@ function Step({ s, renderImages }: { s: TaskStep; renderImages: (a: Attached[]) 
     return <div className="task-note">{s.title}</div>;
   }
   if (s.kind === "video" && s.ok && s.detail) {
-    return <InlineVideo id={s.detail} title={s.title} />;
+    if (!onShowVideo) return <InlineVideo id={s.detail} title={s.title} />;
+    // The host plays it in its own pane; the thread only points at it.
+    const id = s.detail;
+    return (
+      <button
+        className={`tool-line task-step task-video-link ${shownVideo === id ? "shown" : ""}`}
+        onClick={() => onShowVideo(id)}
+        title="Show this video"
+      >
+        <span className="tool-icon">🎬</span>
+        <span className="task-step-title">{s.title}</span>
+        <span className="hint">{shownVideo === id ? "shown →" : "show →"}</span>
+      </button>
+    );
   }
   if (s.kind === "audio" && s.ok && s.detail) {
     return (
@@ -194,9 +214,12 @@ interface Props {
   onApprove: (pendingId: string, ok: boolean) => void;
   onReply: (pendingId: string, text: string) => void;
   renderImages: (a: Attached[]) => React.ReactNode;
+  /** Given, finished videos show elsewhere and the thread links to them. */
+  onShowVideo?: (id: string) => void;
+  shownVideo?: string | null;
 }
 
-export default function TaskThread({ task, onApprove, onReply, renderImages }: Props) {
+export default function TaskThread({ task, onApprove, onReply, renderImages, onShowVideo, shownVideo }: Props) {
   const [answer, setAnswer] = useState("");
   const pending = task.status === "waiting" ? task.pending : undefined;
   const live = isLive(task.status);
@@ -206,7 +229,7 @@ export default function TaskThread({ task, onApprove, onReply, renderImages }: P
   return (
     <>
       {task.steps.map((s, i) => (
-        <Step key={`${s.at}-${i}`} s={s} renderImages={renderImages} />
+        <Step key={`${s.at}-${i}`} s={s} renderImages={renderImages} onShowVideo={onShowVideo} shownVideo={shownVideo} />
       ))}
 
       {live && task.shot && (

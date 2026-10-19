@@ -1,11 +1,31 @@
-/* Video tab: the video chats and library in the sidebar, the conversation,
- * and a player for library videos. */
+/* Video tab: the video chats and library in the sidebar, the conversation
+ * on the left, and the video on the right. */
 
 .video-tab {
   flex: 1;
   display: grid;
-  grid-template-columns: 380px 1fr;
+  grid-template-columns: minmax(360px, 1fr) minmax(320px, 1fr);
   min-height: 0;
+}
+.video-tab > .chat-view {
+  min-height: 0;
+  border-right: 1px solid var(--border);
+}
+.video-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  overflow: auto;
+  min-height: 0;
+}
+.video-stage .hint {
+  text-align: center;
+}
+.video-stage .image-placeholder .video-dot {
+  display: inline-block;
 }
 
 /* ---- library rail ---- */
@@ -97,17 +117,28 @@
 /* ---- player ---- */
 .video-player {
   max-width: 100%;
-  max-height: 72vh;
+  max-height: 76vh;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: #000;
 }
 
 @media (max-width: 900px) {
+  /* Narrow: the video above the chat. */
   .video-tab {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
-    overflow-y: auto;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .video-stage {
+    order: -1;
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .video-stage .video-player {
+    max-height: 38vh;
+  }
+  .video-tab > .chat-view {
+    border-right: none;
   }
 }
 
@@ -124,14 +155,6 @@
 }
 
 /* ---- the video chat ---- */
-.video-tab.chat-mode {
-  display: flex;
-  flex-direction: column;
-}
-.video-tab.chat-mode > .chat-view {
-  flex: 1;
-  min-height: 0;
-}
 .video-section {
   font-size: 11px;
   font-weight: 600;
@@ -157,20 +180,25 @@
 .video-starters .btn {
   font-size: 12.5px;
 }
-.video-watch {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
+/* A finished video in the thread: a link to the pane on the right. */
+.task-video-link {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 12px;
-  padding: 16px;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
 }
-.video-watch > .btn {
-  align-self: flex-start;
+.task-video-link:hover,
+.task-video-link.shown {
+  border-color: var(--accent);
 }
-/* A finished video inside the conversation. */
+.task-video-link .hint {
+  margin-left: auto;
+  flex: none;
+}
+
+/* A finished video inside an Assistant conversation. */
 .task-video {
   margin: 8px 0 14px;
   display: flex;
