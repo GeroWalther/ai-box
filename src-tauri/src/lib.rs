@@ -2970,6 +2970,7 @@ pub fn run() {
             browser::browser_view,
             browser::browser_input,
             browser::browser_window,
+            browser::browser_resize,
             tasks::task_delete,
             comfy_status,
             comfy_download_model,

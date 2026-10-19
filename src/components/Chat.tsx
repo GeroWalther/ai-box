@@ -707,6 +707,40 @@ export default function Chat({ settings, onChange, onOpenSettings, sidebarSlot, 
     };
   }, [activeTaskId]);
 
+  // Its width: dragged by the edge, or flipped wide.
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const [browserWidth, setBrowserWidth] = useState(() => {
+    try {
+      return Number(localStorage.getItem("aibox.browserWidth")) || 0;
+    } catch {
+      return 0;
+    }
+  });
+  const [browserWide, setBrowserWide] = useState(false);
+  useEffect(() => {
+    try {
+      if (browserWidth) localStorage.setItem("aibox.browserWidth", String(browserWidth));
+    } catch {
+      /* per-viewer convenience only */
+    }
+  }, [browserWidth]);
+  function dragBrowserEdge(e: React.MouseEvent) {
+    e.preventDefault();
+    const box = layoutRef.current?.getBoundingClientRect();
+    if (!box) return;
+    setBrowserWide(false);
+    const move = (ev: MouseEvent) =>
+      setBrowserWidth(Math.round(Math.min(Math.max(box.right - ev.clientX, 360), box.width - 340)));
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      document.body.classList.remove("resizing-x");
+    };
+    document.body.classList.add("resizing-x");
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
+
   useEffect(() => {
     try {
       localStorage.setItem("aibox.browserPanel", browserOpen ? "1" : "0");
@@ -766,7 +800,11 @@ export default function Chat({ settings, onChange, onOpenSettings, sidebarSlot, 
   }, [task]);
 
   return (
-    <div className={browserOpen ? "chat-layout with-browser" : "chat-layout"}>
+    <div
+      ref={layoutRef}
+      className={browserOpen ? `chat-layout with-browser${browserWide ? " browser-wide" : ""}` : "chat-layout"}
+      style={browserWidth && !browserWide ? ({ "--browser-w": `${browserWidth}px` } as React.CSSProperties) : undefined}
+    >
       <SidebarSlot slot={sidebarSlot}>
         <SidebarList
           items={sessions}
@@ -1051,8 +1089,11 @@ export default function Chat({ settings, onChange, onOpenSettings, sidebarSlot, 
         </div>
       </div>
 
+      {browserOpen && <div className="browser-edge" onMouseDown={dragBrowserEdge} title="Drag to resize" />}
       {browserOpen && (
         <BrowserPanel
+          wide={browserWide}
+          onToggleWide={() => setBrowserWide((v) => !v)}
           target={task?.browser}
           working={wantsBrowser && task?.status === "running"}
           handover={handover ? { id: handover.id, body: handover.body } : undefined}

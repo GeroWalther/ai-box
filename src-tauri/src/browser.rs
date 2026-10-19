@@ -141,6 +141,11 @@ pub struct BrowserHost {
     views: Arc<Mutex<HashMap<String, String>>>,
     /// The person's own window (`user_tab`).
     user_target: Arc<Mutex<Option<String>>>,
+    /// Every window's outer size: whatever makes the page fill the browser
+    /// panel exactly (`resize`), so pages lay out for the size they are seen at.
+    size: Arc<Mutex<(i64, i64)>>,
+    /// The page size the panel wants, once it has said (`resize`).
+    viewport: Arc<Mutex<Option<(i64, i64)>>>,
     profile: String,
     /// The assistant's browser is visible: the person needs to see it to log
     /// in. Headless is for tests and for rendering motion video (motion.rs).
@@ -161,6 +166,8 @@ impl BrowserHost {
             pinned: Arc::default(),
             views: Arc::default(),
             user_target: Arc::default(),
+            size: Arc::new(Mutex::new((VIEW_W, VIEW_H))),
+            viewport: Arc::default(),
             profile,
             headless: false,
         }
@@ -278,12 +285,18 @@ install Chrome from google.com/chrome and try again."
 
     async fn park_all(&self, c: &Cdp) {
         let (x, y) = parking_spot();
+        let (width, height) = *self.size.lock().unwrap();
         let targets = c.call(None, "Target.getTargets", json!({})).await.unwrap_or_default();
         let mut moved = false;
         for t in targets["targetInfos"].as_array().into_iter().flatten().filter(|t| t["type"] == "page") {
             let Ok(w) = c.call(None, "Browser.getWindowForTarget", json!({ "targetId": t["targetId"] })).await else { continue };
             let b = &w["bounds"];
-            if b["left"].as_i64() == Some(x) && b["top"].as_i64() == Some(y) && b["windowState"] == "normal" {
+            if b["left"].as_i64() == Some(x)
+                && b["top"].as_i64() == Some(y)
+                && b["width"].as_i64() == Some(width)
+                && b["height"].as_i64() == Some(height)
+                && b["windowState"] == "normal"
+            {
                 continue;
             }
             if b["windowState"] != "normal" {
@@ -293,7 +306,7 @@ install Chrome from google.com/chrome and try again."
             }
             let _ = c
                 .call(None, "Browser.setWindowBounds", json!({ "windowId": w["windowId"],
-                    "bounds": { "left": x, "top": y, "width": VIEW_W, "height": VIEW_H } }))
+                    "bounds": { "left": x, "top": y, "width": width, "height": height } }))
                 .await;
             moved = true;
         }
@@ -314,12 +327,13 @@ install Chrome from google.com/chrome and try again."
     /// Bring the real window out on `target`, and leave it out until `hide`.
     pub async fn show(&self, target: &str) -> Result<(), String> {
         self.pinned.store(true, Ordering::Relaxed);
+        let _ = self.view_call(target, "Emulation.clearDeviceMetricsOverride", json!({})).await;
         let c = self.connection().await?;
         let _ = c.call(None, "Target.activateTarget", json!({ "targetId": target })).await;
         if let Ok(w) = c.call(None, "Browser.getWindowForTarget", json!({ "targetId": target })).await {
             let _ = c
                 .call(None, "Browser.setWindowBounds", json!({ "windowId": w["windowId"],
-                    "bounds": { "left": 80, "top": 60, "width": VIEW_W, "height": VIEW_H } }))
+                    "bounds": { "left": 80, "top": 60, "width": VIEW_W, "height": VIEW_H + 90 } }))
                 .await;
         }
         if let Some(pid) = *self.pid.lock().unwrap() {
@@ -336,6 +350,31 @@ install Chrome from google.com/chrome and try again."
 
     pub fn is_shown(&self) -> bool {
         self.pinned.load(Ordering::Relaxed)
+    }
+
+    /// Make the page in `target` exactly `w`×`h` CSS pixels — the browser
+    /// panel's size — by sizing the windows around it (the toolbar's height
+    /// is whatever this window says it is). All windows share the size, so
+    /// any tab the panel shows next already fits.
+    pub async fn resize(&self, target: &str, w: i64, h: i64) -> Result<(), String> {
+        let (w, h) = (w.clamp(360, 3000), h.clamp(300, 2400));
+        *self.viewport.lock().unwrap() = Some((w, h));
+        let c = self.connection().await?;
+        let win = c.call(None, "Browser.getWindowForTarget", json!({ "targetId": target })).await?;
+        let m = self.view_call(target, "Page.getLayoutMetrics", json!({})).await?;
+        let vw = m["cssLayoutViewport"]["clientWidth"].as_i64().unwrap_or(w);
+        let vh = m["cssLayoutViewport"]["clientHeight"].as_i64().unwrap_or(h);
+        let (ow, oh) = (win["bounds"]["width"].as_i64().unwrap_or(VIEW_W), win["bounds"]["height"].as_i64().unwrap_or(VIEW_H));
+        let want = (w + (ow - vw).max(0), h + (oh - vh).max(0));
+        if want == (ow, oh) && *self.size.lock().unwrap() == want {
+            return Ok(());
+        }
+        *self.size.lock().unwrap() = want;
+        if self.pinned.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        self.park_all(&c).await;
+        Ok(())
     }
 
     /// A DevTools session on `target` for the in-app view, kept between calls.
@@ -378,7 +417,22 @@ install Chrome from google.com/chrome and try again."
         )
         .await
         .map_err(|_| "the browser did not paint (is its window minimised?)".to_string())??;
-        let m = self.view_call(target, "Page.getLayoutMetrics", json!({})).await.unwrap_or_default();
+        let mut m = self.view_call(target, "Page.getLayoutMetrics", json!({})).await.unwrap_or_default();
+        // macOS keeps a window within the screen's height, so a tall panel
+        // can outgrow it: then the page is laid out at the panel's size
+        // directly. The next frame shows it.
+        let want = *self.viewport.lock().unwrap();
+        if let Some((w, h)) = want {
+            let vp = &m["cssLayoutViewport"];
+            if (vp["clientWidth"].as_i64(), vp["clientHeight"].as_i64()) != (Some(w), Some(h)) && !self.is_shown() {
+                let _ = self
+                    .view_call(target, "Emulation.setDeviceMetricsOverride", json!({
+                        "width": w, "height": h, "deviceScaleFactor": 0, "mobile": false,
+                    }))
+                    .await;
+                m["cssLayoutViewport"] = json!({ "clientWidth": w, "clientHeight": h });
+            }
+        }
         let c = self.connection().await?;
         let info = c.call(None, "Target.getTargetInfo", json!({ "targetId": target })).await.unwrap_or_default();
         Ok(json!({
@@ -511,6 +565,10 @@ pub async fn browser_view(host: tauri::State<'_, BrowserHost>, target: Option<St
 #[tauri::command]
 pub async fn browser_input(host: tauri::State<'_, BrowserHost>, target: String, event: Value) -> Result<(), String> {
     host.input(&target, &event).await
+}
+#[tauri::command]
+pub async fn browser_resize(host: tauri::State<'_, BrowserHost>, target: String, width: i64, height: i64) -> Result<(), String> {
+    host.resize(&target, width, height).await
 }
 #[tauri::command]
 pub async fn browser_window(host: tauri::State<'_, BrowserHost>, target: String, show: bool) -> Result<(), String> {
@@ -1136,6 +1194,17 @@ mod tests {
         let q = p.elements.iter().position(|e| e["role"] == "textbox" || e["editable"] == true).unwrap() + 1;
         tab.type_text(q, "assistant", true).await.unwrap();
         assert_eq!(tab.observe().await.unwrap().title, "sent:assistant");
+        // The panel's size becomes the page's size.
+        host.resize(tab.target_id(), 830, 1010).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let _ = host.frame(tab.target_id()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let v = host.frame(tab.target_id()).await.unwrap();
+        let img = image::load_from_memory(&base64::Engine::decode(&base64::engine::general_purpose::STANDARD,
+            v["frame"].as_str().unwrap().trim_start_matches("data:image/jpeg;base64,")).unwrap()).unwrap();
+        println!("frame pixels {}x{}", img.width(), img.height());
+        println!("resized view {}x{}", v["width"], v["height"]);
+        assert_eq!((v["width"].as_i64(), v["height"].as_i64()), (Some(830), Some(1010)));
         host.show(tab.target_id()).await.unwrap();
         assert!(host.is_shown());
         host.hide().await;

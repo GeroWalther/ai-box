@@ -114,39 +114,139 @@
   min-width: 340px;
 }
 .browser-panel {
-  flex: 0 0 52%;
+  flex: 0 0 var(--browser-w, 46%);
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--bg-2);
 }
-.browser-bar {
+.chat-layout.browser-wide .browser-panel {
+  flex-basis: calc(100% - 360px);
+}
+/* The divider: a hairline with a wide grab area. */
+.browser-edge {
+  flex: none;
+  width: 7px;
+  margin: 0 -3px;
+  position: relative;
+  z-index: 2;
+  cursor: col-resize;
+}
+.browser-edge::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: var(--border);
+}
+.browser-edge:hover::after {
+  background: var(--accent);
+}
+body.resizing-x,
+body.resizing-x * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+body.resizing-x .browser-screen {
+  pointer-events: none;
+}
+
+.browser-tabs,
+.browser-nav {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 8px 10px;
+  gap: 2px;
+  padding: 0 8px;
+}
+.browser-tabs {
+  height: 42px;
+  padding-top: 6px;
+}
+.browser-nav {
+  height: 44px;
   border-bottom: 1px solid var(--border);
 }
-.browser-bar .btn.tiny {
-  padding: 3px 8px;
-  font-size: 12px;
+.browser-tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 240px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 9px;
+  background: var(--panel-2);
+  font-size: 13px;
+  color: var(--text);
+}
+.browser-tab-icon {
+  display: flex;
+  color: var(--muted);
+}
+.browser-tab-icon.working {
+  color: var(--accent);
+  animation: sa-pulse 1.2s ease-in-out infinite;
+}
+.browser-tab-title {
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.browser-spacer {
+  flex: 1;
+}
+.browser-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.browser-icon:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.browser-icon.small {
+  width: 26px;
+  height: 26px;
 }
 .browser-address {
   flex: 1;
   min-width: 0;
-  margin: 0 4px;
-  padding: 4px 10px;
-  font-size: 12.5px;
-  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  margin-left: 6px;
+  padding: 0 4px 0 12px;
+  border-radius: 9px;
+  background: var(--panel-2);
+  border: 1px solid transparent;
 }
-.browser-status {
-  padding: 6px 12px;
-  font-size: 11.5px;
+.browser-address:focus-within {
+  border-color: var(--accent);
 }
-.browser-status.err {
-  color: #d0453b;
+.browser-address input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  box-shadow: none;
+  font-size: 13.5px;
+  text-align: center;
+  color: var(--text);
+}
+.browser-address input:focus {
+  text-align: left;
 }
 .browser-handover {
   display: flex;
@@ -160,29 +260,51 @@
 .browser-handover span {
   flex: 1;
 }
+.btn.tiny {
+  padding: 3px 9px;
+  font-size: 12px;
+}
+/* The page, edge to edge, at its own size. */
 .browser-screen {
   position: relative;
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: 10px;
+  overflow: hidden;
+  background: #fff;
   cursor: default;
-  outline: none;
 }
 .browser-screen img {
   display: block;
   width: 100%;
-  height: auto;
-  border-radius: 6px;
-  border: 1px solid var(--border);
+  height: 100%;
+  object-fit: fill;
   user-select: none;
 }
-.browser-screen.focused img {
-  border-color: var(--accent);
-}
 .browser-empty {
-  padding: 60px 20px;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
   text-align: center;
+  background: var(--bg-2);
+}
+.browser-out {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.browser-error {
+  padding: 5px 12px;
+  font-size: 11.5px;
+  color: #d0453b;
+  border-top: 1px solid var(--border);
 }
 /* Holds keyboard focus for the page; never seen. */
 .browser-keys {
@@ -210,6 +332,8 @@
     position: absolute;
     inset: 0;
     z-index: 5;
-    border-left: none;
+  }
+  .browser-edge {
+    display: none;
   }
 }

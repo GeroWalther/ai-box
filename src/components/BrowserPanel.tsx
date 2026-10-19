@@ -31,6 +31,9 @@ interface Props {
   handover?: { id: string; body: string };
   onHandoverDone: (pendingId: string) => void;
   onClose: () => void;
+  /** Wide: the panel takes most of the window. */
+  wide: boolean;
+  onToggleWide: () => void;
 }
 
 // Keys that are not text: Chrome needs their DOM key, code and Windows key code.
@@ -50,17 +53,47 @@ const KEYS: Record<string, number> = {
   Delete: 46,
 };
 
+// Line icons in the style of the rest of the app.
+function Icon({ d, size = 16 }: { d: string; size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={d} />
+    </svg>
+  );
+}
+const ICONS = {
+  back: "M19 12H5M11 18l-6-6 6-6",
+  forward: "M5 12h14M13 6l6 6-6 6",
+  reload: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7",
+  external: "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
+  expand: "M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7",
+  shrink: "M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7",
+  close: "M18 6 6 18M6 6l12 12",
+  globe: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3",
+};
+
+/** What the address pill shows when not being edited: just the site. */
+function shortUrl(url: string) {
+  try {
+    const u = new URL(url);
+    return u.protocol.startsWith("http") ? u.host : url;
+  } catch {
+    return url;
+  }
+}
+
 function modifiers(e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
   return (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
 }
 
-export default function BrowserPanel({ target, working, handover, onHandoverDone, onClose }: Props) {
+export default function BrowserPanel({ target, working, handover, onHandoverDone, onClose, wide, onToggleWide }: Props) {
   const [view, setView] = useState<View | null>(null);
   const [error, setError] = useState("");
   const [address, setAddress] = useState("");
   const [editing, setEditing] = useState(false);
   const [focused, setFocused] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
+  const screenRef = useRef<HTMLDivElement>(null);
   const keysRef = useRef<HTMLTextAreaElement>(null);
   const kick = useRef<() => void>(() => {});
   const wheel = useRef({ dx: 0, dy: 0, x: 0, y: 0, timer: 0 as ReturnType<typeof setTimeout> | 0 });
@@ -110,6 +143,32 @@ export default function BrowserPanel({ target, working, handover, onHandoverDone
     if (!editing) setAddress(view?.url && view.url !== "about:blank" ? view.url : "");
   }, [view?.url, editing]);
 
+  // The page is laid out at exactly the size it is shown at, like a real
+  // browser — not a big page shrunk into the panel.
+  const sizeFor = view?.target;
+  useEffect(() => {
+    const el = screenRef.current;
+    if (!el || !sizeFor) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const push = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const r = el.getBoundingClientRect();
+        if (r.width < 50 || r.height < 50) return;
+        void invokeCmd("browser_resize", { target: sizeFor, width: Math.round(r.width), height: Math.round(r.height) })
+          .then(() => kick.current())
+          .catch((e) => logError("browser.resize", e));
+      }, 200);
+    };
+    push();
+    const ro = new ResizeObserver(push);
+    ro.observe(el);
+    return () => {
+      clearTimeout(timer);
+      ro.disconnect();
+    };
+  }, [sizeFor]);
+
   // A handover is the person's cue: put the keyboard in the page.
   useEffect(() => {
     if (handover) keysRef.current?.focus();
@@ -143,57 +202,66 @@ export default function BrowserPanel({ target, working, handover, onHandoverDone
     kick.current();
   }
 
-  const status = handover
-    ? null
-    : working
-      ? "The assistant is working here — watch, or click in to take over."
-      : "Sign in to sites here and the assistant can use them.";
-
   return (
     <aside className="browser-panel" aria-label="Browser">
-      <div className="browser-bar">
-        <button className="btn ghost tiny" title="Back" onClick={() => void send({ type: "back" })}>
-          ←
+      <div className="browser-tabs">
+        <div className="browser-tab" title={view?.title || view?.url}>
+          <span className={working ? "browser-tab-icon working" : "browser-tab-icon"}>
+            <Icon d={ICONS.globe} size={14} />
+          </span>
+          <span className="browser-tab-title">{view?.title || shortUrl(view?.url ?? "") || "New tab"}</span>
+        </div>
+        <span className="browser-spacer" />
+        <button className="browser-icon" title={wide ? "Make the browser narrower" : "Make the browser wider"} onClick={onToggleWide}>
+          <Icon d={wide ? ICONS.shrink : ICONS.expand} />
         </button>
-        <button className="btn ghost tiny" title="Forward" onClick={() => void send({ type: "forward" })}>
-          →
-        </button>
-        <button className="btn ghost tiny" title="Reload" onClick={() => void send({ type: "reload" })}>
-          ⟳
-        </button>
-        <input
-          className="browser-address"
-          value={address}
-          placeholder="Search or enter address"
-          spellCheck={false}
-          onFocus={(e) => {
-            setEditing(true);
-            e.target.select();
-          }}
-          onBlur={() => setEditing(false)}
-          onChange={(e) => setAddress(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && address.trim()) {
-              void send({ type: "navigate", url: address.trim() });
-              (e.target as HTMLInputElement).blur();
-            } else if (e.key === "Escape") {
-              (e.target as HTMLInputElement).blur();
-            }
-          }}
-        />
-        <button
-          className="btn ghost tiny"
-          title={view?.shown ? "Put the Chrome window away again" : "Open this page in a real Chrome window"}
-          onClick={() => void windowOut(!view?.shown)}
-        >
-          {view?.shown ? "Put away" : "Open in Chrome"}
-        </button>
-        <button className="btn ghost tiny" title="Close the browser panel" onClick={onClose}>
-          ×
+        <button className="browser-icon" title="Close the browser" onClick={onClose}>
+          <Icon d={ICONS.close} />
         </button>
       </div>
 
-      {handover ? (
+      <div className="browser-nav">
+        <button className="browser-icon" title="Back" onClick={() => void send({ type: "back" })}>
+          <Icon d={ICONS.back} />
+        </button>
+        <button className="browser-icon" title="Forward" onClick={() => void send({ type: "forward" })}>
+          <Icon d={ICONS.forward} />
+        </button>
+        <button className="browser-icon" title="Reload" onClick={() => void send({ type: "reload" })}>
+          <Icon d={ICONS.reload} />
+        </button>
+        <div className="browser-address">
+          <input
+            value={editing ? address : shortUrl(address)}
+            placeholder="Search or enter address"
+            spellCheck={false}
+            onFocus={(e) => {
+              setEditing(true);
+              const el = e.target;
+              setTimeout(() => el.select(), 0);
+            }}
+            onBlur={() => setEditing(false)}
+            onChange={(e) => setAddress(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && address.trim()) {
+                void send({ type: "navigate", url: address.trim() });
+                (e.target as HTMLInputElement).blur();
+              } else if (e.key === "Escape") {
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+          />
+          <button
+            className="browser-icon small"
+            title={view?.shown ? "Put the Chrome window away again" : "Open this page in a real Chrome window"}
+            onClick={() => void windowOut(!view?.shown)}
+          >
+            <Icon d={view?.shown ? ICONS.close : ICONS.external} size={15} />
+          </button>
+        </div>
+      </div>
+
+      {handover && (
         <div className="browser-handover">
           <span>
             <b>Your turn:</b> {handover.body || "do this step yourself"}
@@ -202,11 +270,10 @@ export default function BrowserPanel({ target, working, handover, onHandoverDone
             I&apos;m done — continue
           </button>
         </div>
-      ) : (
-        status && <div className="browser-status hint">{status}</div>
       )}
 
       <div
+        ref={screenRef}
         className={`browser-screen ${focused ? "focused" : ""}`}
         onMouseDown={(e) => {
           // Keep the keyboard in the page after a click.
@@ -232,7 +299,7 @@ export default function BrowserPanel({ target, working, handover, onHandoverDone
               w.dx = w.dy = 0;
               w.timer = 0;
               void send({ type: "scroll", x, y, dx, dy });
-            }, 60);
+            }, 40);
           }
         }}
       >
@@ -241,6 +308,7 @@ export default function BrowserPanel({ target, working, handover, onHandoverDone
         ) : (
           <div className="browser-empty hint">{error || "Starting the browser…"}</div>
         )}
+        {view?.shown && <div className="browser-out hint">Open in a Chrome window — put it away with the button in the address bar.</div>}
         {/* Off-screen but focused: takes the keys, IME and paste for the page. */}
         <textarea
           ref={keysRef}
@@ -289,7 +357,7 @@ export default function BrowserPanel({ target, working, handover, onHandoverDone
           }}
         />
       </div>
-      {error && view?.frame && <div className="browser-status hint err">{error}</div>}
+      {error && view?.frame && <div className="browser-error">{error}</div>}
     </aside>
   );
 }

@@ -749,6 +749,12 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             host.input(&s("target"), args.get("event").unwrap_or(&Value::Null)).await?;
             Ok(Value::Null)
         }
+        "browser_resize" => {
+            let host = { use tauri::Manager; ctx.app.state::<crate::browser::BrowserHost>().inner().clone() };
+            let n = |k: &str| args.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+            host.resize(&s("target"), n("width"), n("height")).await?;
+            Ok(Value::Null)
+        }
         "browser_window" => {
             let host = { use tauri::Manager; ctx.app.state::<crate::browser::BrowserHost>().inner().clone() };
             if args.get("show").and_then(|v| v.as_bool()).unwrap_or(false) {
