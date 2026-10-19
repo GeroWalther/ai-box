@@ -46,11 +46,11 @@ manuscript — the prompt is composed from your prose *and* your Story Bible, so
 recurring characters stay visually consistent.
 
 ### 🎬 Video
-Animated explainers and ads, made by talking to a video director that runs on
-your Mac. Say what the video is for and drop your logo and product photos into
-the chat — or paste an App Store link, and the real icon and screenshots are
-used. It asks what it needs, suggests voices (and plays samples), and writes the
-script with you. **Nothing paid runs until you approve it.** Then:
+Animated explainers and ads, made on your Mac. Pick the models, the voice (with
+a sample), format and length, say what the video is about and drop in your logo
+and product photos — or paste an App Store link, and the real icon and
+screenshots are used. "Write script" drafts the voice-over for you to edit;
+**nothing paid runs until you press Make video.** Then:
 
 - **A voice that drives the picture.** Any speech model on OpenRouter
   (ElevenLabs, Gemini, MiniMax…), or ElevenLabs on your own key. Every word gets
@@ -60,13 +60,12 @@ script with you. **Nothing paid runs until you approve it.** Then:
   timeline, filmed frame by frame by a headless Chrome into an MP4.
 - **Its own sound.** Music and effects are synthesised on the Mac (no licences),
   ducked under the voice, and mastered to −14 LUFS.
-- **Change it by saying so.** "Bigger logo", "slower start", "other music": the
-  director redoes only what's needed — a layout change re-animates in under a
-  minute without touching the voice or the images. Every version stays in the
-  library.
+- **Change it by saying so.** "Bigger logo", "slower start", "other music":
+  only what's needed is redone — a layout change re-animates in under a minute
+  without touching the voice or the images. Every version is kept.
 
 A 30-second video takes about four minutes and a few cents. It runs on the Mac,
-so you can direct it from your phone too. Needs Chrome and `ffmpeg`.
+so you can start it from your phone too. Needs Chrome and `ffmpeg`.
 
 ### 💻 Terminal
 A real PTY. `vim`, `top`, `claude`, whatever you like — including from your phone.
