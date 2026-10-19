@@ -480,7 +480,8 @@ impl<R: Runtime> Run<R> {
 
     async fn tab(&mut self) -> Result<&mut Tab, String> {
         if self.tab.is_none() {
-            let tab = Tab::open(&self.host).await?;
+            let earlier = self.tasks.get(&self.id).and_then(|t| t.browser);
+            let tab = Tab::reuse(&self.host, earlier.as_deref()).await?;
             let target = tab.target_id().to_string();
             self.tasks.update(&self.app, &self.id, |t| t.browser = Some(target));
             self.tab = Some(tab);
@@ -1229,6 +1230,16 @@ async fn run<R: Runtime>(mut r: Run<R>, base_url: String, model: String, api_key
         Err(format!("stopped after {max_steps} steps without finishing — say \"continue\" to let it go on"))
     }
     .await;
+
+    // A tab the run opened and never used is only an empty window: close it.
+    // One with a page stays, for the person to look at and the next message.
+    if let Some(tab) = r.tab.take() {
+        let url = tab.current_url().await;
+        if url.is_empty() || url == "about:blank" {
+            tab.close().await;
+            r.tasks.update(&r.app, &r.id, |t| t.browser = None);
+        }
+    }
 
     let id = r.id.clone();
     let tasks = r.tasks.clone();

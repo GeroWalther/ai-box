@@ -227,7 +227,14 @@ install Chrome from google.com/chrome and try again."
             c.args(["-n", "-g", "-j", "-a", CHROME_APP, "--args"]).args(&args);
             c
         };
-        cmd.arg("about:blank").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        if headless {
+            cmd.arg("about:blank");
+        } else {
+            // No window of its own at start: every window is one a task or
+            // the person asked for, so no empty ones pile up.
+            cmd.arg("--no-startup-window");
+        }
+        cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         cmd.spawn().map_err(|e| format!("could not start Chrome: {e}"))?;
 
         for _ in 0..150 {
@@ -712,6 +719,22 @@ impl Tab {
             .as_str()
             .ok_or("no tab id")?
             .to_string();
+        Self::attach(host, cdp, target).await
+    }
+
+    /// The tab `target` if it is still open (a task carrying on where it
+    /// left off), else a new one.
+    pub async fn reuse(host: &BrowserHost, target: Option<&str>) -> Result<Tab, String> {
+        if let Some(t) = target {
+            let cdp = host.connection().await?;
+            if let Ok(tab) = Self::attach(host, cdp, t.to_string()).await {
+                return Ok(tab);
+            }
+        }
+        Self::open(host).await
+    }
+
+    async fn attach(host: &BrowserHost, cdp: Cdp, target: String) -> Result<Tab, String> {
         let session = cdp
             .call(None, "Target.attachToTarget", json!({ "targetId": target, "flatten": true }))
             .await?["sessionId"]
@@ -985,12 +1008,17 @@ impl Tab {
             .map_err(|e| e.to_string())
     }
 
+    /// Where the tab is now, read or not.
+    pub async fn current_url(&self) -> String {
+        let info = self.cdp.call(None, "Target.getTargetInfo", json!({ "targetId": self.target })).await.unwrap_or_default();
+        info["targetInfo"]["url"].as_str().unwrap_or("").to_string()
+    }
+
     /// The tab's DevTools id: what the live view asks for.
     pub fn target_id(&self) -> &str {
         &self.target
     }
 
-    #[allow(dead_code)] // a finished task's tab is left open for the person to look at
     pub async fn close(self) {
         let _ = self.cdp.call(None, "Target.closeTarget", json!({ "targetId": self.target })).await;
     }
@@ -1174,6 +1202,13 @@ mod tests {
         let mut tab = Tab::open(&host).await.expect("chrome");
         let pid = host.pid.lock().unwrap().expect("chrome's pid");
         assert!(!app_window::is_active(pid), "Chrome must not keep the keyboard");
+        let pages = host.connection().await.unwrap().call(None, "Target.getTargets", json!({})).await.unwrap()["targetInfos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["type"] == "page")
+            .count();
+        assert_eq!(pages, 1, "only the task's own window — no empty start-up one");
         tab.call("Page.navigate", json!({ "url": page })).await.unwrap();
         tab.settle().await;
         let a = host.frame(tab.target_id()).await.expect("a frame while parked");
