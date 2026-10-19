@@ -147,6 +147,10 @@ pub struct Project {
     /// Videos made from this project so far.
     #[serde(default)]
     pub versions: u32,
+    /// What the last video was made with (script, voice, image model,
+    /// format), so "Make video" redoes only what changed.
+    #[serde(default)]
+    pub made: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -524,6 +528,7 @@ pub fn create<R: Runtime>(app: &AppHandle<R>, base_url: &str, model: &str) -> Pr
         cost: 0.0,
         voice_chars: 0,
         versions: 0,
+        made: Value::Null,
         video_id: None,
         error: None,
     };
@@ -545,7 +550,7 @@ pub fn set_text_model<R: Runtime>(app: &AppHandle<R>, id: &str, base_url: &str, 
 /// as the original, transparency and all. Returns the asset's file name.
 pub fn add_image<R: Runtime>(app: &AppHandle<R>, id: &str, attachment: &str, name: &str) -> Result<String, String> {
     let motion = app.state::<Motion>().inner().clone();
-    let p = motion.get(id).ok_or("no such video project")?;
+    motion.get(id).ok_or("no such video project")?;
     let bytes = crate::attach::original_bytes(attachment)?;
     let stem: String = name
         .rsplit('/')
@@ -559,7 +564,7 @@ pub fn add_image<R: Runtime>(app: &AppHandle<R>, id: &str, attachment: &str, nam
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .take(30)
         .collect();
-    let n = p.assets.iter().filter(|a| a.kind == "user").count() + 1;
+    let n = &uuid::Uuid::new_v4().simple().to_string()[..6];
     let a = store_image(&dir_of(id), &format!("user-{n}-{stem}.png"), &bytes, "user", &format!("the person's own image \"{name}\" — show it as it is"), 1600)?;
     let file = a.file.clone();
     motion.update(app, id, |p| p.assets.push(a));
@@ -1673,11 +1678,12 @@ pub async fn run<R: Runtime>(
         return Err("There is no script yet.".into());
     }
     if p.voice_id.trim().is_empty() || (p.voice_source != "elevenlabs" && p.speech_model.trim().is_empty()) {
-        return Err("No voice chosen yet — pick one (list_voices) and pass it to make_video.".into());
+        return Err("No voice chosen yet.".into());
     }
     // The image model: the person's choice, else the newest that can cut out.
-    let image_model = match key(&settings(app), "motionImageModel") {
-        m if !m.is_empty() => m,
+    let image_model = match (p.image_model.trim(), key(&settings(app), "motionImageModel")) {
+        (m, _) if !m.is_empty() => m.to_string(),
+        (_, m) if !m.is_empty() => m,
         _ => motion_image_models(app.clone())
             .await?
             .first()
@@ -1818,6 +1824,330 @@ pub fn delete<R: Runtime>(app: &AppHandle<R>, id: &str) {
     let _ = std::fs::remove_dir_all(dir_of(id));
 }
 
+// ---- the Video tab -------------------------------------------------------------
+// The tab is a form: what the video is about, the models, the voice, format and
+// length, and the person's own images. "Write script" fills in a script to edit;
+// "Make video" makes it, redoing only what changed since the last one; "Change
+// something" revises the last video, by default with one animation pass.
+
+const SCRIPT_SYSTEM: &str = "You write voice-over scripts for short motion-graphics videos.\n\
+Rules:\n\
+- Written to be SPOKEN: complete, natural sentences with rhythm. No staccato fragments, no lists, no hashtags.\n\
+- Plain text only. No stage directions, no [brackets], no emojis, no speaker names — everything you write is read aloud.\n\
+- Length: about {words} words for {seconds} seconds. Never more.\n\
+- An explainer opens with the question of what this is about, then answers it simply.\n\
+- An ad wins attention in the first two seconds, shows the benefit to the viewer rather than listing features, and ends with one clear call to action.\n\
+- Use only facts from the brief and research. Never invent prices, numbers, awards, offers or features.\n\
+- Write in {language}.\n\
+Reply with JSON only: {\"title\": \"short working title\", \"script\": \"the voice-over\"}";
+
+fn words_for(seconds: u32, language: &str) -> u32 {
+    // Spoken pace: English ~2.5 words/s; German and others run a little slower.
+    let rate = if language.to_lowercase().starts_with("en") { 2.5 } else { 2.2 };
+    ((seconds as f64) * rate * 0.92) as u32
+}
+
+/// What the form holds. Empty fields leave the project as it is.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Form {
+    /// What the video is about, in the person's words; links in it are looked up.
+    pub brief: String,
+    /// "ad" | "explainer"
+    pub kind: String,
+    pub format: String,
+    pub seconds: u32,
+    pub language: String,
+    pub title: String,
+    pub script: String,
+    pub voice_source: String,
+    pub speech_model: String,
+    pub voice: String,
+    pub voice_name: String,
+    pub image_model: String,
+    pub base_url: String,
+    pub model: String,
+}
+
+fn take_form<R: Runtime>(app: &AppHandle<R>, id: &str, f: &Form) {
+    let keep = |new: &str, old: &str| if new.trim().is_empty() { old.to_string() } else { new.trim().to_string() };
+    app.state::<Motion>().update(app, id, |p| {
+        p.brief.product = keep(&f.brief, &p.brief.product);
+        p.brief.kind = keep(&f.kind, &p.brief.kind);
+        if matches!(f.format.as_str(), "9:16" | "16:9" | "1:1") {
+            p.brief.format = f.format.clone();
+        }
+        if f.seconds > 0 {
+            p.brief.seconds = f.seconds.clamp(10, 120);
+        }
+        p.brief.language = keep(&f.language, &p.brief.language);
+        p.title = keep(&f.title, &p.title);
+        p.script = keep(&f.script, &p.script);
+        if !f.voice.trim().is_empty() {
+            p.voice_source = if f.voice_source == "elevenlabs" { "elevenlabs".into() } else { "openrouter".into() };
+            p.speech_model = f.speech_model.trim().to_string();
+            p.voice_id = f.voice.trim().to_string();
+            p.voice_name = keep(&f.voice_name, &f.voice);
+        }
+        p.image_model = keep(&f.image_model, &p.image_model);
+        if !f.model.trim().is_empty() {
+            p.text_model = f.model.trim().to_string();
+            p.base_url = f.base_url.trim().to_string();
+        }
+    });
+}
+
+/// Links in the brief: an App Store link (or app id) and a website.
+fn links_in(brief: &str) -> (String, String) {
+    let mut app_store = String::new();
+    let mut website = String::new();
+    for w in brief.split_whitespace() {
+        let w = w.trim_matches(|c: char| matches!(c, '(' | ')' | ',' | '.' | '<' | '>' | '"' | '\''));
+        if w.contains("apps.apple.com") || w.contains("itunes.apple.com") {
+            app_store = w.to_string();
+        } else if (w.starts_with("http://") || w.starts_with("https://")) && website.is_empty() {
+            website = w.to_string();
+        }
+    }
+    (app_store, website)
+}
+
+fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
+    let Some(n) = app.try_state::<tauri_plugin_notification::Notification<R>>() else { return };
+    let body: String = body.chars().take(180).collect();
+    let _ = n.builder().title(title).body(body).show();
+}
+
+/// Make or revise in the background; the tab follows along with motion_get.
+fn start<R: Runtime>(app: &AppHandle<R>, id: &str, from: From, feedback: String) -> Result<(), String> {
+    let motion = app.state::<Motion>().inner().clone();
+    let p = motion.get(id).ok_or("no such video project")?;
+    if p.status == "running" {
+        return Err("This video is already being made.".into());
+    }
+    let (app, id) = (app.clone(), id.to_string());
+    tauri::async_runtime::spawn(async move {
+        let made = {
+            let p = motion.get(&id);
+            p.map(|p| json!({ "script": p.script, "voice": format!("{}|{}|{}", p.voice_source, p.speech_model, p.voice_id), "format": p.brief.format }))
+        };
+        match run(&app, &id, from, &feedback, |_| {}, || false).await {
+            Ok(_) => {
+                let p = motion.get(&id);
+                motion.update(&app, &id, |p| {
+                    if let Some(mut m) = made {
+                        m["imageModel"] = json!(p.image_model);
+                        p.made = m;
+                    }
+                });
+                notify(&app, "Video ready", &p.map(|p| p.title).unwrap_or_default());
+            }
+            Err(e) if e == "stopped" => {}
+            Err(e) => {
+                // A refusal before the run began (no voice, no script) still
+                // has to reach the tab.
+                motion.update(&app, &id, |p| {
+                    if p.status != "failed" {
+                        p.status = "failed".into();
+                        p.error = Some(e.clone());
+                    }
+                });
+                notify(&app, "Video failed", &e);
+            }
+        }
+    });
+    Ok(())
+}
+
+/// What the form offers: image models that can cut out, OpenRouter speech
+/// models with their voices, and the person's ElevenLabs voices.
+#[tauri::command]
+pub async fn motion_options<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
+    let (images, speech, eleven) =
+        tokio::join!(motion_image_models(app.clone()), motion_speech_models(app.clone()), motion_voices(app.clone()));
+    let error = images.as_ref().err().or(speech.as_ref().err()).cloned();
+    Ok(json!({
+        "imageModels": images.unwrap_or_default(),
+        "speechModels": speech.unwrap_or_default(),
+        "elevenVoices": eleven.as_ref().ok(),
+        "elevenError": eleven.err(),
+        "error": error,
+    }))
+}
+
+/// Projects, newest first, for the sidebar. Empty ones are left out.
+#[tauri::command]
+pub fn motion_list<R: Runtime>(app: AppHandle<R>) -> Vec<Value> {
+    let m = app.state::<Motion>();
+    m.ensure_loaded();
+    let map = m.0.projects.lock().unwrap();
+    let mut out: Vec<&Project> = map
+        .values()
+        .filter(|p| !p.script.trim().is_empty() || p.versions > 0 || p.assets.iter().any(|a| a.kind == "user"))
+        .collect();
+    out.sort_by(|a, b| b.updated.cmp(&a.updated));
+    out.iter()
+        .map(|p| json!({ "id": p.id, "title": p.title, "status": p.status, "updated": p.updated, "versions": p.versions, "videoId": p.video_id }))
+        .collect()
+}
+
+#[tauri::command]
+pub fn motion_new<R: Runtime>(app: AppHandle<R>, base_url: String, model: String) -> Project {
+    let mut p = create(&app, &base_url, &model);
+    app.state::<Motion>().update(&app, &p.id, |q| {
+        q.brief.seconds = 30;
+        q.status = "draft".into();
+    });
+    p.brief.seconds = 30;
+    p
+}
+
+/// Keep what the form holds without doing anything with it.
+#[tauri::command]
+pub fn motion_save<R: Runtime>(app: AppHandle<R>, id: String, form: Form) -> Result<Project, String> {
+    take_form(&app, &id, &form);
+    app.state::<Motion>().get(&id).ok_or("no such video project".into())
+}
+
+#[tauri::command]
+pub fn motion_add_asset<R: Runtime>(app: AppHandle<R>, id: String, attachment: String, name: String) -> Result<Project, String> {
+    add_image(&app, &id, &attachment, &name)?;
+    app.state::<Motion>().get(&id).ok_or("no such video project".into())
+}
+
+#[tauri::command]
+pub fn motion_remove_asset<R: Runtime>(app: AppHandle<R>, id: String, file: String) -> Result<Project, String> {
+    let file = file.rsplit('/').next().unwrap_or("").to_string();
+    let motion = app.state::<Motion>().inner().clone();
+    motion.update(&app, &id, |p| p.assets.retain(|a| a.file != file));
+    let _ = std::fs::remove_file(format!("{}/assets/{file}", dir_of(&id)));
+    motion.get(&id).ok_or("no such video project".into())
+}
+
+/// One of the project's images, as a data URL for its thumbnail.
+#[tauri::command]
+pub fn motion_asset(id: String, file: String) -> Result<String, String> {
+    let file = file.rsplit('/').next().unwrap_or("").to_string();
+    if file.is_empty() || file.starts_with('.') {
+        return Err("bad file".into());
+    }
+    let bytes = std::fs::read(format!("{}/assets/{file}", dir_of(&id))).map_err(|_| "that image is gone".to_string())?;
+    let mime = if file.ends_with(".png") { "image/png" } else { "image/jpeg" };
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+/// Look up links in the brief and write a script to edit. Nothing paid but
+/// the text model has run when this returns.
+#[tauri::command]
+pub async fn motion_script<R: Runtime>(app: AppHandle<R>, id: String, form: Form) -> Result<Project, String> {
+    if form.brief.trim().is_empty() {
+        return Err("Say what the video is about first.".into());
+    }
+    take_form(&app, &id, &form);
+    let motion = app.state::<Motion>().inner().clone();
+    let p = motion.get(&id).ok_or("no such video project")?;
+    let (app_store_link, website) = links_in(&p.brief.product);
+    // Each link is looked up once; the result stays with the project.
+    let new_store = if app_store_link != p.brief.app_store { app_store_link.clone() } else { String::new() };
+    let new_site = if website != p.brief.website { website.clone() } else { String::new() };
+    if !new_store.is_empty() || !new_site.is_empty() {
+        motion.update(&app, &id, |p| {
+            p.brief.app_store = app_store_link.clone();
+            p.brief.website = website.clone();
+        });
+        if let Err(e) = research(&app, &id, &new_store, &new_site).await {
+            motion.update(&app, &id, |p| p.research = format!("{}\n(Lookup failed: {e})", p.research).trim().to_string());
+        }
+    }
+    let p = motion.get(&id).ok_or("no such video project")?;
+    let seconds = if p.brief.seconds == 0 { 30 } else { p.brief.seconds };
+    let language = if p.brief.language.trim().is_empty() { "English".to_string() } else { p.brief.language.clone() };
+    let system = SCRIPT_SYSTEM
+        .replace("{words}", &words_for(seconds, &language).to_string())
+        .replace("{seconds}", &seconds.to_string())
+        .replace("{language}", &language);
+    let user = format!(
+        "Video type: {}\nWhat it is about (the person's brief):\n{}\n\nTheir own images: {}\n\nResearch:\n{}",
+        if p.brief.kind == "explainer" { "explainer" } else { "ad / promo spot" },
+        p.brief.product,
+        { let own: Vec<&str> = p.assets.iter().filter(|a| a.kind == "user").map(|a| a.note.as_str()).collect(); if own.is_empty() { "none".to_string() } else { own.join("; ") } },
+        if p.research.trim().is_empty() { "(none)" } else { &p.research }
+    );
+    let reply = ask(&app, &p.base_url, &p.text_model, &system, json!(user), 0.7).await?;
+    let v = json_in(&reply).ok_or("The text model's script wasn't readable — try again.")?;
+    let script = v["script"].as_str().unwrap_or("").trim().to_string();
+    if script.is_empty() {
+        return Err("The text model wrote no script — try again.".into());
+    }
+    motion.update(&app, &id, |p| {
+        p.script = script;
+        if let Some(t) = v["title"].as_str().filter(|t| !t.trim().is_empty()) {
+            p.title = t.trim().to_string();
+        }
+        if p.status == "draft" {
+            p.status = "script".into();
+        }
+    });
+    motion.get(&id).ok_or("no such video project".into())
+}
+
+/// Make the video from the form, redoing only what changed since the last
+/// one: a new script or voice redoes everything; a new image model, the look;
+/// a new format, the animation; nothing changed, a fresh look.
+#[tauri::command]
+pub fn motion_make<R: Runtime>(app: AppHandle<R>, id: String, form: Form) -> Result<Project, String> {
+    take_form(&app, &id, &form);
+    let motion = app.state::<Motion>().inner().clone();
+    let p = motion.get(&id).ok_or("no such video project")?;
+    if p.script.trim().is_empty() {
+        return Err("Write the script first (or let \"Write script\" draft it).".into());
+    }
+    if p.voice_id.trim().is_empty() {
+        return Err("Pick a voice.".into());
+    }
+    let m = &p.made;
+    let from = if p.versions == 0 || m.is_null() || !std::path::Path::new(&format!("{}/words.json", dir_of(&id))).exists() {
+        From::Voice
+    } else if m["script"] != p.script.as_str() || m["voice"] != format!("{}|{}|{}", p.voice_source, p.speech_model, p.voice_id).as_str() {
+        From::Voice
+    } else if m["imageModel"] != p.image_model.as_str() {
+        From::Images
+    } else if m["format"] != p.brief.format.as_str() {
+        From::Animation
+    } else {
+        From::Images
+    };
+    start(&app, &id, from, String::new())?;
+    motion.get(&id).ok_or("no such video project".into())
+}
+
+/// Change the last video: "animation" (the default, one pass of the
+/// animation), "images" (new look, images and sound), or "voice" (all of it).
+#[tauri::command]
+pub fn motion_revise<R: Runtime>(app: AppHandle<R>, id: String, feedback: String, redo: String) -> Result<(), String> {
+    if feedback.trim().is_empty() {
+        return Err("Say what should change.".into());
+    }
+    let from = match redo.as_str() {
+        "voice" => From::Voice,
+        "images" => From::Images,
+        _ => From::Animation,
+    };
+    start(&app, &id, from, feedback)
+}
+
+/// A short sample of a voice, as a data URL to play.
+#[tauri::command]
+pub async fn motion_sample<R: Runtime>(app: AppHandle<R>, id: String, source: String, model: String, voice: String, text: String) -> Result<String, String> {
+    let file = sample(&app, &id, &source, &model, &voice, &text).await?;
+    motion_audio(id, file)
+}
+
+#[tauri::command]
+pub fn motion_delete<R: Runtime>(app: AppHandle<R>, id: String) {
+    delete(&app, &id);
+}
+
 /// The project, or nothing if it has not changed since `since`.
 #[tauri::command]
 pub fn motion_get<R: Runtime>(app: AppHandle<R>, id: String, since: Option<u64>) -> Result<Option<Project>, String> {
@@ -1875,6 +2205,69 @@ mod tests {
         println!("{summary}\nDIR {}", dir_of(&p.id));
         assert_ne!(v1, v2);
         assert!(summary.contains("Revising the animation") && !summary.contains("Recording the voice"), "{summary}");
+    }
+
+    /// The Video tab's form, end to end against the real services: options,
+    /// a brief with an App Store link → script → make → "change something"
+    /// (one animation pass). Ignored by default: needs OPENROUTER_API_KEY,
+    /// Chrome and ffmpeg, and spends a few cents.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn the_form_writes_makes_and_changes_a_video() {
+        let or = std::env::var("OPENROUTER_API_KEY").unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(Motion::default())
+            .manage(crate::server::RemoteSettings::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let handle = app.handle().clone();
+        handle.state::<crate::server::RemoteSettings>().set(json!({ "openrouterKey": or }).to_string());
+        let options = motion_options(handle.clone()).await.unwrap();
+        println!("image models: {}", options["imageModels"].as_array().map_or(0, |a| a.len()));
+        println!("speech models: {}", options["speechModels"].as_array().map_or(0, |a| a.len()));
+        assert!(options["error"].is_null(), "{}", options["error"]);
+        let model = std::env::var("MOTION_TEXT_MODEL").unwrap_or("google/gemini-3.8-flash".into());
+        let p = motion_new(handle.clone(), "https://openrouter.ai/api/v1".into(), model.clone());
+        let form = || Form {
+            brief: "A 15-second ad for Duolingo, the language-learning app: https://apps.apple.com/app/id570060128".into(),
+            kind: "ad".into(),
+            format: "9:16".into(),
+            seconds: 15,
+            language: "English".into(),
+            voice_source: "openrouter".into(),
+            speech_model: "google/gemini-3.8-flash-tts".into(),
+            voice: "Puck".into(),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            model: model.clone(),
+            ..Default::default()
+        };
+        let written = motion_script(handle.clone(), p.id.clone(), form()).await.unwrap();
+        println!("TITLE {}\nSCRIPT {}", written.title, written.script);
+        assert!(written.assets.iter().any(|a| a.kind == "icon"), "the App Store icon is looked up");
+        let wait = |h: AppHandle<tauri::test::MockRuntime>, id: String| async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let p = h.state::<Motion>().get(&id).unwrap();
+                if p.status != "running" {
+                    return p;
+                }
+            }
+        };
+        motion_make(handle.clone(), p.id.clone(), Form { script: written.script.clone(), title: written.title.clone(), ..form() }).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let done = wait(handle.clone(), p.id.clone()).await;
+        assert_eq!(done.status, "done", "{:?}", done.error);
+        let first = done.video_id.clone().unwrap();
+        println!("v1 {first} ${:.3}", done.cost);
+        motion_revise(handle.clone(), p.id.clone(), "Make the title twice as big.".into(), "animation".into()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let done = wait(handle.clone(), p.id.clone()).await;
+        assert_eq!(done.status, "done", "{:?}", done.error);
+        let steps: Vec<&str> = done.steps.iter().map(|s| s.title.as_str()).collect();
+        println!("revision steps: {steps:?} · total ${:.3}\nDIR {}", done.cost, dir_of(&p.id));
+        assert_ne!(done.video_id.unwrap(), first);
+        assert_eq!(done.versions, 2);
+        assert!(!steps.iter().any(|s| s.contains("voice")), "a revision keeps the voice");
     }
 
     /// Re-mix a finished project: MOTION_DIR=~/.ai-box/motion/<id>.

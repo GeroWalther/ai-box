@@ -622,6 +622,11 @@ fn params<T: DeserializeOwned>(args: &Value) -> Result<T, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The Video tab's form, from an RPC's arguments.
+fn form(args: &Value) -> Result<crate::motion::Form, String> {
+    serde_json::from_value(args.get("form").cloned().unwrap_or(Value::Null)).map_err(|e| format!("bad form: {e}"))
+}
+
 async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Value, String> {
     let s = |key: &str| {
         args.get(key)
@@ -726,6 +731,26 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
         "motion_audio" => Ok(Value::String(crate::motion::motion_audio(s("id"), s("file"))?)),
         "motion_get" => serde_json::to_value(crate::motion::motion_get(ctx.app.clone(), s("id"), args.get("since").and_then(|v| v.as_u64()))?)
             .map_err(|e| e.to_string()),
+        "motion_options" => crate::motion::motion_options(ctx.app.clone()).await,
+        "motion_list" => Ok(Value::Array(crate::motion::motion_list(ctx.app.clone()))),
+        "motion_new" => serde_json::to_value(crate::motion::motion_new(ctx.app.clone(), s("baseUrl"), s("model"))).map_err(|e| e.to_string()),
+        "motion_save" => serde_json::to_value(crate::motion::motion_save(ctx.app.clone(), s("id"), form(&args)?)?).map_err(|e| e.to_string()),
+        "motion_add_asset" => serde_json::to_value(crate::motion::motion_add_asset(ctx.app.clone(), s("id"), s("attachment"), s("name"))?).map_err(|e| e.to_string()),
+        "motion_remove_asset" => serde_json::to_value(crate::motion::motion_remove_asset(ctx.app.clone(), s("id"), s("file"))?).map_err(|e| e.to_string()),
+        "motion_asset" => Ok(Value::String(crate::motion::motion_asset(s("id"), s("file"))?)),
+        "motion_script" => serde_json::to_value(crate::motion::motion_script(ctx.app.clone(), s("id"), form(&args)?).await?).map_err(|e| e.to_string()),
+        "motion_make" => serde_json::to_value(crate::motion::motion_make(ctx.app.clone(), s("id"), form(&args)?)?).map_err(|e| e.to_string()),
+        "motion_revise" => {
+            crate::motion::motion_revise(ctx.app.clone(), s("id"), s("feedback"), s("redo"))?;
+            Ok(Value::Null)
+        }
+        "motion_sample" => Ok(Value::String(
+            crate::motion::motion_sample(ctx.app.clone(), s("id"), s("source"), s("model"), s("voice"), s("text")).await?,
+        )),
+        "motion_delete" => {
+            crate::motion::motion_delete(ctx.app.clone(), s("id"));
+            Ok(Value::Null)
+        }
         "motion_stop" => {
             crate::motion::motion_stop(ctx.app.clone(), s("id"));
             Ok(Value::Null)
