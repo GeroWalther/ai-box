@@ -144,6 +144,8 @@ pub struct BrowserHost {
     /// Every window's outer size: whatever makes the page fill the browser
     /// panel exactly (`resize`), so pages lay out for the size they are seen at.
     size: Arc<Mutex<(i64, i64)>>,
+    /// When sign-ins were last made to outlast a restart (`keep_sign_ins`).
+    kept: Arc<Mutex<Option<std::time::Instant>>>,
     /// The page size the panel wants, once it has said (`resize`).
     viewport: Arc<Mutex<Option<(i64, i64)>>>,
     profile: String,
@@ -168,6 +170,7 @@ impl BrowserHost {
             user_target: Arc::default(),
             size: Arc::new(Mutex::new((VIEW_W, VIEW_H))),
             viewport: Arc::default(),
+            kept: Arc::default(),
             profile,
             headless: false,
         }
@@ -270,10 +273,65 @@ install Chrome from google.com/chrome and try again."
                 app_window::hide_now(pid);
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }
+            // The new-tab window Chrome opens on start: no task or person
+            // asked for it.
+            let targets = c.call(None, "Target.getTargets", json!({})).await.unwrap_or_default();
+            for t in targets["targetInfos"].as_array().into_iter().flatten() {
+                let url = t["url"].as_str().unwrap_or("");
+                if t["type"] == "page" && (url == "about:blank" || url.starts_with("chrome://newtab") || url.starts_with("chrome://new-tab-page")) {
+                    let _ = c.call(None, "Target.closeTarget", json!({ "targetId": t["targetId"] })).await;
+                }
+            }
         }
         self.park_all(c).await;
         if let Some(pid) = pid {
             app_window::unhide(pid);
+        }
+    }
+
+    /// Stay signed in when Chrome restarts. Many sites (Apple's among them)
+    /// keep a sign-in in a cookie meant to last until the browser closes, and
+    /// Chrome only keeps those when it restores its last session — which it
+    /// does not when started for DevTools. So such cookies are given a 30-day
+    /// life instead; the site still decides when the sign-in itself ends, and
+    /// signing out still clears them. At most every 15 seconds.
+    pub async fn keep_sign_ins(&self) {
+        if self.headless {
+            return;
+        }
+        {
+            let mut kept = self.kept.lock().unwrap();
+            if kept.is_some_and(|t| t.elapsed() < Duration::from_secs(15)) {
+                return;
+            }
+            *kept = Some(std::time::Instant::now());
+        }
+        let c = { self.conn.lock().await.clone() };
+        let Some(c) = c.filter(|c| c.alive()) else { return };
+        let Ok(all) = c.call(None, "Storage.getCookies", json!({})).await else { return };
+        let expires = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0)
+            + 30.0 * 86_400.0;
+        let lasting: Vec<Value> = all["cookies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|k| k["session"] == true)
+            .map(|k| {
+                let mut k = k.clone();
+                if let Some(o) = k.as_object_mut() {
+                    for gone in ["size", "session", "partitionKeyOpaque"] {
+                        o.remove(gone);
+                    }
+                    o.insert("expires".into(), json!(expires));
+                }
+                k
+            })
+            .collect();
+        if !lasting.is_empty() {
+            let _ = c.call(None, "Storage.setCookies", json!({ "cookies": lasting })).await;
         }
     }
 
@@ -288,6 +346,7 @@ install Chrome from google.com/chrome and try again."
         if let Some(c) = c.filter(|c| c.alive()) {
             self.park_all(&c).await;
         }
+        self.keep_sign_ins().await;
     }
 
     async fn park_all(&self, c: &Cdp) {
@@ -329,6 +388,20 @@ install Chrome from google.com/chrome and try again."
                 }
             }
         }
+    }
+
+    /// A new window, opened straight into the parking spot so it never shows.
+    fn new_window(&self, url: &str) -> Value {
+        let mut p = json!({ "url": url, "newWindow": true, "background": true });
+        if !self.headless && !self.pinned.load(Ordering::Relaxed) {
+            let (x, y) = parking_spot();
+            let (w, h) = *self.size.lock().unwrap();
+            p["left"] = json!(x);
+            p["top"] = json!(y);
+            p["width"] = json!(w);
+            p["height"] = json!(h);
+        }
+        p
     }
 
     /// Bring the real window out on `target`, and leave it out until `hide`.
@@ -424,6 +497,8 @@ install Chrome from google.com/chrome and try again."
         )
         .await
         .map_err(|_| "the browser did not paint (is its window minimised?)".to_string())??;
+        // The person may have just signed in, here in the panel.
+        self.keep_sign_ins().await;
         let mut m = self.view_call(target, "Page.getLayoutMetrics", json!({})).await.unwrap_or_default();
         // macOS keeps a window within the screen's height, so a tall panel
         // can outgrow it: then the page is laid out at the panel's size
@@ -543,7 +618,7 @@ install Chrome from google.com/chrome and try again."
             }
         }
         let t = c
-            .call(None, "Target.createTarget", json!({ "url": "https://www.google.com", "newWindow": true, "background": true }))
+            .call(None, "Target.createTarget", self.new_window(&last_page()))
             .await?["targetId"]
             .as_str()
             .ok_or("no tab id")?
@@ -561,8 +636,33 @@ pub async fn view(host: &BrowserHost, target: Option<&str>) -> Result<Value, Str
         None => host.user_tab().await?,
     };
     let mut v = host.frame(&target).await?;
+    // Where the person's own window was, so it reopens there after Chrome
+    // restarts.
+    if host.user_target.lock().unwrap().as_deref() == Some(target.as_str()) {
+        if let Some(url) = v["url"].as_str().filter(|u| u.starts_with("http")) {
+            remember_page(url);
+        }
+    }
     v["target"] = json!(target);
     Ok(v)
+}
+
+fn last_page_file() -> String {
+    crate::app_path("browser-last-page.txt")
+}
+
+fn last_page() -> String {
+    std::fs::read_to_string(last_page_file())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|u| u.starts_with("http"))
+        .unwrap_or_else(|| "https://www.google.com".into())
+}
+
+fn remember_page(url: &str) {
+    if last_page() != url {
+        let _ = std::fs::write(last_page_file(), url);
+    }
 }
 
 #[tauri::command]
@@ -714,7 +814,7 @@ impl Tab {
         let target = cdp
             // A window of its own: tabs behind another tab stop painting, and
             // two tasks would otherwise share one window.
-            .call(None, "Target.createTarget", json!({ "url": "about:blank", "newWindow": true, "background": true }))
+            .call(None, "Target.createTarget", host.new_window("about:blank"))
             .await?["targetId"]
             .as_str()
             .ok_or("no tab id")?
@@ -1209,6 +1309,9 @@ mod tests {
             .filter(|t| t["type"] == "page")
             .count();
         assert_eq!(pages, 1, "only the task's own window — no empty start-up one");
+        let w = host.connection().await.unwrap().call(None, "Browser.getWindowForTarget", json!({ "targetId": tab.target_id() })).await.unwrap();
+        println!("new window at {}", w["bounds"]);
+        assert_eq!(w["bounds"]["left"].as_i64(), Some(parking_spot().0), "born parked");
         tab.call("Page.navigate", json!({ "url": page })).await.unwrap();
         tab.settle().await;
         let a = host.frame(tab.target_id()).await.expect("a frame while parked");
@@ -1246,5 +1349,45 @@ mod tests {
         assert!(!app_window::is_active(pid), "put away, it gives the keyboard back");
         let _ = host.connection().await.unwrap().call(None, "Browser.close", json!({})).await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A sign-in kept in a session cookie survives Chrome restarting.
+    /// Ignored by default: opens a real Chrome twice, and needs the network.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn session_cookies_survive_a_restart() {
+        let dir = std::env::temp_dir().join(format!("aibox-session-test-{}", uuid::Uuid::new_v4()));
+        let profile = dir.to_string_lossy().to_string();
+        {
+            let host = BrowserHost::with_profile(profile.clone());
+            let mut tab = Tab::open(&host).await.unwrap();
+            tab.navigate("https://example.com").await.unwrap();
+            tab.eval_for_test("document.cookie = 'signed_in=yes; path=/; secure'").await.unwrap();
+            assert!(tab.eval_for_test("document.cookie").await.unwrap().as_str().unwrap_or("").contains("signed_in=yes"));
+            *host.kept.lock().unwrap() = None;
+            host.keep_sign_ins().await;
+            let _ = host.connection().await.unwrap().call(None, "Browser.close", json!({})).await;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        for _ in 0..50 {
+            if active_port(&profile).is_none() || !std::path::Path::new(&format!("{profile}/SingletonLock")).exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let _ = std::fs::remove_file(format!("{profile}/DevToolsActivePort"));
+        let host = BrowserHost::with_profile(profile.clone());
+        let mut tab = Tab::open(&host).await.unwrap();
+        tab.navigate("https://example.com").await.unwrap();
+        let cookie = tab.eval_for_test("document.cookie").await.unwrap().as_str().unwrap_or("").to_string();
+        println!("after restart: {cookie:?}");
+        let c = host.connection().await.unwrap();
+        let pages = c.call(None, "Target.getTargets", json!({})).await.unwrap()["targetInfos"]
+            .as_array().unwrap().iter().filter(|t| t["type"] == "page").count();
+        println!("pages after restart: {pages}");
+        let _ = c.call(None, "Browser.close", json!({})).await;
+        let _ = std::fs::remove_dir_all(dir);
+        assert!(cookie.contains("signed_in=yes"), "session cookie lost");
     }
 }

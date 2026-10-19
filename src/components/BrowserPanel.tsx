@@ -97,7 +97,12 @@ export default function BrowserPanel({ target, working, handover, onHandoverDone
   const keysRef = useRef<HTMLTextAreaElement>(null);
   const kick = useRef<() => void>(() => {});
   const wheel = useRef({ dx: 0, dy: 0, x: 0, y: 0, timer: 0 as ReturnType<typeof setTimeout> | 0 });
-  const resolved = view?.target ?? target;
+  // The task's tab can be gone (Chrome restarted since): then show the
+  // person's own window rather than an error.
+  const [gone, setGone] = useState<string | null>(null);
+  const shownTarget = target && gone !== target ? target : undefined;
+  const resolved = view?.target ?? shownTarget;
+  const touch = useRef<{ x: number; y: number; moved: boolean } | null>(null);
 
   // Frames: quick while something is happening, slow when idle, none while
   // the window is hidden. `kick` fetches one right after an input.
@@ -115,13 +120,16 @@ export default function BrowserPanel({ target, working, handover, onHandoverDone
       }
       busy = true;
       try {
-        const v = await invokeCmd<View>("browser_view", { target: target ?? null });
+        const v = await invokeCmd<View>("browser_view", { target: shownTarget ?? null });
         if (!stop) {
           setView(v);
           setError("");
         }
       } catch (e) {
-        if (!stop) setError(String(e));
+        if (!stop) {
+          if (shownTarget && /closed/i.test(String(e))) setGone(shownTarget);
+          else setError(String(e));
+        }
       } finally {
         busy = false;
       }
@@ -137,7 +145,7 @@ export default function BrowserPanel({ target, working, handover, onHandoverDone
       stop = true;
       clearTimeout(timer);
     };
-  }, [target, working, focused, handover]);
+  }, [shownTarget, working, focused, handover]);
 
   useEffect(() => {
     if (!editing) setAddress(view?.url && view.url !== "about:blank" ? view.url : "");
@@ -281,8 +289,48 @@ export default function BrowserPanel({ target, working, handover, onHandoverDone
           keysRef.current?.focus();
         }}
         onClick={(e) => {
+          // The end of a swipe is not a tap.
+          if (touch.current?.moved) return;
           const p = pagePoint(e.clientX, e.clientY);
           if (p) void send({ type: "click", ...p, count: e.detail || 1, modifiers: modifiers(e) });
+        }}
+        // On a phone: swipe to scroll the page.
+        onTouchStart={(e) => {
+          const t = e.touches[0];
+          touch.current = { x: t.clientX, y: t.clientY, moved: false };
+        }}
+        onTouchMove={(e) => {
+          const t = e.touches[0];
+          const s = touch.current;
+          const img = imgRef.current;
+          if (!s || !img || !view) return;
+          const scale = view.width / img.getBoundingClientRect().width;
+          const dx = (s.x - t.clientX) * scale;
+          const dy = (s.y - t.clientY) * scale;
+          if (Math.abs(dx) + Math.abs(dy) < 6) return;
+          s.moved = true;
+          s.x = t.clientX;
+          s.y = t.clientY;
+          const p = pagePoint(t.clientX, t.clientY);
+          if (p) {
+            const w = wheel.current;
+            w.dx += dx;
+            w.dy += dy;
+            w.x = p.x;
+            w.y = p.y;
+            if (!w.timer) {
+              w.timer = setTimeout(() => {
+                const { dx: sx, dy: sy, x, y } = w;
+                w.dx = w.dy = 0;
+                w.timer = 0;
+                void send({ type: "scroll", x, y, dx: sx, dy: sy });
+              }, 40);
+            }
+          }
+        }}
+        onTouchEnd={() => {
+          // Let the click that follows a tap through; drop the one after a swipe.
+          setTimeout(() => (touch.current = null), 400);
         }}
         onWheel={(e) => {
           const p = pagePoint(e.clientX, e.clientY);

@@ -272,6 +272,8 @@ body.resizing-x .browser-screen {
   overflow: hidden;
   background: #fff;
   cursor: default;
+  /* Swipes scroll the page in the panel, not the panel itself. */
+  touch-action: none;
 }
 .browser-screen img {
   display: block;
