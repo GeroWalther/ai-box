@@ -51,6 +51,8 @@ export interface Task {
   result?: string;
   error?: string;
   shot?: string;
+  /** The task's tab in the assistant's browser, for the browser panel. */
+  browser?: string;
   /** "video" for a Video tab chat. */
   kind?: string;
 }

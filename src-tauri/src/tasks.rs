@@ -116,6 +116,10 @@ pub struct Task {
     /// The browser as it looked after the latest step: the live view.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shot: Option<String>,
+    /// The DevTools id of the task's browser tab, while it has one: what the
+    /// in-app browser panel shows (`browser::browser_view`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
     /// "" for the assistant, "video" for a video chat.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
@@ -476,13 +480,18 @@ impl<R: Runtime> Run<R> {
 
     async fn tab(&mut self) -> Result<&mut Tab, String> {
         if self.tab.is_none() {
-            self.tab = Some(Tab::open(&self.host).await?);
+            let tab = Tab::open(&self.host).await?;
+            let target = tab.target_id().to_string();
+            self.tasks.update(&self.app, &self.id, |t| t.browser = Some(target));
+            self.tab = Some(tab);
         }
         Ok(self.tab.as_mut().unwrap())
     }
 
     /// Read the page after a browser action, and refresh the live view.
     async fn page_now(&mut self) -> Result<String, String> {
+        // A pop-up or new window can bring Chrome forward; put it back.
+        self.host.tuck_away().await;
         let tab = self.tab().await?;
         let summary = tab.observe().await?.summary.clone();
         let shot = tab.screenshot().await.ok().and_then(Self::store_shot);
@@ -615,10 +624,12 @@ Stop and report where things stand, or ask the user what to do instead."));
                 self.page_now().await
             }
             "hand_over" => {
-                self.tab().await?.show().await;
+                // The person does it in AI Box's browser panel, on this very tab.
+                self.tab().await?;
                 let shot = self.shot_now().await;
                 let reason = s("reason");
-                match self.wait_for("handover", "Your turn in the browser", &reason, shot).await {
+                let answer = self.wait_for("handover", "Your turn in the browser", &reason, shot).await;
+                match answer {
                     Some(_) => Ok(format!("The user says they are done. The page now:\n{}", self.page_now().await?)),
                     None => Err("stopped".into()),
                 }
@@ -1346,6 +1357,7 @@ pub fn start<R: Runtime>(
         result: None,
         error: None,
         shot: None,
+        browser: None,
         kind: kind.into(),
         project,
     };

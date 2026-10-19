@@ -12,7 +12,15 @@
 // list of its controls (browser_snapshot.js). It answers with an index, which
 // maps to a node the page itself identified — the model never writes selectors
 // or code that runs in the page. Screenshots are taken only for the person:
-// the live view on the phone, and the picture on an approval card.
+// the live view in AI Box and on the phone, and the picture on an approval card.
+//
+// The window stays out of the way. Chrome is a real, windowed browser — sites
+// that turn away headless ones (sign-ins especially) see nothing unusual — but
+// its windows are parked just past the corner of the screen, so the person can
+// go on using the Mac while it works: everything it does goes through
+// DevTools, never the mouse. AI Box shows the page in its own browser panel and
+// plays the person's clicks and keys into it (`frame`, `input`), so logging in
+// happens there too; the real window comes out only when they ask for it.
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -23,6 +31,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
+const CHROME_APP: &str = "/Applications/Google Chrome.app";
 const CHROME: &str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const SNAPSHOT: &str = include_str!("browser_snapshot.js");
 
@@ -124,6 +133,14 @@ fn active_port(profile: &str) -> Option<String> {
 #[derive(Clone)]
 pub struct BrowserHost {
     conn: Arc<tokio::sync::Mutex<Option<Cdp>>>,
+    /// Chrome's own process, for hiding and showing its windows.
+    pid: Arc<Mutex<Option<i32>>>,
+    /// The person brought the window forward: leave it until they hide it.
+    pinned: Arc<std::sync::atomic::AtomicBool>,
+    /// DevTools sessions the in-app view keeps on tabs, by target.
+    views: Arc<Mutex<HashMap<String, String>>>,
+    /// The person's own window (`user_tab`).
+    user_target: Arc<Mutex<Option<String>>>,
     profile: String,
     /// The assistant's browser is visible: the person needs to see it to log
     /// in. Headless is for tests and for rendering motion video (motion.rs).
@@ -138,7 +155,15 @@ impl Default for BrowserHost {
 
 impl BrowserHost {
     pub fn with_profile(profile: String) -> Self {
-        BrowserHost { conn: Arc::default(), profile, headless: false }
+        BrowserHost {
+            conn: Arc::default(),
+            pid: Arc::default(),
+            pinned: Arc::default(),
+            views: Arc::default(),
+            user_target: Arc::default(),
+            profile,
+            headless: false,
+        }
     }
 
     pub fn headless(profile: String) -> Self {
@@ -159,6 +184,7 @@ impl BrowserHost {
         // which Chrome would refuse.
         if let Some(url) = active_port(profile) {
             if let Ok(c) = Cdp::connect(&url).await {
+                self.attached(&c, false).await;
                 *slot = Some(c.clone());
                 return Ok(c);
             }
@@ -170,24 +196,38 @@ install Chrome from google.com/chrome and try again."
         }
         std::fs::create_dir_all(profile).map_err(|e| format!("create browser profile: {e}"))?;
         let _ = std::fs::remove_file(format!("{profile}/DevToolsActivePort"));
-        let mut cmd = std::process::Command::new(CHROME);
-        cmd.arg(format!("--user-data-dir={profile}"))
-            .arg("--remote-debugging-port=0")
-            .arg("--no-first-run")
-            .arg("--no-default-browser-check")
-            .arg("--window-size=1280,900")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        if headless {
-            cmd.arg("--headless=new");
-        }
-        cmd.arg("about:blank");
+        let args = [
+            format!("--user-data-dir={profile}"),
+            "--remote-debugging-port=0".into(),
+            "--no-first-run".into(),
+            "--no-default-browser-check".into(),
+            "--window-size=1280,900".into(),
+            // Hidden, its pages must still render and run at full speed —
+            // otherwise screenshots stall and timers crawl.
+            "--disable-backgrounding-occluded-windows".into(),
+            "--disable-renderer-backgrounding".into(),
+            "--disable-background-timer-throttling".into(),
+        ];
+        let mut cmd = if headless {
+            let mut c = std::process::Command::new(CHROME);
+            c.args(&args).arg("--headless=new");
+            c
+        } else {
+            // Through Launch Services: a new instance (-n), started hidden (-j)
+            // and without coming to the front (-g), so it never takes the
+            // screen from the person.
+            let mut c = std::process::Command::new("/usr/bin/open");
+            c.args(["-n", "-g", "-j", "-a", CHROME_APP, "--args"]).args(&args);
+            c
+        };
+        cmd.arg("about:blank").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         cmd.spawn().map_err(|e| format!("could not start Chrome: {e}"))?;
 
         for _ in 0..150 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             if let Some(url) = active_port(profile) {
                 if let Ok(c) = Cdp::connect(&url).await {
+                    self.attached(&c, true).await;
                     *slot = Some(c.clone());
                     return Ok(c);
                 }
@@ -195,6 +235,391 @@ install Chrome from google.com/chrome and try again."
         }
         Err("Chrome started but never opened its debugging port".into())
     }
+
+    /// Learn Chrome's process from the browser itself, and park its windows.
+    async fn attached(&self, c: &Cdp, fresh: bool) {
+        if self.headless {
+            return;
+        }
+        let info = c.call(None, "SystemInfo.getProcessInfo", json!({})).await.unwrap_or_default();
+        let pid = info["processInfo"]
+            .as_array()
+            .and_then(|ps| ps.iter().find(|p| p["type"] == "browser"))
+            .and_then(|p| p["id"].as_i64())
+            .map(|p| p as i32);
+        *self.pid.lock().unwrap() = pid;
+        // Chrome makes itself the active app when it starts, whatever it was
+        // told. Hiding it for a moment hands the keyboard back to whatever the
+        // person was using; unhidden again, it stays in the background.
+        if fresh {
+            if let Some(pid) = pid {
+                app_window::hide_now(pid);
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+        self.park_all(c).await;
+        if let Some(pid) = pid {
+            app_window::unhide(pid);
+        }
+    }
+
+    /// Put every window of the browser in the parking spot — unless the person
+    /// asked to see it. Called before each step: a site's pop-up opens a new
+    /// window wherever Chrome likes.
+    pub async fn tuck_away(&self) {
+        if self.headless || self.pinned.load(Ordering::Relaxed) {
+            return;
+        }
+        let c = { self.conn.lock().await.clone() };
+        if let Some(c) = c.filter(|c| c.alive()) {
+            self.park_all(&c).await;
+        }
+    }
+
+    async fn park_all(&self, c: &Cdp) {
+        let (x, y) = parking_spot();
+        let targets = c.call(None, "Target.getTargets", json!({})).await.unwrap_or_default();
+        let mut moved = false;
+        for t in targets["targetInfos"].as_array().into_iter().flatten().filter(|t| t["type"] == "page") {
+            let Ok(w) = c.call(None, "Browser.getWindowForTarget", json!({ "targetId": t["targetId"] })).await else { continue };
+            let b = &w["bounds"];
+            if b["left"].as_i64() == Some(x) && b["top"].as_i64() == Some(y) && b["windowState"] == "normal" {
+                continue;
+            }
+            if b["windowState"] != "normal" {
+                let _ = c
+                    .call(None, "Browser.setWindowBounds", json!({ "windowId": w["windowId"], "bounds": { "windowState": "normal" } }))
+                    .await;
+            }
+            let _ = c
+                .call(None, "Browser.setWindowBounds", json!({ "windowId": w["windowId"],
+                    "bounds": { "left": x, "top": y, "width": VIEW_W, "height": VIEW_H } }))
+                .await;
+            moved = true;
+        }
+        // A parked window must not keep the keyboard: what the person types
+        // would vanish into it.
+        let pid = *self.pid.lock().unwrap();
+        if moved {
+            if let Some(pid) = pid {
+                if app_window::is_active(pid) {
+                    app_window::hide_now(pid);
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    app_window::unhide(pid);
+                }
+            }
+        }
+    }
+
+    /// Bring the real window out on `target`, and leave it out until `hide`.
+    pub async fn show(&self, target: &str) -> Result<(), String> {
+        self.pinned.store(true, Ordering::Relaxed);
+        let c = self.connection().await?;
+        let _ = c.call(None, "Target.activateTarget", json!({ "targetId": target })).await;
+        if let Ok(w) = c.call(None, "Browser.getWindowForTarget", json!({ "targetId": target })).await {
+            let _ = c
+                .call(None, "Browser.setWindowBounds", json!({ "windowId": w["windowId"],
+                    "bounds": { "left": 80, "top": 60, "width": VIEW_W, "height": VIEW_H } }))
+                .await;
+        }
+        if let Some(pid) = *self.pid.lock().unwrap() {
+            app_window::show(pid);
+        }
+        Ok(())
+    }
+
+    /// Back to the parking spot.
+    pub async fn hide(&self) {
+        self.pinned.store(false, Ordering::Relaxed);
+        self.tuck_away().await;
+    }
+
+    pub fn is_shown(&self) -> bool {
+        self.pinned.load(Ordering::Relaxed)
+    }
+
+    /// A DevTools session on `target` for the in-app view, kept between calls.
+    async fn view_session(&self, target: &str) -> Result<(Cdp, String), String> {
+        let c = { self.conn.lock().await.clone() }.filter(|c| c.alive()).ok_or("the browser is not running")?;
+        if let Some(s) = self.views.lock().unwrap().get(target) {
+            return Ok((c, s.clone()));
+        }
+        let session = c
+            .call(None, "Target.attachToTarget", json!({ "targetId": target, "flatten": true }))
+            .await
+            .map_err(|_| "that browser window is closed".to_string())?["sessionId"]
+            .as_str()
+            .ok_or("no session id")?
+            .to_string();
+        self.views.lock().unwrap().insert(target.to_string(), session.clone());
+        Ok((c, session))
+    }
+
+    async fn view_call(&self, target: &str, method: &str, params: Value) -> Result<Value, String> {
+        let (c, session) = self.view_session(target).await?;
+        match c.call(Some(&session), method, params.clone()).await {
+            Ok(v) => Ok(v),
+            Err(_) => {
+                // The session went (the page crashed, the tab was replaced):
+                // attach afresh once.
+                self.views.lock().unwrap().remove(target);
+                let (c, session) = self.view_session(target).await?;
+                c.call(Some(&session), method, params).await
+            }
+        }
+    }
+
+    /// A JPEG of the tab for the live view, with what the view needs to map
+    /// clicks back onto the page: its size in CSS pixels, its address, title.
+    pub async fn frame(&self, target: &str) -> Result<Value, String> {
+        let shot = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.view_call(target, "Page.captureScreenshot", json!({ "format": "jpeg", "quality": 60 })),
+        )
+        .await
+        .map_err(|_| "the browser did not paint (is its window minimised?)".to_string())??;
+        let m = self.view_call(target, "Page.getLayoutMetrics", json!({})).await.unwrap_or_default();
+        let c = self.connection().await?;
+        let info = c.call(None, "Target.getTargetInfo", json!({ "targetId": target })).await.unwrap_or_default();
+        Ok(json!({
+            "frame": format!("data:image/jpeg;base64,{}", shot["data"].as_str().unwrap_or("")),
+            "width": m["cssLayoutViewport"]["clientWidth"],
+            "height": m["cssLayoutViewport"]["clientHeight"],
+            "url": info["targetInfo"]["url"],
+            "title": info["targetInfo"]["title"],
+            "shown": self.is_shown(),
+        }))
+    }
+
+    /// What the person does in the in-app view, played into the page: clicks
+    /// and scrolls at page coordinates, keys, pasted text, and the toolbar.
+    pub async fn input(&self, target: &str, ev: &Value) -> Result<(), String> {
+        let f = |k: &str| ev[k].as_f64().unwrap_or(0.0);
+        let modifiers = ev["modifiers"].as_u64().unwrap_or(0);
+        match ev["type"].as_str().unwrap_or("") {
+            "click" => {
+                let (x, y) = (f("x"), f("y"));
+                let count = ev["count"].as_u64().unwrap_or(1);
+                self.view_call(target, "Input.dispatchMouseEvent", json!({ "type": "mouseMoved", "x": x, "y": y })).await?;
+                for kind in ["mousePressed", "mouseReleased"] {
+                    self.view_call(target, "Input.dispatchMouseEvent", json!({
+                        "type": kind, "x": x, "y": y, "button": "left", "clickCount": count, "modifiers": modifiers,
+                    }))
+                    .await?;
+                }
+            }
+            "move" => {
+                self.view_call(target, "Input.dispatchMouseEvent", json!({ "type": "mouseMoved", "x": f("x"), "y": f("y") })).await?;
+            }
+            "scroll" => {
+                self.view_call(target, "Input.dispatchMouseEvent", json!({
+                    "type": "mouseWheel", "x": f("x"), "y": f("y"), "deltaX": f("dx"), "deltaY": f("dy"),
+                }))
+                .await?;
+            }
+            "key" => {
+                let key = ev["key"].as_str().unwrap_or("");
+                let code = ev["code"].as_str().unwrap_or("");
+                let vk = ev["keyCode"].as_u64().unwrap_or(0);
+                let text = ev["text"].as_str().unwrap_or("");
+                let mut down = json!({ "type": if text.is_empty() { "rawKeyDown" } else { "keyDown" },
+                    "key": key, "code": code, "windowsVirtualKeyCode": vk, "modifiers": modifiers });
+                if !text.is_empty() {
+                    down["text"] = json!(text);
+                }
+                // ⌘A, ⌘C, ⌘X, ⌘Z: Chrome only acts on them as editing commands.
+                if modifiers & 4 != 0 {
+                    let cmd = match key { "a" => "selectAll", "c" => "copy", "x" => "cut", "z" => "undo", _ => "" };
+                    if !cmd.is_empty() {
+                        down["commands"] = json!([cmd]);
+                    }
+                }
+                self.view_call(target, "Input.dispatchKeyEvent", down).await?;
+                self.view_call(target, "Input.dispatchKeyEvent", json!({
+                    "type": "keyUp", "key": key, "code": code, "windowsVirtualKeyCode": vk, "modifiers": modifiers,
+                }))
+                .await?;
+            }
+            "text" => {
+                self.view_call(target, "Input.insertText", json!({ "text": ev["text"].as_str().unwrap_or("") })).await?;
+            }
+            "navigate" => {
+                let url = ev["url"].as_str().unwrap_or("").trim();
+                let url = if url.contains("://") { url.to_string() } else if url.contains('.') && !url.contains(' ') {
+                    format!("https://{url}")
+                } else {
+                    format!("https://www.google.com/search?q={}", urlencode_segment(url))
+                };
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err("only web addresses (http or https) can be opened".into());
+                }
+                self.view_call(target, "Page.navigate", json!({ "url": url })).await?;
+            }
+            "back" | "forward" => {
+                let h = self.view_call(target, "Page.getNavigationHistory", json!({})).await?;
+                let i = h["currentIndex"].as_i64().unwrap_or(0) + if ev["type"] == "back" { -1 } else { 1 };
+                if let Some(e) = h["entries"].as_array().and_then(|es| es.get(i as usize)).filter(|_| i >= 0) {
+                    self.view_call(target, "Page.navigateToHistoryEntry", json!({ "entryId": e["id"] })).await?;
+                }
+            }
+            "reload" => {
+                self.view_call(target, "Page.reload", json!({})).await?;
+            }
+            other => return Err(format!("unknown browser input {other}")),
+        }
+        Ok(())
+    }
+
+    /// The person's own window in the assistant's browser: for signing in to
+    /// sites before a task, or just browsing in AI Box. Made once and reused.
+    pub async fn user_tab(&self) -> Result<String, String> {
+        let c = self.connection().await?;
+        let mine = self.user_target.lock().unwrap().clone();
+        if let Some(t) = mine {
+            let targets = c.call(None, "Target.getTargets", json!({})).await?;
+            if targets["targetInfos"].as_array().into_iter().flatten().any(|i| i["targetId"] == t.as_str()) {
+                return Ok(t);
+            }
+        }
+        let t = c
+            .call(None, "Target.createTarget", json!({ "url": "https://www.google.com", "newWindow": true, "background": true }))
+            .await?["targetId"]
+            .as_str()
+            .ok_or("no tab id")?
+            .to_string();
+        *self.user_target.lock().unwrap() = Some(t.clone());
+        self.tuck_away().await;
+        Ok(t)
+    }
+}
+
+/// The panel's picture of `target` — or, with none, of the person's own window.
+pub async fn view(host: &BrowserHost, target: Option<&str>) -> Result<Value, String> {
+    let target = match target {
+        Some(t) => t.to_string(),
+        None => host.user_tab().await?,
+    };
+    let mut v = host.frame(&target).await?;
+    v["target"] = json!(target);
+    Ok(v)
+}
+
+#[tauri::command]
+pub async fn browser_view(host: tauri::State<'_, BrowserHost>, target: Option<String>) -> Result<Value, String> {
+    view(host.inner(), target.as_deref().filter(|t| !t.is_empty())).await
+}
+#[tauri::command]
+pub async fn browser_input(host: tauri::State<'_, BrowserHost>, target: String, event: Value) -> Result<(), String> {
+    host.input(&target, &event).await
+}
+#[tauri::command]
+pub async fn browser_window(host: tauri::State<'_, BrowserHost>, target: String, show: bool) -> Result<(), String> {
+    if show {
+        host.show(&target).await
+    } else {
+        host.hide().await;
+        Ok(())
+    }
+}
+
+/// The page size the assistant's browser works at, and the in-app view shows.
+const VIEW_W: i64 = 1280;
+const VIEW_H: i64 = 900;
+
+/// Where the browser's windows wait: all but a sliver past the bottom-right
+/// corner of a display that has no neighbour there — a real, painted window
+/// (so pages render and screenshots work, unlike a hidden or minimised one)
+/// that is never in the way. macOS keeps a window from being placed wholly
+/// off-screen, so a couple of points stay on it.
+fn parking_spot() -> (i64, i64) {
+    #[cfg(target_os = "macos")]
+    {
+        use core_graphics::display::CGDisplay;
+        let rects: Vec<_> = CGDisplay::active_displays()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| CGDisplay::new(d).bounds())
+            .collect();
+        let inside = |x: f64, y: f64| {
+            rects.iter().any(|r| x >= r.origin.x && x < r.origin.x + r.size.width && y >= r.origin.y && y < r.origin.y + r.size.height)
+        };
+        let mut best = None;
+        for r in &rects {
+            let (right, bottom) = (r.origin.x + r.size.width, r.origin.y + r.size.height);
+            if !inside(right + 4.0, bottom - 4.0) && !inside(right - 4.0, bottom + 4.0) && !inside(right + 4.0, bottom + 4.0) {
+                best = Some(((right - 2.0) as i64, (bottom - 2.0) as i64));
+                break;
+            }
+        }
+        if let Some(spot) = best {
+            return spot;
+        }
+        let (w, h) = crate::control::main_display_points();
+        ((w - 2.0) as i64, (h - 2.0) as i64)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        (-30000, -30000)
+    }
+}
+
+/// Chrome as an app, through AppKit, by process — so the person's own Chrome,
+/// a separate process on its own profile, is never touched.
+#[cfg(target_os = "macos")]
+mod app_window {
+    use objc2::rc::autoreleasepool;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+
+    /// `NSApplicationActivateAllWindows | NSApplicationActivateIgnoringOtherApps`.
+    const ACTIVATE: usize = (1 << 0) | (1 << 1);
+
+    pub(super) fn with_app(pid: i32, f: impl FnOnce(&AnyObject)) {
+        autoreleasepool(|_| unsafe {
+            let Some(cls) = AnyClass::get(c"NSRunningApplication") else { return };
+            let app: *mut AnyObject = objc2::msg_send![cls, runningApplicationWithProcessIdentifier: pid];
+            if let Some(app) = app.as_ref() {
+                f(app);
+            }
+        });
+    }
+
+    pub fn is_active(pid: i32) -> bool {
+        let mut active = false;
+        with_app(pid, |app| unsafe {
+            let a: Bool = objc2::msg_send![app, isActive];
+            active = a.as_bool();
+        });
+        active
+    }
+
+    pub fn hide_now(pid: i32) {
+        with_app(pid, |app| unsafe {
+            let _: Bool = objc2::msg_send![app, hide];
+        });
+    }
+
+    pub fn unhide(pid: i32) {
+        with_app(pid, |app| unsafe {
+            let _: Bool = objc2::msg_send![app, unhide];
+        });
+    }
+
+    pub fn show(pid: i32) {
+        with_app(pid, |app| unsafe {
+            let _: Bool = objc2::msg_send![app, unhide];
+            let _: Bool = objc2::msg_send![app, activateWithOptions: ACTIVATE];
+        });
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod app_window {
+    pub fn is_active(_: i32) -> bool {
+        false
+    }
+    pub fn hide_now(_: i32) {}
+    pub fn unhide(_: i32) {}
+    pub fn show(_: i32) {}
 }
 
 // ---- One tab -----------------------------------------------------------------
@@ -222,7 +647,9 @@ impl Tab {
     pub async fn open(host: &BrowserHost) -> Result<Tab, String> {
         let cdp = host.connection().await?;
         let target = cdp
-            .call(None, "Target.createTarget", json!({ "url": "about:blank" }))
+            // A window of its own: tabs behind another tab stop painting, and
+            // two tasks would otherwise share one window.
+            .call(None, "Target.createTarget", json!({ "url": "about:blank", "newWindow": true, "background": true }))
             .await?["targetId"]
             .as_str()
             .ok_or("no tab id")?
@@ -234,6 +661,7 @@ impl Tab {
             .ok_or("no session id")?
             .to_string();
         let tab = Tab { cdp, session, target, last: None };
+        host.tuck_away().await;
         // Keep the page rendering while the window is behind other apps, so
         // menus and animations finish instead of freezing mid-step.
         let _ = tab.call("Emulation.setFocusEmulationEnabled", json!({ "enabled": true })).await;
@@ -499,11 +927,9 @@ impl Tab {
             .map_err(|e| e.to_string())
     }
 
-    /// Bring this tab to the front so the person can take over (log in, solve a
-    /// CAPTCHA) in the same browser the assistant is using.
-    pub async fn show(&self) {
-        let _ = self.cdp.call(None, "Target.activateTarget", json!({ "targetId": self.target })).await;
-        let _ = std::process::Command::new("/usr/bin/open").args(["-a", "Google Chrome"]).status();
+    /// The tab's DevTools id: what the live view asks for.
+    pub fn target_id(&self) -> &str {
+        &self.target
     }
 
     #[allow(dead_code)] // a finished task's tab is left open for the person to look at
@@ -669,6 +1095,51 @@ mod tests {
         assert!(!tab.screenshot().await.unwrap().is_empty());
         tab.close().await;
         // Quit the test's Chrome and drop its throwaway profile.
+        let _ = host.connection().await.unwrap().call(None, "Browser.close", json!({})).await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The parked browser works out of the way: it starts without taking the
+    /// keyboard, paints live frames for the in-app view, and takes the
+    /// person's clicks and keys from it. Ignored by default: opens a real Chrome.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn works_parked_and_takes_input_from_the_view() {
+        let _ = std::process::Command::new("/usr/bin/open").args(["-a", "Finder"]).status();
+        std::thread::sleep(Duration::from_millis(800));
+        let page = "data:text/html,<title>Form</title><h1 id=n>0</h1><form onsubmit=\"document.title='sent:'+q.value;return false\">\
+            <input id=q style='position:absolute;left:100px;top:200px;width:200px;height:30px'>\
+            <button style='position:absolute;left:100px;top:260px;width:100px;height:30px'>Go</button></form>\
+            <script>setInterval(()=>n.textContent=(window.k=(window.k||0)+1),50)</script>";
+        let dir = std::env::temp_dir().join(format!("aibox-parked-test-{}", uuid::Uuid::new_v4()));
+        let host = BrowserHost::with_profile(dir.to_string_lossy().to_string());
+        let mut tab = Tab::open(&host).await.expect("chrome");
+        let pid = host.pid.lock().unwrap().expect("chrome's pid");
+        assert!(!app_window::is_active(pid), "Chrome must not keep the keyboard");
+        tab.call("Page.navigate", json!({ "url": page })).await.unwrap();
+        tab.settle().await;
+        let a = host.frame(tab.target_id()).await.expect("a frame while parked");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let b = host.frame(tab.target_id()).await.unwrap();
+        assert_ne!(a["frame"], b["frame"], "the view must be live");
+        println!("view {}x{} at {}", b["width"], b["height"], b["url"]);
+        assert_eq!(b["width"], 1280);
+        // The person clicks the field in the view, types, and clicks Go.
+        host.input(tab.target_id(), &json!({ "type": "click", "x": 150, "y": 215 })).await.unwrap();
+        host.input(tab.target_id(), &json!({ "type": "text", "text": "by hand" })).await.unwrap();
+        host.input(tab.target_id(), &json!({ "type": "key", "key": "Backspace", "code": "Backspace", "keyCode": 8 })).await.unwrap();
+        host.input(tab.target_id(), &json!({ "type": "click", "x": 150, "y": 275 })).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(tab.observe().await.unwrap().title, "sent:by han");
+        // And the assistant still works the page itself.
+        let p = tab.observe().await.unwrap();
+        let q = p.elements.iter().position(|e| e["role"] == "textbox" || e["editable"] == true).unwrap() + 1;
+        tab.type_text(q, "assistant", true).await.unwrap();
+        assert_eq!(tab.observe().await.unwrap().title, "sent:assistant");
+        host.show(tab.target_id()).await.unwrap();
+        assert!(host.is_shown());
+        host.hide().await;
+        assert!(!app_window::is_active(pid), "put away, it gives the keyboard back");
         let _ = host.connection().await.unwrap().call(None, "Browser.close", json!({})).await;
         let _ = std::fs::remove_dir_all(dir);
     }

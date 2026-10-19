@@ -21,6 +21,7 @@ import {
   type Task,
 } from "../lib/tasks";
 import TaskThread, { AttachmentThumb } from "./TaskThread";
+import BrowserPanel from "./BrowserPanel";
 import { listen } from "@tauri-apps/api/event";
 import ModelSelect from "./ModelSelect";
 import { useDirectModels } from "../hooks/useDirectModels";
@@ -113,6 +114,14 @@ export default function Chat({ settings, onChange, onOpenSettings, sidebarSlot, 
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   /** The active chat's task, when it has one, as last fetched from the Mac. */
   const [task, setTask] = useState<Task | null>(null);
+  // The browser panel: opened by hand, or by a task that starts browsing.
+  const [browserOpen, setBrowserOpen] = useState(() => {
+    try {
+      return localStorage.getItem("aibox.browserPanel") === "1";
+    } catch {
+      return false;
+    }
+  });
   const taskRef = useRef<Task | null>(null);
   taskRef.current = task;
   /** Per task: how much of it has been read aloud, so voice mode speaks only
@@ -698,6 +707,29 @@ export default function Chat({ settings, onChange, onOpenSettings, sidebarSlot, 
     };
   }, [activeTaskId]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem("aibox.browserPanel", browserOpen ? "1" : "0");
+    } catch {
+      /* per-viewer convenience only */
+    }
+  }, [browserOpen]);
+
+  // A task that starts using the browser, or hands it over, brings the panel
+  // out — once per task, so closing it sticks.
+  const shownFor = useRef<string>("");
+  const wantsBrowser = !!task?.browser && isLive(task.status);
+  const handover = task?.status === "waiting" && task.pending?.kind === "handover" ? task.pending : undefined;
+  useEffect(() => {
+    if (!task) return;
+    const key = `${task.id}:${handover?.id ?? ""}`;
+    if ((wantsBrowser || handover) && shownFor.current !== key) {
+      shownFor.current = key;
+      setBrowserOpen(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantsBrowser, handover?.id, task?.id]);
+
   // Keep the newest step in view as a task works.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -734,7 +766,7 @@ export default function Chat({ settings, onChange, onOpenSettings, sidebarSlot, 
   }, [task]);
 
   return (
-    <div className="chat-layout">
+    <div className={browserOpen ? "chat-layout with-browser" : "chat-layout"}>
       <SidebarSlot slot={sidebarSlot}>
         <SidebarList
           items={sessions}
@@ -861,6 +893,7 @@ export default function Chat({ settings, onChange, onOpenSettings, sidebarSlot, 
               task={task}
               onApprove={(id, ok) => void answerTask(() => approveTask(id, ok))}
               onReply={(id, text) => void answerTask(() => replyTask(id, text))}
+              browserBeside={browserOpen}
               renderImages={(imgs) => (
                 <div className="msg-images">
                   {imgs.map((a) => (
@@ -982,6 +1015,14 @@ export default function Chat({ settings, onChange, onOpenSettings, sidebarSlot, 
                 </button>
               )}
               <button
+                className={browserOpen ? "btn ghost attach-btn on" : "btn ghost attach-btn"}
+                title={browserOpen ? "Hide the browser" : "Show the assistant's browser — watch it work, or sign in to sites"}
+                onClick={() => setBrowserOpen((v) => !v)}
+                aria-pressed={browserOpen}
+              >
+                🌐
+              </button>
+              <button
                 className={toolsOpen ? "composer-chip open" : "composer-chip"}
                 onClick={() => setToolsOpen((v) => !v)}
                 aria-expanded={toolsOpen}
@@ -1009,6 +1050,16 @@ export default function Chat({ settings, onChange, onOpenSettings, sidebarSlot, 
           </div>
         </div>
       </div>
+
+      {browserOpen && (
+        <BrowserPanel
+          target={task?.browser}
+          working={wantsBrowser && task?.status === "running"}
+          handover={handover ? { id: handover.id, body: handover.body } : undefined}
+          onHandoverDone={(id) => void answerTask(() => replyTask(id, "done"))}
+          onClose={() => setBrowserOpen(false)}
+        />
+      )}
     </div>
   );
 }

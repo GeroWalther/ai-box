@@ -217,9 +217,11 @@ interface Props {
   /** Given, finished videos show elsewhere and the thread links to them. */
   onShowVideo?: (id: string) => void;
   shownVideo?: string | null;
+  /** The browser is on screen beside the thread (the browser panel). */
+  browserBeside?: boolean;
 }
 
-export default function TaskThread({ task, onApprove, onReply, renderImages, onShowVideo, shownVideo }: Props) {
+export default function TaskThread({ task, onApprove, onReply, renderImages, onShowVideo, shownVideo, browserBeside }: Props) {
   const [answer, setAnswer] = useState("");
   const pending = task.status === "waiting" ? task.pending : undefined;
   const live = isLive(task.status);
@@ -232,7 +234,7 @@ export default function TaskThread({ task, onApprove, onReply, renderImages, onS
         <Step key={`${s.at}-${i}`} s={s} renderImages={renderImages} onShowVideo={onShowVideo} shownVideo={shownVideo} />
       ))}
 
-      {live && task.shot && (
+      {live && task.shot && !browserBeside && (
         <div className="task-live">
           <div className="hint">The assistant&apos;s browser, now</div>
           <StoredImage id={task.shot} alt="The assistant's browser" />
@@ -256,7 +258,9 @@ export default function TaskThread({ task, onApprove, onReply, renderImages, onS
             </div>
           ) : pending.kind === "handover" ? (
             <div className="task-pending-actions">
-              <span className="hint">The browser is open on your Mac. Do this there, then:</span>
+              <span className="hint">
+                {browserBeside ? "Do this in the browser on the right, then:" : "Do this in the browser panel (🌐), then:"}
+              </span>
               <button className="btn primary" onClick={() => onReply(pending.id, "done")}>
                 I&apos;m done — continue
               </button>

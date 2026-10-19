@@ -738,6 +738,26 @@ async fn dispatch_rpc(ctx: &ServerCtx, command: &str, args: Value) -> Result<Val
             crate::tasks::answer(&ctx.app, &s("pendingId"), approved, text)?;
             Ok(Value::Null)
         }
+        // The in-app browser panel: the assistant's Chrome, seen and used
+        // from here or the phone.
+        "browser_view" => {
+            let host = { use tauri::Manager; ctx.app.state::<crate::browser::BrowserHost>().inner().clone() };
+            crate::browser::view(&host, args.get("target").and_then(|v| v.as_str()).filter(|t| !t.is_empty())).await
+        }
+        "browser_input" => {
+            let host = { use tauri::Manager; ctx.app.state::<crate::browser::BrowserHost>().inner().clone() };
+            host.input(&s("target"), args.get("event").unwrap_or(&Value::Null)).await?;
+            Ok(Value::Null)
+        }
+        "browser_window" => {
+            let host = { use tauri::Manager; ctx.app.state::<crate::browser::BrowserHost>().inner().clone() };
+            if args.get("show").and_then(|v| v.as_bool()).unwrap_or(false) {
+                host.show(&s("target")).await?;
+            } else {
+                host.hide().await;
+            }
+            Ok(Value::Null)
+        }
         "task_stop" => {
             crate::tasks::stop(&ctx.app, &s("id"));
             Ok(Value::Null)
