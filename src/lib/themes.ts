@@ -237,16 +237,19 @@ export const THEMES: Theme[] = [
 /** "Follow macOS": AI Box Light by day, AI Box Dark by night. */
 export const SYSTEM_THEME = "system";
 
+/** What a fresh install starts in. */
+export const DEFAULT_THEME = "gruvbox-dark";
+
 const byId = new Map(THEMES.map((t) => [t.id, t]));
 
 function systemDark(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
 }
 
-/** The theme a saved choice means right now. Unknown ids fall back to AI Box. */
+/** The theme a saved choice means right now. Unknown ids fall back to the default. */
 export function resolveTheme(id: string | undefined): Theme {
   if (!id || id === SYSTEM_THEME) return byId.get(systemDark() ? "aibox-dark" : "aibox-light")!;
-  return byId.get(id) ?? byId.get("aibox-light")!;
+  return byId.get(id) ?? byId.get(DEFAULT_THEME)!;
 }
 
 let current: Theme = resolveTheme(undefined);

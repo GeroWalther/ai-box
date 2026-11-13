@@ -1,6 +1,7 @@
 // App settings: shape, defaults, persistence, and provider resolution.
 import { invokeCmd, isTauri } from "./transport";
 import { readWithLegacy, writeJson } from "./storage";
+import { DEFAULT_THEME } from "./themes";
 import { logError } from "./log";
 import type { WritingMode } from "./writingActions";
 
@@ -176,8 +177,8 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   provider: "openrouter",
 
-  theme: "light",
-  themeId: "",
+  theme: "dark",
+  themeId: DEFAULT_THEME,
 
   onboarded: false,
   sidebarCollapsed: false,
@@ -286,12 +287,14 @@ export function loadSettings(): Settings {
     const raw = readWithLegacy(STORAGE_KEY, LEGACY_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
     // Merge so new fields added in updates get their defaults.
-    const s = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    const saved = JSON.parse(raw);
+    // Before themes there was only light/dark: carry that choice over, rather
+    // than moving someone who already had a look onto the new default.
+    if (!saved.themeId) saved.themeId = saved.theme === "dark" ? "aibox-dark" : "aibox-light";
+    const s = { ...DEFAULT_SETTINGS, ...saved };
     // Safety net: never leave the app on the custom provider without a model,
     // which would make every send fail the "pick a model" guard.
     if (s.provider === "custom" && !s.customModel) s.provider = "openrouter";
-    // Before themes there was only light/dark: carry that choice over.
-    if (!s.themeId) s.themeId = s.theme === "dark" ? "aibox-dark" : "aibox-light";
     // Rewrite, not just read around: the pickers show the stored id, and they
     // should show the model the request will really go to.
     s.openrouterModel = alignModel(s.openrouterModel, s.activeProvider);

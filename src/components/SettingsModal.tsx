@@ -11,7 +11,7 @@ import AgentSettings from "./AgentSettings";
 import AssistSettings from "./AssistSettings";
 import Diagnostics from "./Diagnostics";
 import RemoteAccess from "./RemoteAccess";
-import { THEMES, SYSTEM_THEME, resolveTheme, type Theme } from "../lib/themes";
+import { THEMES, SYSTEM_THEME, DEFAULT_THEME, resolveTheme, type Theme } from "../lib/themes";
 
 interface Props {
   settings: Settings;
@@ -74,7 +74,7 @@ export default function SettingsModal({ settings, onChange, onClose, localModels
                 <div className="theme-grid" role="radiogroup" aria-label="Theme">
                   {[SYSTEM_THEME, ...THEMES.map((t) => t.id)].map((id) => {
                     const t = resolveTheme(id);
-                    const chosen = (settings.themeId || "aibox-light") === id;
+                    const chosen = (settings.themeId || DEFAULT_THEME) === id;
                     const name = id === SYSTEM_THEME ? "System" : t.name;
                     return (
                       <button

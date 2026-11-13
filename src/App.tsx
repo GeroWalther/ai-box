@@ -21,7 +21,7 @@ import { useToast } from "./lib/toast";
 import { checkForUpdate } from "./lib/updater";
 import { setAssistHotkey } from "./lib/api";
 import { logError } from "./lib/log";
-import { applyTheme, watchSystemTheme } from "./lib/themes";
+import { applyTheme, watchSystemTheme, DEFAULT_THEME } from "./lib/themes";
 import { useAppSettings } from "./hooks/useAppSettings";
 import { useDocuments } from "./hooks/useDocuments";
 import { useShortcuts } from "./hooks/useShortcuts";
@@ -184,7 +184,7 @@ export default function App() {
   const themeIdRef = useRef(settings.themeId);
   themeIdRef.current = settings.themeId;
   useEffect(() => {
-    applyTheme(settings.themeId || (settings.theme === "dark" ? "aibox-dark" : "aibox-light"));
+    applyTheme(settings.themeId || DEFAULT_THEME);
   }, [settings.themeId, settings.theme]);
   useEffect(() => watchSystemTheme(() => themeIdRef.current), []);
 
