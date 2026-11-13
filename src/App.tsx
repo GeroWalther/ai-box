@@ -49,6 +49,24 @@ const ICON_STROKE = {
 
 type ViewKey = "chat" | "write" | "images" | "video" | "terminal";
 
+// A−/A+ for the views that aren't the terminal (which sizes its own font):
+// each view keeps its own zoom, remembered across launches.
+const ZOOM_KEY = "ai-box.view-zoom";
+const ZOOM_STEPS = [0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6];
+function loadZooms(): Partial<Record<ViewKey, number>> {
+  try {
+    const z = JSON.parse(localStorage.getItem(ZOOM_KEY) || "{}");
+    return z && typeof z === "object" ? z : {};
+  } catch {
+    return {};
+  }
+}
+function stepZoom(z: number, d: number): number {
+  const i = ZOOM_STEPS.findIndex((s) => s >= z - 0.001);
+  const at = i === -1 ? ZOOM_STEPS.length - 1 : i;
+  return ZOOM_STEPS[Math.min(ZOOM_STEPS.length - 1, Math.max(0, at + d))];
+}
+
 const SECTIONS: { key: ViewKey; label: string; icon: React.ReactNode }[] = [
   {
     key: "chat",
@@ -116,6 +134,18 @@ export default function App() {
 
   const [view, setView] = useState<ViewKey>(() => asView(localStorage.getItem("ai-studio.view")));
   const [showSettings, setShowSettings] = useState(false);
+  const [zooms, setZooms] = useState(loadZooms);
+  const zoom = view === "terminal" ? 1 : zooms[view] ?? 1;
+  const bumpZoom = (d: number) =>
+    setZooms((z) => {
+      const next = { ...z, [view]: stepZoom(z[view] ?? 1, d) };
+      try {
+        localStorage.setItem(ZOOM_KEY, JSON.stringify(next));
+      } catch {
+        /* the zoom still applies; it just won't be remembered */
+      }
+      return next;
+    });
   const [showModels, setShowModels] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false); // mobile nav drawer
   const [sidebarSlot, setSidebarSlot] = useState<HTMLDivElement | null>(null);
@@ -446,30 +476,32 @@ export default function App() {
 
         <div className="sidebar-foot">
           {view === "write" && <span className="navrail-count">{wordCount} words</span>}
-          {view === "terminal" && (
-            <div className="term-font-rail">
-              <button
-                className="term-font-btn"
-                title="Smaller terminal text"
-                aria-label="Smaller terminal text"
-                onClick={() =>
-                  window.dispatchEvent(new CustomEvent("ai-studio-term-font", { detail: -1 }))
-                }
-              >
-                A−
-              </button>
-              <button
-                className="term-font-btn"
-                title="Larger terminal text"
-                aria-label="Larger terminal text"
-                onClick={() =>
-                  window.dispatchEvent(new CustomEvent("ai-studio-term-font", { detail: 1 }))
-                }
-              >
-                A+
-              </button>
-            </div>
-          )}
+          <div className="term-font-rail">
+            <button
+              className="term-font-btn"
+              title={view === "terminal" ? "Smaller terminal text" : `Zoom out (${Math.round(zoom * 100)}%)`}
+              aria-label={view === "terminal" ? "Smaller terminal text" : "Zoom out"}
+              onClick={() =>
+                view === "terminal"
+                  ? window.dispatchEvent(new CustomEvent("ai-studio-term-font", { detail: -1 }))
+                  : bumpZoom(-1)
+              }
+            >
+              A−
+            </button>
+            <button
+              className="term-font-btn"
+              title={view === "terminal" ? "Larger terminal text" : `Zoom in (${Math.round(zoom * 100)}%)`}
+              aria-label={view === "terminal" ? "Larger terminal text" : "Zoom in"}
+              onClick={() =>
+                view === "terminal"
+                  ? window.dispatchEvent(new CustomEvent("ai-studio-term-font", { detail: 1 }))
+                  : bumpZoom(1)
+              }
+            >
+              A+
+            </button>
+          </div>
           <button
             className="sidebar-sec"
             title="Sync chats, docs & settings with your other devices"
@@ -490,7 +522,7 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="main">
+      <main className="main" style={zoom !== 1 ? { zoom } : undefined}>
         {view === "chat" ? (
           <Chat
             settings={settings}
