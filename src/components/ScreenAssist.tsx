@@ -48,7 +48,7 @@ import {
 import type { Step } from "../lib/control";
 import type { AssistModel, MacVoice } from "../lib/api";
 import { byLanguage, worthOffering } from "../lib/voices";
-import { ask, hush, say, Recorder, type AskResult } from "../lib/screenAssist";
+import { ask, hush, EarlySpeech, Recorder, type AskResult } from "../lib/screenAssist";
 import { logError } from "../lib/log";
 
 type Phase = "idle" | "asking" | "thinking" | "answered";
@@ -58,6 +58,8 @@ export default function ScreenAssist() {
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<AskResult | null>(null);
+  /** The spoken answer as it streams in, shown while the model is still writing. */
+  const [live, setLive] = useState("");
   const [error, setError] = useState("");
   const [recording, setRecording] = useState(false);
   const [withScreen, setWithScreen] = useState(true);
@@ -359,6 +361,10 @@ export default function ScreenAssist() {
 
   const dismiss = useCallback(() => {
     stop.current = true;
+    // Abandon any answer still on its way: closing the bar means it should
+    // neither reappear nor start talking afterwards.
+    runId.current += 1;
+    setLive("");
     setStopping(false);
     void overlayEscape(false).catch(() => {});
     recorder.current.cancel();
@@ -463,7 +469,9 @@ export default function ScreenAssist() {
     setNeedsAccess(false);
     stop.current = false;
     setStopping(false);
+    setLive("");
     const live = settingsRef.current;
+    const speech = new EarlySpeech(live);
     try {
       const result = await ask(live, {
         text,
@@ -472,6 +480,14 @@ export default function ScreenAssist() {
         act: live.assistAct,
         history: history.current,
         stopped: () => stop.current,
+        onPartial: (p) => {
+          if (run !== runId.current) {
+            speech.cancel();
+            return;
+          }
+          setLive(p.say);
+          speech.feed(p);
+        },
         onStep: (step, done) =>
           setSteps((prev) => {
             // The same step arrives twice: once as "Clicking Send", once with
@@ -482,13 +498,17 @@ export default function ScreenAssist() {
             return next;
           }),
       });
-      if (run !== runId.current) return; // stopped; the user has moved on
+      if (run !== runId.current) {
+        speech.cancel();
+        return; // stopped; the user has moved on
+      }
+      setLive("");
       setAnswer(result);
       setPhase("answered");
       // A run that clicked took key status to the app it drove. Take it back so
       // the next question can simply be typed.
       focusInput();
-      void say(live, result.say, result.lang);
+      void speech.finish(result);
       // Filed under a "Screen Assist" chat session, so the overlay needs no
       // history of its own and these turn up in search and device sync.
       const asked = text.trim() || "(spoken question)";
@@ -506,6 +526,8 @@ export default function ScreenAssist() {
           .catch(() => {});
       }
     } catch (e) {
+      speech.cancel();
+      setLive("");
       if (run !== runId.current) return; // stopped; the failure is moot
       logError("assist.ask", e);
       const message = String(e);
@@ -657,6 +679,15 @@ export default function ScreenAssist() {
               <span>Speak the answer</span>
             </label>
 
+            <label className="sa-opt" title="Slower, but a thinking model works its answer out before replying">
+              <input
+                type="checkbox"
+                checked={settings.assistThink}
+                onChange={(e) => persist({ assistThink: e.target.checked })}
+              />
+              <span>Think before answering</span>
+            </label>
+
             {settings.assistSpeak && voices.length > 0 && (
               <label className="sa-opt wide">
                 <span>Voice</span>
@@ -782,6 +813,11 @@ export default function ScreenAssist() {
               </button>
             </div>
             {steps.length > 1 && <Trail steps={steps.slice(0, -1)} />}
+            {live && (
+              <div className="sa-say">
+                <Markdown>{live}</Markdown>
+              </div>
+            )}
           </div>
         )}
 

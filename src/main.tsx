@@ -5,6 +5,8 @@ import ScreenAssist from "./components/ScreenAssist";
 import ScreenMarks from "./components/ScreenMarks";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ToastProvider } from "./lib/toast";
+import { applyTheme } from "./lib/themes";
+import { loadSettings } from "./lib/settings";
 
 // `crypto.randomUUID` only exists in a secure context (HTTPS / localhost). When
 // the app is served to a phone over plain http://<lan-ip>, it's undefined and the
@@ -31,6 +33,12 @@ if (typeof crypto !== "undefined" && typeof crypto.randomUUID !== "function") {
 // but neither may mount App, which would run a second copy of the whole
 // workspace, its sync and its timers behind a transparent window.
 const overlay = new URLSearchParams(window.location.search).get("overlay");
+// The main window takes its theme before the first paint, so it never flashes
+// the default colours. The overlay windows are transparent and keep their own.
+if (!overlay) {
+  const s = loadSettings();
+  applyTheme(s.themeId);
+}
 
 if (overlay) document.documentElement.dataset.overlay = overlay;
 

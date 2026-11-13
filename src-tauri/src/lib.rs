@@ -21,6 +21,8 @@ mod screen;
 mod server;
 mod video;
 mod motion;
+mod chatstream;
+mod ptyd;
 
 /// The guard policy for a desktop tool call, derived from the settings the
 /// frontend pushes on every change. Falls back to "home directory, protections
@@ -74,12 +76,18 @@ struct GenerateParams {
     messages: Vec<ChatMessage>,
     temperature: f32,
     max_tokens: u32,
+    /// How hard a reasoning model should think first: "none", "low"… Screen
+    /// Assist asks for "low", because thinking time is silence the user sits
+    /// through before anything is said. Only sent where it is understood
+    /// (OpenRouter, Google, OpenAI); `None` leaves each provider's default.
+    #[serde(default)]
+    reasoning: Option<String>,
 }
 
 /// Events streamed back to the frontend during text generation.
 #[derive(Serialize, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
-enum StreamEvent {
+pub(crate) enum StreamEvent {
     Token { content: String },
     Reasoning { content: String },
     Done,
@@ -119,8 +127,8 @@ pub(crate) async fn generate_text_core(
     // with a Gemini model nowhere.
     let (direct, bare_model) = providers::split(&params.model);
     if direct == Some(providers::Direct::Anthropic) {
-        // Anthropic streams in its own event format; until that is spoken
-        // here, its answer arrives whole rather than word by word.
+        // Anthropic streams in its own event format, translated here into the
+        // same Token events every other provider produces.
         let messages = serde_json::Value::Array(
             params
                 .messages
@@ -128,19 +136,23 @@ pub(crate) async fn generate_text_core(
                 .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
                 .collect(),
         );
-        return match providers::anthropic_chat(&params.api_key, &bare_model, &messages, &serde_json::json!([]), params.temperature).await {
-            Ok(reply) => {
-                if let Some(text) = reply["content"].as_str() {
-                    emit_ev(sink, StreamEvent::Token { content: text.to_string() });
-                }
-                emit_ev(sink, StreamEvent::Done);
-                Ok(())
-            }
-            Err(message) => {
-                emit_ev(sink, StreamEvent::Error { message });
-                Ok(())
-            }
-        };
+        let mut on_text = |t: String| emit_ev(sink, StreamEvent::Token { content: t });
+        let cancelled = || is_cancelled_flag(&cancel);
+        let res = providers::anthropic_stream(
+            &params.api_key,
+            &bare_model,
+            &messages,
+            params.temperature,
+            params.max_tokens,
+            &mut on_text,
+            &cancelled,
+        )
+        .await;
+        match res {
+            Ok(()) => emit_ev(sink, StreamEvent::Done),
+            Err(message) => emit_ev(sink, StreamEvent::Error { message }),
+        }
+        return Ok(());
     }
     let url = match direct {
         Some(provider) => provider.chat_url().to_string(),
@@ -165,6 +177,22 @@ pub(crate) async fn generate_text_core(
     let mut thinking_off = direct == Some(providers::Direct::Google);
     if thinking_off {
         body["reasoning_effort"] = serde_json::json!("none");
+    }
+    // An explicit effort from the caller wins, in each provider's own dialect.
+    // Sent only where it is understood: a strict custom endpoint may reject an
+    // unknown field outright. A 400 drops it again below, like "none" above.
+    if let Some(effort) = params.reasoning.as_deref().filter(|e| !e.is_empty()) {
+        match direct {
+            Some(providers::Direct::Google) | Some(providers::Direct::OpenAi) => {
+                body["reasoning_effort"] = serde_json::json!(effort);
+                thinking_off = true;
+            }
+            None if url.contains("openrouter.ai") => {
+                body["reasoning"] = serde_json::json!({ "effort": effort });
+                thinking_off = true;
+            }
+            _ => {}
+        }
     }
 
     // No total timeout (generations are long), but bound connection setup so a
@@ -202,7 +230,10 @@ pub(crate) async fn generate_text_core(
                         // This model must think. Let it, with the thinking's
                         // room added on top of the length the user asked for.
                         thinking_off = false;
-                        body.as_object_mut().map(|o| o.remove("reasoning_effort"));
+                        body.as_object_mut().map(|o| {
+                            o.remove("reasoning_effort");
+                            o.remove("reasoning")
+                        });
                         body["max_tokens"] = serde_json::json!(params.max_tokens + 8192);
                         continue;
                     }
@@ -1255,7 +1286,7 @@ fn provider_message(body: &str) -> Option<String> {
 }
 
 /// Transient errors worth retrying: rate limits and server errors.
-fn is_transient(status: reqwest::StatusCode) -> bool {
+pub(crate) fn is_transient(status: reqwest::StatusCode) -> bool {
     status.as_u16() == 429 || status.is_server_error()
 }
 
@@ -1267,11 +1298,11 @@ fn is_cancelled_flag(cancel: &Option<std::sync::Arc<std::sync::atomic::AtomicBoo
 }
 
 /// Backoff before retry attempt `attempt` (1-indexed): 400ms, 800ms, …
-async fn backoff(attempt: u32) {
+pub(crate) async fn backoff(attempt: u32) {
     tokio::time::sleep(std::time::Duration::from_millis(400 * attempt as u64)).await;
 }
 
-const MAX_ATTEMPTS: u32 = 3;
+pub(crate) const MAX_ATTEMPTS: u32 = 3;
 
 /// One non-streaming chat completion. Returns choices[0].message (content + tool_calls).
 /// Retries transient failures (429/5xx/network) with backoff.
@@ -1362,8 +1393,18 @@ async fn chat_completion(params: ChatCompletionParams) -> Result<serde_json::Val
     }
 }
 
+/// A chat completion that streams its text as Token events and returns the
+/// assembled assistant message, tool calls included. See `chatstream`.
+#[tauri::command]
+async fn chat_completion_stream(
+    params: chatstream::ChatStreamParams,
+    on_event: Channel<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    chatstream::chat_stream_core(params, &ChannelSink(on_event)).await
+}
+
 /// What to do when a model answered with nothing because the prompt filled it.
-fn ran_out_of_context(model: &str) -> String {
+pub(crate) fn ran_out_of_context(model: &str) -> String {
     let short = model.split(':').next().unwrap_or(model);
     format!(
         "{model} ran out of context before it could answer. A screenshot is about 4,000 \
@@ -1666,6 +1707,20 @@ async fn pty_open(
     let res = pty::pty_open_core(id.clone(), rows, cols, &reg, &ChannelSink(on_event), Some(flag)).await;
     cancels.remove(&id);
     res
+}
+
+/// Post a macOS notification as AI Box — a terminal in the background whose
+/// program (Claude, say) wants an answer. Desktop only: the phone has its own way of being told.
+#[tauri::command]
+fn notify_user(app: tauri::AppHandle, title: String, body: String) {
+    tasks::notify(&app, &title, &body);
+}
+
+/// Ids of the shells still running — after a relaunch, the tabs whose
+/// programs never stopped.
+#[tauri::command]
+async fn pty_list(reg: tauri::State<'_, pty::PtyRegistry>) -> Result<Vec<String>, String> {
+    Ok(pty::pty_list_core(&reg))
 }
 
 #[tauri::command]
@@ -2837,6 +2892,11 @@ pub(crate) fn show_main(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The same binary is also the terminal service; see `ptyd`.
+    if std::env::args().any(|a| a == ptyd::DAEMON_ARG) {
+        ptyd::run_daemon();
+        return;
+    }
     tauri::Builder::default()
         // One copy, or none of this works. A second instance builds a second
         // overlay and races the first for the global shortcut, so the bar
@@ -2856,7 +2916,7 @@ pub fn run() {
         .manage(server::RemoteSettings::default())
         .manage(server::CancelRegistry::default())
         .manage(comfy::ManagedComfy::default())
-        .manage(pty::PtyRegistry::default())
+        .manage(pty::PtyRegistry::with_daemon())
         .manage(motion::Motion::default())
         .manage(tasks::Tasks::default())
         .manage(browser::BrowserHost::default())
@@ -2874,6 +2934,7 @@ pub fn run() {
             edit_image_openrouter,
             list_comfy_checkpoints,
             chat_completion,
+            chat_completion_stream,
             fs_read,
             fs_write,
             save_png,
@@ -2887,6 +2948,8 @@ pub fn run() {
             run_command_stream,
             pty_open,
             pty_write,
+            pty_list,
+            notify_user,
             pty_resize,
             pty_kill,
             system_info,
@@ -2991,6 +3054,15 @@ pub fn run() {
             comfy_stop
         ])
         .setup(|app| {
+            // Reach (or start) the terminal service now, off the main thread,
+            // so the first terminal tab does not wait for it.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    use tauri::Manager;
+                    let _ = handle.state::<pty::PtyRegistry>().remote();
+                });
+            }
             // Build the overlay up front and leave it hidden. Creating it on
             // first use would put a window-server round trip in the middle of
             // the very interaction that has to feel instant.
@@ -3065,6 +3137,7 @@ mod tests {
             messages: vec![super::ChatMessage { role: "user".into(), content: "Write one short sentence about the sea.".into() }],
             temperature: 0.7,
             max_tokens: 200,
+            reasoning: None,
         };
         super::generate_text_core(params, &sink, None).await.unwrap();
         let events = sink.0.into_inner().unwrap();
@@ -3275,6 +3348,7 @@ mod tests {
             messages: vec![ChatMessage { role: "user".into(), content: "hi".into() }],
             temperature: 0.0,
             max_tokens: 100,
+            reasoning: None,
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let tokens = Arc::new(AtomicUsize::new(0));
@@ -3401,6 +3475,7 @@ mod tests {
             messages: vec![ChatMessage { role: "user".into(), content: "hi".into() }],
             temperature: 0.0,
             max_tokens: 100,
+            reasoning: None,
         };
         let tokens = Arc::new(AtomicUsize::new(0));
         let done = Arc::new(AtomicBool::new(false));

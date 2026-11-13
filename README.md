@@ -69,6 +69,10 @@ so you can start it from your phone too. Needs Chrome and `ffmpeg`.
 
 ### 💻 Terminal
 A real PTY. `vim`, `top`, `claude`, whatever you like — including from your phone.
+Shells live in a small background service, not in the app, so **quitting AI Box
+leaves them running**: relaunch and every tab re-attaches to the same live shell —
+a `claude` session mid-conversation included. A background tab whose program
+needs you (Claude waiting on a permission, say) posts a notification.
 
 ### 📱 Remote access — the interesting part
 Your Mac runs a small companion server; your phone loads the same UI over your LAN
@@ -140,6 +144,7 @@ src-tauri/src/
   server.rs              companion server — auth, path confinement, approvals
   guard.rs               shared path confinement + protected-path denylist
   pty.rs                 interactive terminal sessions
+  ptyd.rs                terminal service: shells that outlive the app
   comfy.rs               managed ComfyUI runtime
 ```
 

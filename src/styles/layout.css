@@ -270,7 +270,7 @@
   font-weight: 600;
   transition: background 0.15s ease, color 0.15s ease;
 }
-.sidebar-new:hover { background: var(--accent); color: #fff; }
+.sidebar-new:hover { background: var(--accent); color: var(--on-accent); }
 .sidebar-foot {
   margin-top: auto;
   display: flex;

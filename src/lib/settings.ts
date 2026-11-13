@@ -10,7 +10,11 @@ export interface Settings {
   provider: Provider;
 
   // Appearance
+  /** Light or dark — kept in step with `themeId`, for anything that only
+   *  cares which. */
   theme: "light" | "dark";
+  /** The colour theme (see lib/themes.ts), or "system" to follow macOS. */
+  themeId: string;
 
   // First-run onboarding shown until dismissed/completed.
   onboarded: boolean;
@@ -104,6 +108,10 @@ export interface Settings {
    *  send, without ever reaching for the mouse or a second key. */
   assistPushToTalk: boolean;
   assistSpeak: boolean;
+  /** Let a thinking model think at its own default before answering. Off asks
+   *  for low effort: the answer starts seconds sooner, which is the whole point
+   *  of an assistant you talk to. */
+  assistThink: boolean;
   /** macOS voice name. Empty = the system default. Siri's voice is not
    *  available to third-party apps, so Premium is as close as this gets. */
   assistVoice: string;
@@ -169,6 +177,7 @@ export const DEFAULT_SETTINGS: Settings = {
   provider: "openrouter",
 
   theme: "light",
+  themeId: "",
 
   onboarded: false,
   sidebarCollapsed: false,
@@ -230,6 +239,7 @@ export const DEFAULT_SETTINGS: Settings = {
   assistAutoCapture: true,
   assistPushToTalk: true,
   assistSpeak: true,
+  assistThink: false,
   assistVoice: "",
   assistRate: 190,
   assistRejected: [],
@@ -280,6 +290,8 @@ export function loadSettings(): Settings {
     // Safety net: never leave the app on the custom provider without a model,
     // which would make every send fail the "pick a model" guard.
     if (s.provider === "custom" && !s.customModel) s.provider = "openrouter";
+    // Before themes there was only light/dark: carry that choice over.
+    if (!s.themeId) s.themeId = s.theme === "dark" ? "aibox-dark" : "aibox-light";
     // Rewrite, not just read around: the pickers show the stored id, and they
     // should show the model the request will really go to.
     s.openrouterModel = alignModel(s.openrouterModel, s.activeProvider);

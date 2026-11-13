@@ -4,8 +4,11 @@
 // re-attaches to the same id and the recent output is replayed. Serves the desktop
 // webview (Tauri Channel) and a paired phone (companion WebSocket) identically.
 //
-// A shell cannot outlive the app — its PTY master fd belongs to this process — so
-// quitting really does end every shell. What we can carry across a restart is what
+// A shell cannot outlive the process holding its PTY master. In the app that
+// process is the terminal service (see `ptyd`), which keeps running when AI Box
+// quits, so shells — and whatever runs in them — survive a quit. What still ends
+// them is a reboot, or the service being unavailable and the app holding the
+// shells itself. What we can carry across THAT is what
 // you were LOOKING at and where you were: each session's screen and scrollback are
 // rendered (see `render_screen`) and snapshotted to ~/.ai-box/terminals with its
 // working directory, and a tab reopened after a restart replays that history before
@@ -59,6 +62,19 @@ const RESTORE_BANNER: &str = "\r\n\x1b[90m─── end of restored session · t
 /// Records written before rendering existed hold a raw output stream, which
 /// replays as a self-erasing mess. Restore only formats we know are pictures.
 const RECORD_FORMAT: u32 = 2;
+
+/// Variables that describe the terminal or agent session AI Box was launched
+/// from, and must not leak into the shells it starts: Claude Code's own session
+/// markers, and the launching terminal's identity (these tabs are not Warp).
+fn is_inherited_session_var(key: &str) -> bool {
+    key == "CLAUDECODE"
+        || key.starts_with("CLAUDE_CODE_")
+        || key == "CLAUDE_PID"
+        || key == "CLAUDE_EFFORT"
+        || key.starts_with("TERM_PROGRAM")
+        || key.starts_with("WARP_")
+        || key == "TERM_SESSION_ID"
+}
 
 /// What we keep on disk for one terminal tab between app runs.
 #[derive(Serialize, Deserialize, Default)]
@@ -354,14 +370,22 @@ pub struct PtyRegistry {
     sessions: Arc<Mutex<HashMap<String, Arc<PtySession>>>>,
     /// Guards the one-time start of the snapshot ticker.
     ticker: std::sync::Once,
+    /// Hold shells in the terminal service rather than in this process.
+    use_daemon: bool,
+    /// The service connection, made on first use. `Some(None)` means it could
+    /// not be reached, and this registry holds the shells itself instead.
+    remote: std::sync::OnceLock<Option<Arc<crate::ptyd::DaemonClient>>>,
 }
 
-// Hand-written because `Once` has no Default.
+// Hand-written because `Once` has no Default. The default holds its shells
+// itself: that is what the service runs, and what tests want.
 impl Default for PtyRegistry {
     fn default() -> Self {
         Self {
             sessions: Arc::default(),
             ticker: std::sync::Once::new(),
+            use_daemon: false,
+            remote: std::sync::OnceLock::new(),
         }
     }
 }
@@ -371,6 +395,42 @@ fn b64(bytes: &[u8]) -> String {
 }
 
 impl PtyRegistry {
+    /// The app's registry: shells live in the terminal service and survive a quit.
+    pub fn with_daemon() -> Self {
+        Self { use_daemon: true, ..Self::default() }
+    }
+
+    /// The terminal service, connecting (and starting it) on first call.
+    pub fn remote(&self) -> Option<Arc<crate::ptyd::DaemonClient>> {
+        if !self.use_daemon {
+            return None;
+        }
+        self.remote
+            .get_or_init(|| crate::ptyd::DaemonClient::connect_or_spawn().map(Arc::new))
+            .clone()
+    }
+
+    /// Shells still running.
+    pub fn live_count(&self) -> usize {
+        self.sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|s| !s.dead.load(Ordering::Relaxed))
+            .count()
+    }
+
+    /// Ids of the shells still running.
+    pub fn list(&self) -> Vec<String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, s)| !s.dead.load(Ordering::Relaxed))
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     fn get(&self, id: &str) -> Option<Arc<PtySession>> {
         self.sessions.lock().unwrap().get(id).cloned()
     }
@@ -406,6 +466,11 @@ impl PtyRegistry {
     /// Safe to call more than once: macOS delivers quit as `Exit` and a window
     /// close as `ExitRequested`, and we listen for both rather than bet on which.
     pub fn shutdown(&self) {
+        // Shells held by the terminal service are the whole point of it: they
+        // keep running when the app quits. Only shells this process holds end.
+        if matches!(self.remote.get(), Some(Some(_))) {
+            return;
+        }
         for (_, s) in self.sessions.lock().unwrap().drain() {
             s.snapshot();
             let _ = s.child.lock().unwrap().kill();
@@ -455,6 +520,18 @@ impl PtyRegistry {
         // Suppress zsh's reverse-video "%" end-of-line marker (shown for output
         // without a trailing newline) — it looks like stray junk in the UI.
         cmd.env("PROMPT_EOL_MARK", "");
+        // A shell here is a new top-level terminal, not a child of whatever
+        // started AI Box. Launched from inside a Claude Code session (or from
+        // Warp), the app inherits that session's variables, and a `claude` run
+        // in these tabs then believes it is a sub-session: it stops saving its
+        // transcript, so the conversation can never be resumed.
+        for (key, _) in std::env::vars_os() {
+            if let Some(k) = key.to_str() {
+                if is_inherited_session_var(k) {
+                    cmd.env_remove(k);
+                }
+            }
+        }
         // The saved directory may since have been renamed or deleted; fall back
         // to $HOME rather than failing to spawn.
         let start_dir = saved
@@ -577,6 +654,21 @@ pub async fn pty_open_core(
     sink: &dyn EventSink,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<serde_json::Value, String> {
+    if let Some(d) = reg.remote() {
+        return d.open(id, rows, cols, sink, cancel).await;
+    }
+    open_local(id, rows, cols, reg, sink, cancel).await
+}
+
+/// `pty_open_core` against shells held in this process.
+pub(crate) async fn open_local(
+    id: String,
+    rows: u16,
+    cols: u16,
+    reg: &PtyRegistry,
+    sink: &dyn EventSink,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<serde_json::Value, String> {
     let (session, mut rx, replay) = reg.attach(&id, rows, cols)?;
 
     // Replay recent output so a re-attached (or freshly reloaded) client sees the
@@ -623,6 +715,13 @@ pub async fn pty_open_core(
 
 /// Send keystrokes (base64 bytes) to a session's shell.
 pub fn pty_write_core(id: &str, data_b64: &str, reg: &PtyRegistry) -> Result<(), String> {
+    if let Some(d) = reg.remote() {
+        return d.send(serde_json::json!({ "op": "write", "id": id, "data": data_b64 }));
+    }
+    write_local(id, data_b64, reg)
+}
+
+pub(crate) fn write_local(id: &str, data_b64: &str, reg: &PtyRegistry) -> Result<(), String> {
     let session = reg.get(id).ok_or("no such terminal session")?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data_b64.trim())
@@ -646,6 +745,13 @@ pub fn pty_write_core(id: &str, data_b64: &str, reg: &PtyRegistry) -> Result<(),
 
 /// Resize a session's PTY (rows/cols) when the UI viewport changes.
 pub fn pty_resize_core(id: &str, rows: u16, cols: u16, reg: &PtyRegistry) -> Result<(), String> {
+    if let Some(d) = reg.remote() {
+        return d.send(serde_json::json!({ "op": "resize", "id": id, "rows": rows, "cols": cols }));
+    }
+    resize_local(id, rows, cols, reg)
+}
+
+pub(crate) fn resize_local(id: &str, rows: u16, cols: u16, reg: &PtyRegistry) -> Result<(), String> {
     let session = reg.get(id).ok_or("no such terminal session")?;
     // Keep the parser the same shape as the real terminal, or the saved picture
     // comes back wrapped at the wrong width.
@@ -668,6 +774,25 @@ pub fn pty_resize_core(id: &str, rows: u16, cols: u16, reg: &PtyRegistry) -> Res
 /// deliberate, so the saved screen goes too — otherwise a new tab that happened
 /// to reuse the id would come back haunted.
 pub fn pty_kill_core(id: &str, reg: &PtyRegistry) {
+    if let Some(d) = reg.remote() {
+        let _ = d.send(serde_json::json!({ "op": "kill", "id": id }));
+        return;
+    }
+    kill_local(id, reg)
+}
+
+/// Ids of the shells still running, wherever they are held.
+pub fn pty_list_core(reg: &PtyRegistry) -> Vec<String> {
+    if let Some(d) = reg.remote() {
+        return d
+            .ask(serde_json::json!({ "op": "list" }))
+            .and_then(|v| serde_json::from_value(v["sessions"].clone()).ok())
+            .unwrap_or_default();
+    }
+    reg.list()
+}
+
+pub(crate) fn kill_local(id: &str, reg: &PtyRegistry) {
     if let Some(s) = reg.remove(id) {
         // Order matters: mark closed BEFORE killing. The kill lands as EOF in the
         // reader thread, whose exit snapshot would otherwise recreate the record
@@ -684,6 +809,17 @@ mod tests {
 
     /// A session id is untrusted (it can come from a paired phone), so it must
     /// never be able to steer the write outside the terminals directory.
+    #[test]
+    fn a_launching_sessions_markers_do_not_reach_the_shell() {
+        for k in ["CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "WARP_IS_LOCAL_SHELL_SESSION"] {
+            assert!(is_inherited_session_var(k), "{k} should be dropped");
+        }
+        // The user's own configuration is left alone.
+        for k in ["PATH", "HOME", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "LANG"] {
+            assert!(!is_inherited_session_var(k), "{k} should be kept");
+        }
+    }
+
     #[test]
     fn record_stem_strips_path_traversal() {
         assert_eq!(record_stem("../../etc/passwd").as_deref(), Some("etcpasswd"));

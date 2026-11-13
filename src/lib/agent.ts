@@ -237,6 +237,25 @@ export async function chatCompletion(args: ChatCompletionArgs): Promise<Assistan
   return invokeCmd<AssistantMessage>("chat_completion", { params: args });
 }
 
+/**
+ * The same call, streamed: `onText` receives the reply's text as it arrives,
+ * and the promise resolves with the whole message — tool calls included —
+ * exactly as `chatCompletion` would have returned it. `reasoning` sets how hard
+ * a thinking model works first ("low" = answer sooner); omitted = its default.
+ */
+export async function chatCompletionStream(
+  args: ChatCompletionArgs & { reasoning?: string },
+  onText: (t: string) => void
+): Promise<AssistantMessage> {
+  return streamCmd<AssistantMessage>(
+    "chat_completion_stream",
+    { params: { ...args, reasoning: args.reasoning ?? null } },
+    (ev: { type: string; content?: string }) => {
+      if (ev?.type === "token" && ev.content) onText(ev.content);
+    }
+  );
+}
+
 export const fsRead = (path: string) => invokeCmd<string>("fs_read", { path });
 export const fsWrite = (path: string, content: string) =>
   invokeCmd<string>("fs_write", { path, content });

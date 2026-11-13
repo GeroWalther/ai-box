@@ -11,6 +11,7 @@ import AgentSettings from "./AgentSettings";
 import AssistSettings from "./AssistSettings";
 import Diagnostics from "./Diagnostics";
 import RemoteAccess from "./RemoteAccess";
+import { THEMES, SYSTEM_THEME, resolveTheme, type Theme } from "../lib/themes";
 
 interface Props {
   settings: Settings;
@@ -68,20 +69,27 @@ export default function SettingsModal({ settings, onChange, onClose, localModels
           {tab === "general" && (
             <>
               <section>
-                <h3>Appearance</h3>
-                <div className="segmented">
-                  <button
-                    className={settings.theme === "light" ? "seg active" : "seg"}
-                    onClick={() => onChange({ theme: "light" })}
-                  >
-                    Light
-                  </button>
-                  <button
-                    className={settings.theme === "dark" ? "seg active" : "seg"}
-                    onClick={() => onChange({ theme: "dark" })}
-                  >
-                    Dark
-                  </button>
+                <h3>Theme</h3>
+                <p className="hint">Colours for the whole app and the terminal together.</p>
+                <div className="theme-grid" role="radiogroup" aria-label="Theme">
+                  {[SYSTEM_THEME, ...THEMES.map((t) => t.id)].map((id) => {
+                    const t = resolveTheme(id);
+                    const chosen = (settings.themeId || "aibox-light") === id;
+                    const name = id === SYSTEM_THEME ? "System" : t.name;
+                    return (
+                      <button
+                        key={id}
+                        role="radio"
+                        aria-checked={chosen}
+                        className={chosen ? "theme-card active" : "theme-card"}
+                        onClick={() => onChange({ themeId: id, theme: t.mode })}
+                        title={id === SYSTEM_THEME ? "Follows macOS: AI Box Light or Dark" : name}
+                      >
+                        <ThemePreview theme={id === SYSTEM_THEME ? null : t} />
+                        <span className="theme-name">{name}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               </section>
 
@@ -195,5 +203,42 @@ export default function SettingsModal({ settings, onChange, onClose, localModels
         </div>
       </div>
     </div>
+  );
+}
+
+/** A miniature of the theme: sidebar, a panel with an accent button, and a
+ *  terminal line in its own colours. `null` draws "System" as half light,
+ *  half dark. */
+function ThemePreview({ theme }: { theme: Theme | null }) {
+  if (!theme) {
+    return (
+      <span className="theme-preview theme-preview-split" aria-hidden="true">
+        <ThemePreview theme={resolveTheme("aibox-light")} />
+        <ThemePreview theme={resolveTheme("aibox-dark")} />
+      </span>
+    );
+  }
+  const u = theme.ui;
+  const t = theme.term;
+  const dots = [t.red, t.green, t.yellow, t.blue, t.magenta, t.cyan].filter(Boolean) as string[];
+  return (
+    <span className="theme-preview" style={{ background: u.bg, borderColor: u.border }} aria-hidden="true">
+      <span className="tp-side" style={{ background: u.bg2, borderColor: u.border }}>
+        <i style={{ background: u.accent }} />
+        <i style={{ background: u.muted }} />
+        <i style={{ background: u.muted }} />
+      </span>
+      <span className="tp-main">
+        <span className="tp-term" style={{ background: String(t.background), color: String(t.foreground) }}>
+          <span>$ claude</span>
+          <span className="tp-dots">
+            {(dots.length ? dots : [u.accent, u.accent2, u.danger]).map((c, i) => (
+              <i key={i} style={{ background: c }} />
+            ))}
+          </span>
+        </span>
+        <span className="tp-btn" style={{ background: u.accent, color: u.onAccent }}>Aa</span>
+      </span>
+    </span>
   );
 }

@@ -24,7 +24,7 @@ pub const OVERLAY: &str = "screen-assist";
 
 // ---- capture --------------------------------------------------------------
 
-/// Grab the screen as base64 PNG.
+/// Grab the screen as base64 JPEG.
 ///
 /// The overlay is hidden first, or every screenshot would contain the ask bar
 /// and the previous answer's annotations — the model would end up reading its
@@ -33,6 +33,12 @@ pub const OVERLAY: &str = "screen-assist";
 /// races the window server and catches the overlay mid-fade.
 #[tauri::command]
 pub async fn capture_screen(app: tauri::AppHandle) -> Result<String, String> {
+    // The shot taken as the bar opened, if it is still fresh: no hiding, no
+    // waiting for the window server, and the encoding already done while the
+    // user was talking.
+    if let Some(shot) = take_prefetched().await {
+        return Ok(shot);
+    }
     // Both layers must go: the bar would appear in the shot, and the previous
     // answer's marks would have the model reading its own arrows back.
     let mut restore = Vec::new();
@@ -80,11 +86,11 @@ Privacy & Security → Screen & System Audio Recording and switch AI Box on."
 }
 
 pub(crate) async fn capture_to_base64() -> Result<String, String> {
-    let path = std::env::temp_dir().join(format!("ai-box-screen-{}.png", uuid::Uuid::new_v4()));
+    let path = shot_path();
     // -x: no shutter sound. -o: no window shadow. -C: skip the cursor, which the
     // model would otherwise sometimes describe as part of the interface.
     let status = tokio::process::Command::new("/usr/sbin/screencapture")
-        .args(["-x", "-o", "-C", "-t", "png"])
+        .args(SCREENCAPTURE_ARGS)
         .arg(&path)
         .status()
         .await
@@ -94,12 +100,90 @@ pub(crate) async fn capture_to_base64() -> Result<String, String> {
 System Settings → Privacy & Security → Screen Recording, then restart it."
             .into());
     }
-    let bytes = std::fs::read(&path).map_err(|e| format!("read capture: {e}"))?;
-    let _ = std::fs::remove_file(&path);
+    tokio::task::spawn_blocking(move || encode_file(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+const SCREENCAPTURE_ARGS: [&str; 5] = ["-x", "-o", "-C", "-t", "png"];
+
+fn shot_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("ai-box-screen-{}.png", uuid::Uuid::new_v4()))
+}
+
+/// Read a capture off disk, delete it, and return it scaled and as base64 JPEG.
+fn encode_file(path: &std::path::Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read capture: {e}"));
+    let _ = std::fs::remove_file(path);
+    let bytes = bytes?;
     if bytes.is_empty() {
         return Err("Screen capture produced an empty image. Check Screen Recording permission.".into());
     }
-    Ok(base64::engine::general_purpose::STANDARD.encode(&shrink(bytes)))
+    Ok(base64::engine::general_purpose::STANDARD.encode(shrink(bytes)))
+}
+
+// ---- prefetch ---------------------------------------------------------------
+//
+// The screenshot used to be taken when the question was SENT: hide the bar,
+// wait 140ms for the window server, capture, scale, encode — all of it while
+// the user waits for an answer. But the screen they are asking about is the one
+// that was there when they pressed the hotkey, before the bar covered any of it.
+// So the capture happens then, before the bar is shown, and the scaling and
+// encoding run in the background while they talk or type. Used once, and only
+// while fresh: the bar does not stop anyone clicking around underneath it, and
+// a picture of a screen they have since changed is worse than a new one.
+
+struct Prefetch {
+    at: std::time::Instant,
+    shot: tokio::sync::watch::Receiver<Option<Result<String, String>>>,
+}
+
+static PREFETCH: std::sync::Mutex<Option<Prefetch>> = std::sync::Mutex::new(None);
+
+/// How long a shot taken at the hotkey stands in for a fresh one.
+const PREFETCH_TTL: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Capture now, encode in the background. Runs only while nothing of ours is on
+/// screen, so there is nothing to hide; costs the ~130ms of `screencapture`
+/// itself before the bar appears, and nothing if permission is missing.
+fn prefetch_screen() {
+    *PREFETCH.lock().unwrap() = None;
+    if !crate::control::screen_access() {
+        return;
+    }
+    let path = shot_path();
+    let ok = std::process::Command::new("/usr/sbin/screencapture")
+        .args(SCREENCAPTURE_ARGS)
+        .arg(&path)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    let (tx, rx) = tokio::sync::watch::channel(None);
+    *PREFETCH.lock().unwrap() = Some(Prefetch { at: std::time::Instant::now(), shot: rx });
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = tx.send(Some(encode_file(&path)));
+    });
+}
+
+/// The prefetched shot, waiting for its encoding if that is still running.
+/// `None` when there is none, it is stale, or it failed — the caller then
+/// captures the ordinary way.
+async fn take_prefetched() -> Option<String> {
+    let p = PREFETCH.lock().unwrap().take()?;
+    if p.at.elapsed() > PREFETCH_TTL {
+        return None;
+    }
+    let mut rx = p.shot;
+    let done = rx.wait_for(|v| v.is_some()).await.ok()?.clone();
+    done?.ok()
+}
+
+fn drop_prefetch() {
+    *PREFETCH.lock().unwrap() = None;
 }
 
 /// The widest a screenshot is sent at, in pixels.
@@ -118,26 +202,34 @@ const MAX_SHOT_WIDTH: u32 = 1512;
 ///
 /// Returns the original bytes unchanged on any failure: a screenshot that is
 /// merely larger than ideal is worth far more than no screenshot at all.
+///
+/// Always JPEG out. A PNG of a busy screen is ~700KB of base64 to upload with
+/// every question and every step of an acting run; JPEG at this quality is a
+/// fraction of that, encodes several times faster, and reads the same to a
+/// vision model. The filter is Triangle rather than Lanczos3: at the exact 2×
+/// step a Retina screen needs it keeps small text just as legible, at a
+/// fraction of the cost.
 fn shrink(bytes: Vec<u8>) -> Vec<u8> {
     let Ok(img) = image::load_from_memory(&bytes) else {
         return bytes;
     };
-    if img.width() <= MAX_SHOT_WIDTH {
+    let img = if img.width() > MAX_SHOT_WIDTH {
+        let height = (img.height() as f64 * (MAX_SHOT_WIDTH as f64 / img.width() as f64)).round() as u32;
+        img.resize_exact(MAX_SHOT_WIDTH, height.max(1), image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    let mut out = Vec::new();
+    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, SHOT_QUALITY);
+    if img.to_rgb8().write_with_encoder(enc).is_err() {
         return bytes;
     }
-    let height = (img.height() as f64 * (MAX_SHOT_WIDTH as f64 / img.width() as f64)).round() as u32;
-    // Lanczos3 rather than nearest: small UI text has to survive the trip, and
-    // that is most of what the model is being asked to read.
-    let small = img.resize_exact(MAX_SHOT_WIDTH, height.max(1), image::imageops::FilterType::Lanczos3);
-    let mut out = std::io::Cursor::new(Vec::new());
-    if small
-        .write_to(&mut out, image::ImageFormat::Png)
-        .is_err()
-    {
-        return bytes;
-    }
-    out.into_inner()
+    out
 }
+
+/// JPEG quality for screenshots: high enough that 11px UI text has no ringing.
+const SHOT_QUALITY: u8 = 85;
+
 
 /// Logical size of the display the overlay covers, so the frontend can map the
 /// model's normalised 0–1000 coordinates onto real points.
@@ -274,54 +366,117 @@ pub fn list_voices() -> Vec<Voice> {
 }
 
 /// The currently speaking `say` process, so a new answer can cut off the old one.
+///
+/// Holds a queue as well, so a streamed answer can start speaking its first
+/// sentence while the rest is still arriving and have the remainder follow
+/// without a gap or an overlap. One player task drains the queue; a new answer
+/// (not an append) bumps the generation, which empties the queue and kills the
+/// utterance in progress.
 #[derive(Default)]
-pub struct Speaker(std::sync::Mutex<Option<tokio::process::Child>>);
+pub struct Speaker(std::sync::Arc<std::sync::Mutex<SpeakState>>);
 
-/// Speak `text`. Interrupts whatever was being said — an assistant that queues
-/// up three stale answers while you ask a fourth is worse than a silent one.
+#[derive(Default)]
+pub struct SpeakState {
+    queue: std::collections::VecDeque<Utterance>,
+    /// Kills the utterance being spoken right now.
+    current: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Whether a player task is draining the queue.
+    playing: bool,
+}
+
+struct Utterance {
+    text: String,
+    voice: Option<String>,
+    rate: Option<u32>,
+}
+
+/// Speak `text`. By default it interrupts whatever was being said — an
+/// assistant that queues up three stale answers while you ask a fourth is worse
+/// than a silent one. With `append`, it is spoken after what is already queued:
+/// the rest of the same answer.
 #[tauri::command]
 pub async fn speak(
     text: String,
     voice: Option<String>,
     rate: Option<u32>,
+    append: Option<bool>,
     speaker: tauri::State<'_, Speaker>,
 ) -> Result<(), String> {
-    // Kill the previous utterance inline rather than via stop_speaking: State
-    // is not Clone, and holding the lock across the await below would deadlock
-    // the next call.
-    if let Some(mut old) = speaker.0.lock().unwrap().take() {
-        let _ = old.start_kill();
+    let state = speaker.0.clone();
+    let mut s = state.lock().unwrap();
+    if !append.unwrap_or(false) {
+        s.queue.clear();
+        if let Some(kill) = s.current.take() {
+            let _ = kill.send(());
+        }
     }
     let text = text.trim();
     if text.is_empty() {
         return Ok(());
     }
+    s.queue.push_back(Utterance { text: text.to_string(), voice, rate });
+    if !s.playing {
+        s.playing = true;
+        tauri::async_runtime::spawn(play_queue(state.clone()));
+    }
+    Ok(())
+}
+
+/// Speak queued utterances one after another until the queue is empty.
+async fn play_queue(state: std::sync::Arc<std::sync::Mutex<SpeakState>>) {
+    loop {
+        let (next, kill_rx) = {
+            let mut s = state.lock().unwrap();
+            let Some(next) = s.queue.pop_front() else {
+                s.playing = false;
+                s.current = None;
+                return;
+            };
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            s.current = Some(tx);
+            (next, rx)
+        };
+        let _ = say_one(next, kill_rx).await;
+    }
+}
+
+/// One `say` process, to the end or until killed.
+async fn say_one(u: Utterance, kill: tokio::sync::oneshot::Receiver<()>) -> Result<(), String> {
     let mut cmd = tokio::process::Command::new("/usr/bin/say");
-    if let Some(v) = voice.as_deref().filter(|v| !v.trim().is_empty()) {
+    if let Some(v) = u.voice.as_deref().filter(|v| !v.trim().is_empty()) {
         cmd.args(["-v", v]);
     }
-    if let Some(r) = rate.filter(|r| *r >= 80 && *r <= 400) {
+    if let Some(r) = u.rate.filter(|r| *r >= 80 && *r <= 400) {
         cmd.args(["-r", &r.to_string()]);
     }
     // Pass the text via stdin rather than as an argument: an answer starting
     // with "-" would otherwise be read as a flag, and long answers can exceed
     // the argument limit.
-    cmd.arg("-f").arg("-").stdin(std::process::Stdio::piped());
+    cmd.arg("-f")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| format!("run say: {e}"))?;
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(text.as_bytes()).await;
+        let _ = stdin.write_all(u.text.as_bytes()).await;
         let _ = stdin.shutdown().await;
     }
-    *speaker.0.lock().unwrap() = Some(child);
+    tokio::select! {
+        _ = child.wait() => {}
+        _ = kill => { let _ = child.start_kill(); let _ = child.wait().await; }
+    }
     Ok(())
 }
 
-/// Cut off whatever is being spoken. Safe to call when nothing is.
+/// Cut off whatever is being spoken, and everything queued after it. Safe to
+/// call when nothing is.
 #[tauri::command]
 pub fn stop_speaking(speaker: tauri::State<'_, Speaker>) {
-    if let Some(mut child) = speaker.0.lock().unwrap().take() {
-        let _ = child.start_kill();
+    let mut s = speaker.0.lock().unwrap();
+    s.queue.clear();
+    if let Some(kill) = s.current.take() {
+        let _ = kill.send(());
     }
 }
 
@@ -494,6 +649,15 @@ fn place_bar(win: &tauri::WebviewWindow) -> Result<(), String> {
 pub fn overlay_open(app: tauri::AppHandle, with_screen: bool, listening: bool) -> Result<(), String> {
     create_overlay(&app)?;
     let bar = app.get_webview_window(BAR).ok_or("no bar")?;
+    // Photograph the screen while nothing of ours is on it. Skipped when the
+    // bar or an answer's marks are already up: hiding them to capture would
+    // flash, and the question will take a fresh shot the ordinary way.
+    let ours_visible = [BAR, MARKS]
+        .iter()
+        .any(|l| app.get_webview_window(l).and_then(|w| w.is_visible().ok()).unwrap_or(false));
+    if !ours_visible {
+        prefetch_screen();
+    }
     if !BAR_MOVED.load(std::sync::atomic::Ordering::Relaxed) {
         let _ = place_bar(&bar);
     }
@@ -787,6 +951,7 @@ pub fn overlay_escape(app: tauri::AppHandle, active: bool) -> Result<(), String>
 #[tauri::command]
 pub fn overlay_close(app: tauri::AppHandle) -> Result<(), String> {
     OVERLAY_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+    drop_prefetch();
     // Whatever route got us here, Escape goes back to the rest of the Mac.
     let _ = overlay_escape(app.clone(), false);
     if let Some(bar) = app.get_webview_window(BAR) {

@@ -15,6 +15,10 @@
   --accent-2: #5646d6;
   --accent-soft: rgba(107, 92, 240, 0.10);
   --accent-grad: linear-gradient(135deg, #7b6ef0 0%, #6b5cf0 100%);
+  /* Text on an accent background; dark in themes whose accent is pale. */
+  --on-accent: #ffffff;
+  /* The terminal's own background, from the theme's terminal palette. */
+  --term-bg: #0e0e13;
   --danger: #d9434f;
   --radius: 12px;
   --shadow: 0 12px 32px rgba(30, 30, 60, 0.12);
@@ -38,9 +42,10 @@ body,
 }
 
 body {
+  /* The glow is tinted by the theme's accent, whatever the theme. */
   background:
-    radial-gradient(1100px 620px at 82% -8%, rgba(107, 92, 240, 0.08), transparent 60%),
-    radial-gradient(900px 560px at 0% 106%, rgba(107, 92, 240, 0.05), transparent 62%),
+    radial-gradient(1100px 620px at 82% -8%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
+    radial-gradient(900px 560px at 0% 106%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 62%),
     var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
@@ -65,8 +70,8 @@ body {
 }
 :root[data-theme="dark"] body {
   background:
-    radial-gradient(1100px 620px at 82% -8%, rgba(123, 110, 240, 0.14), transparent 60%),
-    radial-gradient(900px 560px at 0% 106%, rgba(157, 146, 255, 0.09), transparent 62%),
+    radial-gradient(1100px 620px at 82% -8%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 60%),
+    radial-gradient(900px 560px at 0% 106%, color-mix(in srgb, var(--accent-2) 9%, transparent), transparent 62%),
     var(--bg);
 }
 :root[data-theme="dark"] .modal-backdrop {

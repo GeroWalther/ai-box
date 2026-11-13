@@ -3,18 +3,18 @@
 // sessions — each keeps its own shell alive across tab switches, so a long-running
 // command in one keeps going while you work in another.
 //
-// Across an app restart the tab list persists, and so does what each tab was
-// showing: the backend replays the saved screen AND its scrollback (ending in a
-// "previous session" divider) and starts the fresh shell in the same directory.
-// What it replays is a rendered picture, not the original byte stream — see
-// render_screen in pty.rs for why that distinction is the whole feature. The
-// shell process itself cannot survive: anything that was running is not still
-// running.
+// The shells live in the terminal service (ptyd.rs), not in the app, so quitting
+// AI Box leaves them running: relaunch and each tab re-attaches to the very same
+// shell — a `claude` session mid-conversation included — with what it printed in
+// the meantime. Only a reboot ends them. Then the backend replays the saved
+// screen and scrollback (ending in a "previous session" divider) and starts a
+// fresh shell in the same directory. See render_screen in pty.rs for why the
+// replay is a rendered picture rather than the original byte stream.
 import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { ptyOpen, ptyWrite, ptyResize, ptyKill } from "../lib/api";
+import { ptyOpen, ptyWrite, ptyResize, ptyKill, notifyUser } from "../lib/api";
 import { quoteForShell, useFileDrop } from "../hooks/useFileDrop";
 import { cancelStream } from "../lib/transport";
 import { remoteStoreMerge } from "../lib/remoteStore";
@@ -22,6 +22,7 @@ import { SidebarSlot } from "./SidebarList";
 import SidebarList from "./SidebarList";
 import { registerSyncSource } from "../lib/syncBus";
 import { logError } from "../lib/log";
+import { terminalTheme, THEME_EVENT, type Theme } from "../lib/themes";
 
 // Base64 <-> bytes (keystrokes go up as base64; output comes down as base64).
 function toB64(s: string): string {
@@ -212,7 +213,13 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
 
       <div className="xterm-stack">
         {tabs.map((t) => (
-          <TermPane key={t.id} ptyId={t.id} active={t.id === activeId} fontSize={fontSize} />
+          <TermPane
+            key={t.id}
+            ptyId={t.id}
+            title={t.title}
+            active={t.id === activeId}
+            fontSize={fontSize}
+          />
         ))}
       </div>
     </div>
@@ -225,13 +232,20 @@ export default function Terminal({ sidebarSlot, onCloseDrawer }: Props) {
  *  auto-reconnects and re-attaches — no reload, no lost output. */
 function TermPane({
   ptyId,
+  title,
   active,
   fontSize,
 }: {
   ptyId: string;
+  title: string;
   active: boolean;
   fontSize: number;
 }) {
+  // Read by the notification handler, which outlives any one render.
+  const titleRef = useRef(title);
+  titleRef.current = title;
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -254,13 +268,13 @@ function TermPane({
       lineHeight: 1.05,
       cursorBlink: true,
       scrollback: 5000,
-      theme: {
-        background: "#0e0e13",
-        foreground: "#e6e6ea",
-        cursor: "#8b7cf6",
-        selectionBackground: "#33335a",
-      },
+      theme: terminalTheme(),
     });
+    // Follow theme changes live, without restarting the shell.
+    const onTheme = (e: Event) => {
+      term.options.theme = (e as CustomEvent<Theme>).detail.term;
+    };
+    window.addEventListener(THEME_EVENT, onTheme);
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
@@ -275,6 +289,30 @@ function TermPane({
 
     const dataSub = term.onData((d) => {
       if (!disposed) ptyWrite(id, toB64(d)).catch(() => {});
+    });
+
+    // A program asking for attention — Claude finishing, or waiting on a
+    // permission — rings the bell or sends a notification escape (OSC 9, as
+    // iTerm2 takes it; OSC 777, as others do). Out of sight, that becomes a
+    // macOS notification naming the tab; in plain view it is left alone.
+    let lastPing = 0;
+    const ping = (body: string) => {
+      if (activeRef.current && document.hasFocus()) return;
+      const now = Date.now();
+      if (now - lastPing < 8000) return;
+      lastPing = now;
+      notifyUser(titleRef.current, body.slice(0, 180) || "Needs your attention").catch(() => {});
+    };
+    const bellSub = term.onBell(() => ping("Needs your attention"));
+    const osc9 = term.parser.registerOscHandler(9, (data) => {
+      // OSC 9;4 is a progress report, not a message.
+      if (!/^4;/.test(data)) ping(data);
+      return true;
+    });
+    const osc777 = term.parser.registerOscHandler(777, (data) => {
+      const [kind, , ...body] = data.split(";");
+      if (kind === "notify") ping(body.join(";"));
+      return true;
     });
 
     const pushResize = () => {
@@ -355,7 +393,11 @@ function TermPane({
         let cleanExit = false;
         firstChunk = true;
         try {
-          await ptyOpen(id, term.rows, term.cols, (ev) => {
+          await ptyOpen(
+            id,
+            term.rows,
+            term.cols,
+            (ev) => {
             if (disposed) return;
             if (ev.type === "data") {
               // Clear before applying the replay so re-attach doesn't duplicate.
@@ -370,7 +412,8 @@ function TermPane({
               setExited(true);
               term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
             }
-          });
+            }
+          );
         } catch {
           /* connection dropped — retry below */
         }
@@ -384,7 +427,7 @@ function TermPane({
     return () => {
       // Note: we do NOT kill the shell here. Unmount happens on navigate/reload/
       // blip too, and the shell must survive those so we can re-attach. Shells are
-      // killed only on explicit tab close (below) or app exit. A stale stream is
+      // killed only on explicit tab close — not even quitting the app ends them. A stale stream is
       // superseded server-side by the next attach (generation check).
       disposed = true;
       cancelStream(id); // detach this stream server-side (shell keeps running)
@@ -397,6 +440,10 @@ function TermPane({
       sliderScrollSub.dispose();
       clearInterval(sliderTimer);
       dataSub.dispose();
+      bellSub.dispose();
+      window.removeEventListener(THEME_EVENT, onTheme);
+      osc9.dispose();
+      osc777.dispose();
       term.dispose();
       if (termRef.current === term) termRef.current = null;
       if (fitRef.current === fit) fitRef.current = null;

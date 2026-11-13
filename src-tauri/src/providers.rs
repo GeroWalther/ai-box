@@ -326,23 +326,10 @@ pub async fn anthropic_chat(
     tools: &serde_json::Value,
     temperature: f32,
 ) -> Result<serde_json::Value, String> {
-    let (system, turns) = to_anthropic_messages(messages);
-    let mut body = serde_json::json!({
-        "model": model,
-        // Required by this API, unlike OpenAI's. Generous: the caller's own
-        // prompt decides the length, and a truncated answer is worse than a
-        // slightly larger ceiling.
-        "max_tokens": 8192,
-        "temperature": temperature,
-        "messages": turns,
-    });
-    if !system.is_empty() {
-        body["system"] = serde_json::Value::String(system);
-    }
-    let tools = to_anthropic_tools(tools);
-    if !tools.is_empty() {
-        body["tools"] = serde_json::Value::Array(tools);
-    }
+    // Required by this API, unlike OpenAI's. Generous: the caller's own prompt
+    // decides the length, and a truncated answer is worse than a slightly
+    // larger ceiling.
+    let body = anthropic_body(model, messages, tools, temperature, 8192);
 
     let resp = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(180))
@@ -358,6 +345,135 @@ pub async fn anthropic_chat(
 
     let json = read_json(resp).await?;
     Ok(from_anthropic_message(&json))
+}
+
+/// The Messages API request body, shared by the one-shot and streaming calls.
+///
+/// The system prompt and the tool list are marked for prompt caching. They are
+/// the same on every step of an agent run — Screen Assist acting resends both
+/// with each fresh screenshot — so after the first step they are read from the
+/// cache: cheaper, and the model starts answering sooner. A prefix shorter than
+/// the cache minimum is simply not cached; the marker is harmless then.
+pub(crate) fn anthropic_body(
+    model: &str,
+    messages: &serde_json::Value,
+    tools: &serde_json::Value,
+    temperature: f32,
+    max_tokens: u32,
+) -> serde_json::Value {
+    let (system, turns) = to_anthropic_messages(messages);
+    let mut body = serde_json::json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": turns,
+    });
+    if !system.is_empty() {
+        body["system"] = serde_json::json!([{
+            "type": "text",
+            "text": system,
+            "cache_control": { "type": "ephemeral" },
+        }]);
+    }
+    let mut tools = to_anthropic_tools(tools);
+    if let Some(last) = tools.last_mut() {
+        // One marker on the last tool caches the whole list before it.
+        last["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+    }
+    if !tools.is_empty() {
+        body["tools"] = serde_json::Value::Array(tools);
+    }
+    body
+}
+
+/// Stream a text answer from the Messages API, calling `on_text` with each
+/// piece as it arrives. Anthropic's server-sent events are not OpenAI's: text
+/// comes as `content_block_delta` events carrying a `text_delta`, and an error
+/// can arrive mid-stream as an `error` event rather than as an HTTP status.
+///
+/// `cancelled` is polled between chunks; returning true drops the connection,
+/// which ends the request upstream rather than merely ignoring the rest.
+pub async fn anthropic_stream(
+    api_key: &str,
+    model: &str,
+    messages: &serde_json::Value,
+    temperature: f32,
+    max_tokens: u32,
+    on_text: &mut (dyn FnMut(String) + Send),
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+
+    let mut body = anthropic_body(model, messages, &serde_json::json!([]), temperature, max_tokens.max(1));
+    body["stream"] = serde_json::Value::Bool(true);
+
+    let resp = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?
+        .post(Direct::Anthropic.chat_url())
+        .header("x-api-key", api_key.trim())
+        .header("anthropic-version", "2023-06-01")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(crate::friendly_http_error(status, &text));
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut buffer = String::new();
+    loop {
+        if cancelled() {
+            return Ok(());
+        }
+        let chunk = tokio::select! {
+            c = stream.next() => c,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => continue,
+        };
+        let Some(chunk) = chunk else { return Ok(()) };
+        let bytes = chunk.map_err(|e| format!("Stream error: {e}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
+        while let Some(nl) = buffer.find('\n') {
+            let line = buffer[..nl].trim().to_string();
+            buffer.drain(..=nl);
+            if let Some(event) = parse_anthropic_event(&line) {
+                match event {
+                    AnthropicEvent::Text(t) => on_text(t),
+                    AnthropicEvent::Stop => return Ok(()),
+                    AnthropicEvent::Error(e) => return Err(e),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum AnthropicEvent {
+    Text(String),
+    Stop,
+    Error(String),
+}
+
+/// One SSE line → what it means for the answer. Only `data:` lines matter: each
+/// carries its own `type`, so the `event:` line before it adds nothing.
+fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
+    let data = line.strip_prefix("data:")?.trim();
+    let json: serde_json::Value = serde_json::from_str(data).ok()?;
+    match json["type"].as_str()? {
+        "content_block_delta" if json["delta"]["type"] == "text_delta" => {
+            let t = json["delta"]["text"].as_str()?;
+            (!t.is_empty()).then(|| AnthropicEvent::Text(t.to_string()))
+        }
+        "message_stop" => Some(AnthropicEvent::Stop),
+        "error" => Some(AnthropicEvent::Error(
+            json["error"]["message"].as_str().unwrap_or("The model stopped with an error").to_string(),
+        )),
+        _ => None,
+    }
 }
 
 /// Pull the system prompt out and rewrite every turn into Anthropic's shape.
@@ -530,6 +646,45 @@ fn from_anthropic_message(reply: &serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod translation_tests {
     use super::*;
+
+    #[test]
+    fn stream_events_yield_text_stop_and_errors() {
+        let delta = r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#;
+        assert_eq!(parse_anthropic_event(delta), Some(AnthropicEvent::Text("Hi".into())));
+        assert_eq!(
+            parse_anthropic_event(r#"data: {"type":"message_stop"}"#),
+            Some(AnthropicEvent::Stop)
+        );
+        assert_eq!(
+            parse_anthropic_event(r#"data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#),
+            Some(AnthropicEvent::Error("Overloaded".into()))
+        );
+        // Event-name lines, pings and tool-input deltas are not answer text.
+        assert_eq!(parse_anthropic_event("event: content_block_delta"), None);
+        assert_eq!(parse_anthropic_event(r#"data: {"type":"ping"}"#), None);
+        let json_delta = r#"data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{"}}"#;
+        assert_eq!(parse_anthropic_event(json_delta), None);
+    }
+
+    #[test]
+    fn the_system_prompt_and_tools_are_marked_for_caching() {
+        let msgs = serde_json::json!([
+            { "role": "system", "content": "You look at screens." },
+            { "role": "user", "content": "what is this" },
+        ]);
+        let tools = serde_json::json!([
+            { "type": "function", "function": { "name": "click", "parameters": {} } },
+            { "type": "function", "function": { "name": "type_text", "parameters": {} } },
+        ]);
+        let body = anthropic_body("claude-x", &msgs, &tools, 0.2, 100);
+        assert_eq!(body["system"][0]["text"], "You look at screens.");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert!(body["tools"][0].get("cache_control").is_none());
+        assert_eq!(body["tools"][1]["cache_control"]["type"], "ephemeral");
+        // No system prompt and no tools: neither field is sent at all.
+        let bare = anthropic_body("claude-x", &serde_json::json!([{ "role": "user", "content": "hi" }]), &serde_json::json!([]), 0.2, 100);
+        assert!(bare.get("system").is_none() && bare.get("tools").is_none());
+    }
 
     #[test]
     fn the_system_prompt_becomes_a_field_and_several_are_joined() {

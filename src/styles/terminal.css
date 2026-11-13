@@ -15,7 +15,7 @@
   width: 100%;
   max-width: 100%;
   overflow: hidden;
-  background: #0e0e13;
+  background: var(--term-bg);
 }
 /* Terminal text-size (A- / A+) in the sidebar footer, so it's reachable whether
    the sidebar is expanded (side by side) or collapsed (stacked in the rail). */
@@ -325,7 +325,7 @@
   padding: 8px 14px;
   border-radius: 999px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-size: 13px;
   font-weight: 500;
 }

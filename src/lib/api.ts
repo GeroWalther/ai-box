@@ -19,6 +19,9 @@ export interface GenerateArgs {
   messages: (ChatMsg | { role: string; content: unknown })[];
   temperature: number;
   maxTokens: number;
+  /** Reasoning effort for models that think first ("none", "low"…). Omitted
+   *  leaves the provider's default. */
+  reasoning?: string;
 }
 
 export interface StreamHandlers {
@@ -45,6 +48,7 @@ export async function generateText(
         messages: args.messages,
         temperature: args.temperature,
         maxTokens: args.maxTokens,
+        reasoning: args.reasoning ?? null,
       },
       requestId,
     },
@@ -130,6 +134,12 @@ export async function ptyOpen(
 ): Promise<void> {
   await streamCmd("pty_open", { id, rows, cols }, onEvent);
 }
+
+/** Ids of the shells still running on the Mac. */
+export const ptyList = () => invokeCmd<string[]>("pty_list");
+
+/** A macOS notification, posted as AI Box (desktop only). */
+export const notifyUser = (title: string, body: string) => invokeCmd<void>("notify_user", { title, body });
 
 /** Send keystrokes (base64 bytes) to a PTY session. */
 export async function ptyWrite(id: string, data: string): Promise<void> {
@@ -348,8 +358,10 @@ export interface MacVoice {
   classic: boolean;
 }
 export const listVoices = () => invokeCmd<MacVoice[]>("list_voices");
-export const speak = (text: string, voice?: string, rate?: number) =>
-  invokeCmd<void>("speak", { text, voice: voice || null, rate: rate ?? null });
+/** Speak `text`, cutting off whatever was being said — or, with `append`,
+ *  after it: the rest of the same answer. */
+export const speak = (text: string, voice?: string, rate?: number, append = false) =>
+  invokeCmd<void>("speak", { text, voice: voice || null, rate: rate ?? null, append });
 export const stopSpeaking = () => invokeCmd<void>("stop_speaking");
 
 export const overlayOpen = (withScreen: boolean, listening = false) =>

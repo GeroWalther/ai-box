@@ -5,7 +5,8 @@
 // answers in one round trip — rather than transcribe, wait, then ask. That
 // halves the latency of the thing you notice most, and it is why the model
 // picker cares whether a model can hear.
-import { chatCompletion, type AssistantMessage } from "./agent";
+import { chatCompletion, chatCompletionStream, type AssistantMessage } from "./agent";
+import { logInfo } from "./log";
 import {
   captureScreen,
   controlStatus,
@@ -44,6 +45,10 @@ export interface AskInput {
   onStep?: (step: Step, done: boolean) => void;
   /** Checked between steps: true ends the run where it stands. */
   stopped?: () => boolean;
+  /** Called as the reply streams in, with as much of the spoken answer as has
+   *  arrived — so the overlay can show it, and speech can start, before the
+   *  model has finished writing the rest. */
+  onPartial?: (p: PartialAnswer) => void;
   /** Earlier exchanges in this sitting, oldest first. What makes "and now turn
    *  it back on" mean anything — without it every question starts from nothing
    *  and a follow-up is unanswerable. */
@@ -112,6 +117,7 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
       "so it cannot click or type yet";
   }
 
+  const t0 = performance.now();
   let screenshot: string | null = null;
   let captureError: string | null = null;
   if (input.withScreen) {
@@ -121,6 +127,7 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
       captureError = String(e);
     }
   }
+  const tCaptured = performance.now();
 
   const { system, user } = buildScreenAssistMessages(
     question || "(the user's question is in the attached audio)",
@@ -135,7 +142,7 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
   if (screenshot) {
     content.push({
       type: "image_url",
-      image_url: { url: `data:image/png;base64,${screenshot}` },
+      image_url: { url: `data:image/jpeg;base64,${screenshot}` },
     });
   }
   if (input.clip) {
@@ -180,16 +187,41 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
 
   try {
     for (let round = 0; round < limit; round++) {
-      const msg = await chatCompletion({
-        baseUrl: provider.baseUrl,
-        apiKey: provider.apiKey,
-        model: provider.model,
-        messages,
-        tools: act ? (CONTROL_TOOLS as unknown as unknown[]) : [],
-        // Low: this is a factual reading of a screen, not a creative task, and a
-        // wandering model puts arrows on the wrong button — or clicks one.
-        temperature: 0.2,
-      });
+      // Streamed, so the answer can be shown and spoken while it is still
+      // being written. The text of each round starts afresh: only the round
+      // that answers (rather than calling a tool) has anything to say.
+      let raw = "";
+      let firstToken = 0;
+      const tAsked = performance.now();
+      const msg = await chatCompletionStream(
+        {
+          baseUrl: provider.baseUrl,
+          apiKey: provider.apiKey,
+          model: provider.model,
+          messages,
+          tools: act ? (CONTROL_TOOLS as unknown as unknown[]) : [],
+          // Low: this is a factual reading of a screen, not a creative task, and a
+          // wandering model puts arrows on the wrong button — or clicks one.
+          temperature: 0.2,
+          // Thinking is silence the user sits through. Off unless asked for;
+          // local models get no say in it either way.
+          reasoning: provider.local || settings.assistThink ? undefined : "low",
+        },
+        (t) => {
+          if (!firstToken) firstToken = performance.now();
+          raw += t;
+          input.onPartial?.(partialAnswer(raw));
+        }
+      );
+      const tDone = performance.now();
+      logInfo(
+        "assist.timing",
+        `round ${round + 1}: ` +
+          (round === 0 && input.withScreen ? `capture ${Math.round(tCaptured - t0)}ms · ` : "") +
+          `first token ${firstToken ? Math.round(firstToken - tAsked) + "ms" : "—"} · ` +
+          `reply ${Math.round(tDone - tAsked)}ms` +
+          (msg.tool_calls?.length ? ` · ${msg.tool_calls.length} action(s)` : "")
+      );
 
       const calls = msg.tool_calls ?? [];
       if (!act || calls.length === 0) {
@@ -268,7 +300,7 @@ export async function ask(settings: Settings, input: AskInput): Promise<AskResul
               role: "user",
               content: [
                 { type: "text", text: "This is the screen now. Carry on, or answer if you are done." },
-                { type: "image_url", image_url: { url: `data:image/png;base64,${shot}` } },
+                { type: "image_url", image_url: { url: `data:image/jpeg;base64,${shot}` } },
               ],
             });
           } catch (e) {
@@ -363,6 +395,117 @@ export async function say(settings: Settings, text: string, lang?: string): Prom
     await speak(spokenText(text), voice, settings.assistRate);
   } catch {
     /* speech is a nicety; the text is already on screen */
+  }
+}
+
+/** As much of a streamed answer as has arrived. */
+export interface PartialAnswer {
+  lang?: string;
+  say: string;
+  /** The closing quote of `say` has arrived: nothing more will be added. */
+  sayDone: boolean;
+}
+
+/**
+ * Read `lang` and as much of `say` as there is out of a JSON reply that is
+ * still arriving. Not a JSON parser — a half-written object is not JSON — just
+ * enough of one to decode a string up to where the text currently stops.
+ */
+export function partialAnswer(raw: string): PartialAnswer {
+  const lang = /"lang"\s*:\s*"([a-zA-Z-]{2,10})"/.exec(raw)?.[1]?.toLowerCase();
+  const m = /"say"\s*:\s*"/.exec(raw);
+  if (!m) return { lang, say: "", sayDone: false };
+  let out = "";
+  let i = m.index + m[0].length;
+  while (i < raw.length) {
+    const c = raw[i];
+    if (c === '"') return { lang, say: out, sayDone: true };
+    if (c === "\\") {
+      if (i + 1 >= raw.length) break; // the escape itself is still on its way
+      const n = raw[i + 1];
+      if (n === "u") {
+        if (i + 6 > raw.length) break;
+        out += String.fromCharCode(parseInt(raw.slice(i + 2, i + 6), 16) || 32);
+        i += 6;
+        continue;
+      }
+      out += ({ n: "\n", t: " ", r: "", b: "", f: "" } as Record<string, string>)[n] ?? n;
+      i += 2;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return { lang, say: out, sayDone: false };
+}
+
+/**
+ * Where the first sentence worth speaking on its own ends, or 0 if it has not
+ * arrived yet. Very short openings ("OK.") are joined to what follows rather
+ * than spoken alone, and a decimal point is not a full stop.
+ */
+export function firstSentenceEnd(text: string, complete: boolean): number {
+  const re = /[.!?…](?=\s)|[。！？]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const end = m.index + m[0].length;
+    if (end >= 16) return end;
+  }
+  return complete ? text.length : 0;
+}
+
+/**
+ * Speaks an answer while it streams: the first sentence as soon as it — and
+ * the language it is in — has arrived, the rest queued behind it once the
+ * whole answer is in. Without streaming, nothing was said until the model had
+ * also finished writing the detail and every annotation.
+ */
+export class EarlySpeech {
+  private started = false;
+  private spoken = "";
+  private cancelled = false;
+
+  constructor(private settings: Settings) {}
+
+  /** Feed the latest partial answer. Cheap to call on every token. */
+  feed(p: PartialAnswer): void {
+    if (this.started || this.cancelled || !this.settings.assistSpeak) return;
+    // The voice depends on the language; without either a language or a fixed
+    // voice, wait for the whole answer rather than read German in English.
+    if (!p.lang && !this.settings.assistVoice) return;
+    const end = firstSentenceEnd(p.say, p.sayDone);
+    if (!end) return;
+    this.started = true;
+    this.spoken = p.say.slice(0, end);
+    void this.speak(this.spoken, p.lang, false);
+  }
+
+  /** The whole answer is in: say whatever has not been said yet. */
+  async finish(answer: { say: string; lang?: string }): Promise<void> {
+    if (this.cancelled) return;
+    if (!this.started) return say(this.settings, answer.say, answer.lang);
+    const full = answer.say.trim();
+    const head = this.spoken.trim();
+    // The final parse should begin with what was already spoken; if a model
+    // rewrote itself mid-stream, better to stop than repeat or garble it.
+    if (!full.startsWith(head)) return;
+    const rest = full.slice(head.length).trim();
+    if (rest) await this.speak(rest, answer.lang, true);
+  }
+
+  /** The run was stopped or replaced: speak nothing more for it. */
+  cancel(): void {
+    this.cancelled = true;
+  }
+
+  private async speak(text: string, lang: string | undefined, append: boolean): Promise<void> {
+    try {
+      const voice = voiceForLanguage(await voices(), lang, this.settings.assistVoice);
+      if (this.cancelled) return;
+      await speak(spokenText(text), voice, this.settings.assistRate, append);
+    } catch {
+      /* speech is a nicety; the text is already on screen */
+    }
   }
 }
 

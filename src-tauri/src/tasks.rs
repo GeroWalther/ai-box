@@ -211,7 +211,7 @@ fn save(t: &Task) {
 /// A macOS notification, posted as AI Box. (`osascript display notification`
 /// shows up as Script Editor, and clicking it opened an empty script.) The
 /// phone learns the same thing from the task itself.
-fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
+pub(crate) fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
     // try_state: test apps are built without the plugin.
     let Some(n) = app.try_state::<tauri_plugin_notification::Notification<R>>() else { return };
     let body: String = body.chars().take(180).collect();
@@ -516,7 +516,7 @@ impl<R: Runtime> Run<R> {
         use base64::Engine;
         let b64 = crate::screen::capture_to_base64().await.ok()?;
         let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-        crate::attach::store_bytes(&bytes, "screen.png").ok()
+        crate::attach::store_bytes(&bytes, "screen.jpg").ok()
     }
 
     async fn my_read(&mut self, tab: Option<crate::userbrowser::TabRef>) -> Result<String, String> {

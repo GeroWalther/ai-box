@@ -727,7 +727,9 @@ const POINTING_RULES =
   "answer is not about anything on screen.";
 
 const SHAPE =
-  'Reply with ONLY a JSON object: {"say":"...","lang":"en","detail":"...","annotations":' +
+  // `lang` comes FIRST: the answer is spoken while it is still arriving, and
+  // the voice has to be chosen before the first sentence of `say` is read.
+  'Reply with ONLY a JSON object, keys in this order: {"lang":"en","say":"...","detail":"...","annotations":' +
   '[{"kind":"circle","box":[x,y,x2,y2],"label":"..."}]}. No prose around it, no ' +
   "code fence. `detail` and `label` are optional; `annotations` may be empty.";
 
